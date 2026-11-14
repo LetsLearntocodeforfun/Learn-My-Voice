@@ -98,8 +98,82 @@ Object.assign(I18N.en, {
   ai_unknown_provider: 'That AI service is not supported.', ai_other: 'AI call failed: ',
 });
 
+Object.assign(I18N.zh, {
+  nav_trends: '热点',
+  tr_title: '热点关键词', tr_sub: '把你在小红书看到的热词放进来，工作台会结合你自己视频的数据排个先后。',
+  tr_no_fetch: '工作台不会自己去平台抓数据：热词要么是你贴进来的，要么是能联网的 AI 查到的（会标明「未核实」）。',
+  tr_paste: '粘贴关键词', tr_paste_ph: '一行一个，后面可以带热度数字，例如：\n秋冬护肤, 125000\n早餐吃什么 12.5万\n夫妻日常',
+  tr_add: '加入', tr_added: '已加入 {n} 个', tr_skipped: '，有 {n} 行没法识别',
+  tr_ai_title: '让能联网的 AI 帮我查热词',
+  tr_ai_hint: '需要一个能联网搜索的 AI（例如打开了搜索功能的 ChatGPT）。查到的词会标成「AI 查到 · 未核实」并附上来源链接，请点开确认后再用。',
+  tr_focus: '想查哪个方向？（可不填）', tr_focus_ph: '例如：秋冬护肤、夫妻日常', tr_ai_btn: '准备提示词',
+  tr_dropped_source: '，{n} 个没有来源链接，没有加入', tr_dropped_old: '，{n} 个来源太旧，没有加入',
+  tr_weight: '排序侧重', tr_w_trend: '更看热度', tr_w_balanced: '均衡', tr_w_mine: '更看我的数据',
+  tr_empty: '还没有热词。把看到的热词贴到上面试试。',
+  tr_score: '综合分', tr_heat: '热度', tr_heat_ph: '未填',
+  tr_age_today: '今天看到', tr_age_days: '{n} 天前看到', tr_stale: '可能过时了',
+  tr_src_ai: 'AI 查到 · 未核实', tr_src_link: '来源 ↗',
+  tr_flag_voice: '不像你的说法', tr_flag_compliance: '可能是违规用词',
+  tr_mine_none: '你还没拍过相关内容', tr_mine_no_numbers: '有 {n} 条相关视频，但都没填数据',
+  tr_mine_lift: '{n} 条有数据的相关视频，互动约为你平时的 {x} 倍',
+  tr_use: '用它写脚本', tr_confirm_delete: '不再跟踪「{k}」吗？',
+  tr_how: '分数怎么算：热度（越热、越新分越高，每 {d} 天减半）加上你自己相关视频的表现，按上面选的侧重加权。这些权重是凭经验定的，还没有用真实结果校准过，只能当参考。',
+  tr_baseline: '你平时一条视频的互动：{n}（{v} 条有数据的非商单视频的中位数）。',
+  tr_no_baseline: '还没有填了数据的非商单视频，所以现在只按热度排。',
+  kw_label: '目标关键词', kw_hint: '想让这篇带上的热词或搜索词，最多 8 个',
+  kw_ph: '输入一个关键词', kw_add: '添加', kw_suggest: '正在跟踪的热词：', kw_none: '还没选关键词',
+  kw_missing: '还没用到', kw_in_spoken: '口播', kw_in_title: '备选标题', kw_in_caption: '正文', kw_in_hashtags: '话题',
+  post_title: '发布文案', post_hint: 'AI 写初稿时一起写的。这里可以看、可以复制，不能修改。',
+  post_titles: '备选标题', post_covers: '封面文字', post_caption: '正文', post_hashtags: '话题',
+  post_copy: '复制', post_copy_failed: '复制失败，请选中文字后手动复制。',
+  idea_trends: '相关热词',
+  mb_intro_trends: '提示词里有你素材库里的视频标题、一句人设描述（学过声音才有）和已经在跟踪的热词，不包含脚本正文。这些会随提示词一起发给 AI。',
+  err_no_keywords: '没有识别到关键词。一行写一个试试。', err_bad_weight: '出错了，请再试一次。',
+  ai_no_focus: '还不知道你做哪方面的内容：请填一下想查的方向，或者先往素材库放几篇脚本。',
+  ai_cannot_browse: '这个 AI 说它不能联网搜索，所以什么都没加。请换一个能联网的 AI。',
+});
+Object.assign(I18N.en, {
+  nav_trends: 'Trends',
+  tr_title: 'Trend keywords', tr_sub: 'Add keywords you see trending on Xiaohongshu. The studio ranks them against how her own videos performed.',
+  tr_no_fetch: 'The studio never fetches platform data itself. Keywords are either pasted in by you or found by a web-searching AI, and those are marked as unverified.',
+  tr_paste: 'Paste keywords', tr_paste_ph: 'One per line, optionally followed by a heat number, e.g.\n秋冬护肤, 125000\n早餐吃什么 12.5万\n夫妻日常',
+  tr_add: 'Add', tr_added: 'Added {n}', tr_skipped: '; lines that could not be read: {n}',
+  tr_ai_title: 'Ask a web-searching AI to look up keywords',
+  tr_ai_hint: 'This needs an AI that can search the web (for example ChatGPT with search turned on). What it finds is marked "AI-found · unverified" with a source link. Open the link to check before relying on it.',
+  tr_focus: 'Which area? (optional)', tr_focus_ph: 'e.g. autumn skincare, couple vlogs', tr_ai_btn: 'Prepare the prompt',
+  tr_dropped_source: '; not added for lack of a source link: {n}', tr_dropped_old: '; not added because the source was too old: {n}',
+  tr_weight: 'Rank by', tr_w_trend: 'Mostly trend', tr_w_balanced: 'Balanced', tr_w_mine: 'Mostly her results',
+  tr_empty: 'No keywords yet. Paste some above to start.',
+  tr_score: 'Score', tr_heat: 'Heat', tr_heat_ph: 'not set',
+  tr_age_today: 'seen today', tr_age_days: 'seen {n} days ago', tr_age_days_one: 'seen 1 day ago', tr_stale: 'may be out of date',
+  tr_src_ai: 'AI-found · unverified', tr_src_link: 'source ↗',
+  tr_flag_voice: 'not how she talks', tr_flag_compliance: 'risky ad wording',
+  tr_mine_none: 'she has no video on this yet',
+  tr_mine_no_numbers: '{n} related videos, none with numbers', tr_mine_no_numbers_one: '1 related video, without numbers',
+  tr_mine_lift: '{n} related videos with numbers, about {x}× her usual interactions',
+  tr_mine_lift_one: '1 related video with numbers, about {x}× her usual interactions',
+  tr_use: 'Write a script with it', tr_confirm_delete: 'Stop tracking "{k}"?',
+  tr_how: 'How the score works: trend strength (hotter and more recent scores higher; it halves every {d} days) plus how her own videos on the topic performed, weighted as chosen above. The weights are judgement calls that have not been tuned against real outcomes, so treat the score as a guide.',
+  tr_baseline: 'Her usual video gets {n} interactions (median of {v} non-sponsored videos with numbers).',
+  tr_baseline_one: 'Her usual video gets {n} interactions (from the only non-sponsored video with numbers).',
+  tr_no_baseline: 'No non-sponsored video has numbers yet, so the ranking currently reflects trend strength only.',
+  kw_label: 'Target keywords', kw_hint: 'trend or search terms to work into this script, up to 8',
+  kw_ph: 'Type a keyword', kw_add: 'Add', kw_suggest: 'Tracked trends:', kw_none: 'No keywords chosen',
+  kw_missing: 'not used yet', kw_in_spoken: 'spoken', kw_in_title: 'title options', kw_in_caption: 'caption', kw_in_hashtags: 'hashtags',
+  post_title: 'Post copy', post_hint: 'Written by the AI together with the draft. It can be read and copied here, not edited.',
+  post_titles: 'Title options', post_covers: 'Cover text', post_caption: 'Caption', post_hashtags: 'Hashtags',
+  post_copy: 'Copy', post_copy_failed: 'Copy failed. Select the text and copy it by hand.',
+  idea_trends: 'Trend keywords',
+  mb_intro_trends: 'The prompt contains her video titles from the library, a one-line description of her persona (only once her voice has been learned) and the keywords already tracked. It does not contain script text. All of it is sent to the AI with the prompt.',
+  err_no_keywords: 'No keywords were recognised. Put one on each line.', err_bad_weight: 'Something went wrong. Please try again.',
+  ai_no_focus: 'Nothing says what her content is about yet. Type an area to look up, or add scripts to the Library first.',
+  ai_cannot_browse: 'That AI said it cannot search the web, so nothing was added. Use one that can.',
+});
+
 const tf = (key, vars) => t(key).replace(/\{(\w+)\}/g, (_, k) => (vars[k] !== undefined ? vars[k] : ''));
 const num = (v) => (v === null || v === undefined ? '–' : Number(v).toLocaleString(lang === 'zh' ? 'zh-CN' : 'en-US'));
+/* Text key for a count: the "_one" variant when the count is 1 and this language has one (English singulars). */
+const countKey = (key, n) => (n === 1 && I18N[lang][key + '_one'] !== undefined ? key + '_one' : key);
 
 async function busy(btn, label, fn) {
   const original = btn.textContent;
@@ -129,7 +203,7 @@ async function manualBridge(task, payload) {
   return new Promise((resolve) => {
     $modal.innerHTML = `<div class="sheet" role="dialog" aria-modal="true">
       <h2>${esc(t('mb_title'))}</h2>
-      <p class="hint">${esc(t('mb_intro'))}</p>
+      <p class="hint">${esc(t(task === 'trends' ? 'mb_intro_trends' : 'mb_intro'))}</p>
       <label class="field" for="mb-prompt">${esc(t('mb_step1'))}</label>
       <textarea id="mb-prompt" class="mono" rows="5" readonly></textarea>
       <div class="row" style="margin-top:8px">
@@ -382,11 +456,13 @@ function ideaHtml(idea, i) {
     return `<span class="tag">${esc(t(key) === key ? value : t(key))}</span>`;
   };
   const why = lang === 'zh' ? idea.why_zh : (idea.why_en || idea.why_zh);
+  const trendTags = (idea.trend_keywords || []).length
+    ? `<div class="meta">${esc(t('idea_trends'))}：${idea.trend_keywords.map((x) => `<span class="tag ok">${esc(x)}</span>`).join('')}</div>` : '';
   return `<div class="card idea">
     <div class="row"><h3>${esc(lang === 'zh' ? idea.title_zh : (idea.title_en || idea.title_zh))}</h3><span class="spacer"></span>
       ${label('kind_', idea.kind)}${label('conf_', idea.confidence)}</div>
     ${why ? `<p>${esc(why)}</p>` : ''}
-    ${evidence}
+    ${evidence}${trendTags}
     <div class="row" style="margin-top:12px"><button class="btn primary" data-idea="${i}">${esc(t('use_idea'))}</button>
       <span class="meta">${esc(t('fmt_' + idea.video_format))} · ${idea.target_duration_sec}${esc(t('sec'))}</span></div>
   </div>`;
@@ -426,7 +502,234 @@ async function renderIdeas() {
     draft.notes = idea.title_zh + '\n' + idea.script_notes_zh;
     draft.target_sec = idea.target_duration_sec;
     draft.video_format = idea.video_format;
+    draft.keywords = (idea.trend_keywords || []).slice(0, MAX_KEYWORDS);
     location.hash = '#/new';
+  };
+}
+
+/* ---------- target keywords (new-script page and script editor) ---------- */
+const MAX_KEYWORDS = 8;          // must match MAX_KEYWORDS_PER_SCRIPT in studio/store.py
+const MAX_KEYWORD_CHARS = 40;    // must match MAX_KEYWORD_CHARS in studio/store.py
+/* Must match clean_keyword and keyword_key in studio/store.py. */
+const kwClean = (s) => String(s || '').replace(/\s+/g, ' ').trim().replace(/^[#\uff03]+/, '').trim();
+const kwKey = (s) => String(s || '').replace(/\u2019/g, "'").replace(/\s+/g, '').replace(/^[#\uff03]+/, '').toLowerCase();
+
+let trendSuggestions = [];       // tracked trends that fit her voice, best score first
+
+async function loadTrendSuggestions() {
+  trendSuggestions = [];
+  if (!appState.trend_count) return;
+  try { trendSuggestions = (await api('GET', '/api/trends')).trends.filter((x) => x.usable); }
+  catch (e) { /* suggestions are optional; the picker works without them */ }
+}
+
+/* Chosen keywords with a remove button, free entry, and suggestions from tracked trends.
+   `el.kw.setCoverage(list)` marks where each keyword appears, using keyword_coverage from /api/lint. */
+function keywordPicker(el, chosen, onChange) {
+  if (!el) return;
+  const state = { chosen: (chosen || []).slice(), coverage: null };
+  el.innerHTML = `<label class="field" for="kw-input">${esc(t('kw_label'))} <span class="hint">· ${esc(t('kw_hint'))}</span></label>
+    <div class="chips" data-kw-chosen></div>
+    <div class="row kw-row" style="margin-top:8px">
+      <input type="text" id="kw-input" maxlength="${MAX_KEYWORD_CHARS}" placeholder="${esc(t('kw_ph'))}">
+      <button type="button" class="btn" data-kw-add>${esc(t('kw_add'))}</button></div>
+    <div data-kw-suggest></div>`;
+  const $chosen = el.querySelector('[data-kw-chosen]');
+  const $suggest = el.querySelector('[data-kw-suggest]');
+  const $input = el.querySelector('#kw-input');
+  const $add = el.querySelector('[data-kw-add]');
+  const draw = () => {
+    const found = {};
+    (state.coverage || []).forEach((c) => { found[kwKey(c.keyword)] = c; });
+    $chosen.innerHTML = state.chosen.map((k, i) => {
+      const c = found[kwKey(k)];
+      const where = c ? ['spoken', 'title', 'caption', 'hashtags'].filter((f) => c[f]).map((f) => t('kw_in_' + f)).join(' · ') : '';
+      const note = c ? `<small>${esc(c.covered ? '✓ ' + where : t('kw_missing'))}</small>` : '';
+      return `<span class="kw ${c && !c.covered ? 'miss' : ''}">${esc(k)}${note}<button type="button" data-kw-del="${i}" aria-label="${esc(t('delete'))}">✕</button></span>`;
+    }).join('') || `<span class="hint">${esc(t('kw_none'))}</span>`;
+    const taken = new Set(state.chosen.map(kwKey));
+    const full = state.chosen.length >= MAX_KEYWORDS;
+    const offers = full ? [] : trendSuggestions.filter((x) => !taken.has(kwKey(x.keyword))).slice(0, 8);
+    $suggest.innerHTML = offers.length ? `<div class="chips" style="margin-top:10px"><span class="hint">${esc(t('kw_suggest'))}</span>${offers.map((x) =>
+      `<button type="button" class="chip" data-kw-pick="${esc(x.keyword)}">${esc(x.keyword)} <span class="hint">${esc(x.score)}</span></button>`).join('')}</div>` : '';
+    $input.disabled = full; $add.disabled = full;
+  };
+  const add = (raw) => {
+    const k = kwClean(raw);
+    if (!k || k.length > MAX_KEYWORD_CHARS || state.chosen.length >= MAX_KEYWORDS) return false;
+    if (state.chosen.some((x) => kwKey(x) === kwKey(k))) return false;
+    state.chosen.push(k);
+    draw(); onChange(state.chosen.slice());
+    return true;
+  };
+  const addTyped = () => { if (add($input.value)) $input.value = ''; if (!$input.disabled) $input.focus(); };
+  $add.onclick = addTyped;
+  $input.onkeydown = (e) => {
+    if (e.key !== 'Enter' || e.isComposing || e.keyCode === 229) return;   // Enter also confirms Chinese input
+    e.preventDefault(); addTyped();
+  };
+  el.onclick = (e) => {
+    const del = e.target.closest('[data-kw-del]');
+    const pick = e.target.closest('[data-kw-pick]');
+    if (del) { state.chosen.splice(Number(del.dataset.kwDel), 1); draw(); onChange(state.chosen.slice()); }
+    else if (pick) add(pick.dataset.kwPick);
+  };
+  el.kw = { setCoverage(list) { state.coverage = Array.isArray(list) ? list : null; draw(); } };
+  draw();
+}
+
+/* ---------- post copy drafted with a script: titles, cover text, caption, hashtags ---------- */
+async function copyPlain(text) {
+  const area = document.createElement('textarea');
+  area.value = text;
+  area.setAttribute('readonly', '');
+  area.style.cssText = 'position:fixed;left:0;top:0;opacity:0';
+  document.body.appendChild(area);
+  const ok = await copyText(text, area);
+  area.remove();
+  return ok;
+}
+
+/* `post` is the model's rednote_post_package, saved as it came, so every field is checked before use. */
+function paintPost(el, post) {
+  if (!el) return;
+  const p = post && typeof post === 'object' ? post : {};
+  const str = (v) => (typeof v === 'string' ? v.trim() : '');
+  const list = (v) => (Array.isArray(v) ? v : []);
+  const titles = list(p.title_options)
+    .map((o) => (typeof o === 'string' ? { zh: str(o), en: '' } : { zh: str(o && o.title_zh), en: str(o && o.title_en) }))
+    .filter((o) => o.zh);
+  const covers = list(p.cover_thumbnail_text_options_zh).map(str).filter(Boolean);
+  const caption = str(p.caption_body_zh);
+  const hashtags = list(p.hashtags_zh).map(str).filter(Boolean);
+  if (!titles.length && !covers.length && !caption && !hashtags.length) { el.innerHTML = ''; return; }
+  const copies = [];
+  const row = (zh, en) => {
+    copies.push(zh);
+    return `<div class="post-row"><div class="text">${esc(zh)}${lang === 'en' && en ? `<small>${esc(en)}</small>` : ''}</div>
+      <button type="button" class="btn ghost" data-copy="${copies.length - 1}">${esc(t('post_copy'))}</button></div>`;
+  };
+  const part = (key, html) => (html ? `<h4>${esc(t(key))}</h4>${html}` : '');
+  el.innerHTML = `<div class="card post"><h3>${esc(t('post_title'))}</h3><p class="hint">${esc(t('post_hint'))}</p>
+    ${part('post_titles', titles.map((o) => row(o.zh, o.en)).join(''))}
+    ${part('post_covers', covers.map((c) => row(c, '')).join(''))}
+    ${part('post_caption', caption ? row(caption, str(p.caption_body_en)) : '')}
+    ${part('post_hashtags', hashtags.length ? row(hashtags.join(' '), '') : '')}</div>`;
+  el.onclick = async (e) => {
+    const btn = e.target.closest('[data-copy]');
+    if (!btn) return;
+    toast(t((await copyPlain(copies[Number(btn.dataset.copy)])) ? 'mb_copied' : 'post_copy_failed'));
+  };
+}
+
+/* ---------- trends ---------- */
+const trendForm = { text: '', focus: '' };
+
+function trendHtml(x) {
+  const tags = [];
+  if (x.source === 'ai') {
+    const link = /^https?:\/\//i.test(x.source_url)
+      ? ` <a href="${esc(x.source_url)}" target="_blank" rel="noopener noreferrer">${esc(t('tr_src_link'))}</a>` : '';
+    tags.push(`<span class="tag warn">${esc(t('tr_src_ai'))}${link}</span>`);
+  }
+  if (x.stale) tags.push(`<span class="tag warn">${esc(t('tr_stale'))}</span>`);
+  if (x.flags.includes('voice')) tags.push(`<span class="tag no">${esc(t('tr_flag_voice'))}</span>`);
+  if (x.flags.includes('compliance')) tags.push(`<span class="tag no">${esc(t('tr_flag_compliance'))}</span>`);
+  let mine = t('tr_mine_none');
+  if (x.lift_raw !== null) mine = tf(countKey('tr_mine_lift', x.her_videos_with_numbers), { n: x.her_videos_with_numbers, x: x.lift_raw });
+  else if (x.her_videos) mine = tf(countKey('tr_mine_no_numbers', x.her_videos), { n: x.her_videos });
+  const days = Math.floor(x.age_days);
+  const age = days < 1 ? t('tr_age_today') : tf(countKey('tr_age_days', days), { n: days });
+  const note = lang === 'zh' ? x.note_zh : (x.note_en || x.note_zh);
+  const titles = x.evidence_titles.map((s) => `<span class="tag">${esc(s)}</span>`).join('');
+  return `<div class="card trend ${x.usable ? '' : 'off'}" data-id="${esc(x.id)}">
+    <div class="row">
+      <div class="score" title="${esc(t('tr_score'))}">${esc(x.score)}</div>
+      <div class="name"><h3>${esc(x.keyword)}</h3>${tags.length ? `<div>${tags.join('')}</div>` : ''}</div>
+      ${x.usable ? `<button class="btn" data-use>${esc(t('tr_use'))}</button>` : ''}
+      <button class="btn ghost" data-del aria-label="${esc(t('delete'))}">✕</button>
+    </div>
+    ${note ? `<p class="meta">${esc(note)}</p>` : ''}
+    <div class="facts">
+      <label>${esc(t('tr_heat'))} <input type="number" min="0" inputmode="numeric" data-heat value="${x.heat === null ? '' : esc(x.heat)}" placeholder="${esc(t('tr_heat_ph'))}"></label>
+      <span>${esc(age)}</span><span>${esc(mine)}</span>
+    </div>
+    ${titles ? `<div class="titles">${titles}</div>` : ''}
+  </div>`;
+}
+
+/* `data` is a /api/trends payload from a request that just changed something; otherwise it is fetched. */
+async function renderTrends(data) {
+  const p = data || await api('GET', '/api/trends');
+  appState.trend_count = p.trends.length;
+  const weights = [['trend', 'tr_w_trend'], ['balanced', 'tr_w_balanced'], ['mine', 'tr_w_mine']];
+  const baseline = p.baseline_interactions
+    ? tf(countKey('tr_baseline', p.videos_with_numbers), { n: num(Math.round(p.baseline_interactions)), v: p.videos_with_numbers })
+    : t('tr_no_baseline');
+  const ranking = p.trends.length ? `<div class="row" style="margin:18px 0 12px"><span class="meta">${esc(t('tr_weight'))}</span>
+      <div class="chips">${weights.map(([value, key]) =>
+        `<button type="button" class="chip ${value === p.weight ? 'on' : ''}" data-weight="${value}">${esc(t(key))}</button>`).join('')}</div></div>` : '';
+  $view.innerHTML = `<div class="wrap"><h1>${esc(t('tr_title'))}</h1><p class="sub">${esc(t('tr_sub'))}</p>
+    <div class="card">
+      <label class="field" style="margin-top:0" for="tr-text">${esc(t('tr_paste'))}</label>
+      <textarea id="tr-text" rows="4" placeholder="${esc(t('tr_paste_ph'))}">${esc(trendForm.text)}</textarea>
+      <div class="row" style="margin-top:10px"><button class="btn primary" id="tr-add">${esc(t('tr_add'))}</button></div>
+      <p class="hint">${esc(t('tr_no_fetch'))}</p>
+    </div>
+    <details class="card"><summary>${esc(t('tr_ai_title'))}</summary>
+      <p class="hint">${esc(t('tr_ai_hint'))}</p>
+      <label class="field" for="tr-focus">${esc(t('tr_focus'))}</label>
+      <input type="text" id="tr-focus" value="${esc(trendForm.focus)}" placeholder="${esc(t('tr_focus_ph'))}">
+      <div class="row" style="margin-top:10px"><button class="btn" id="tr-ai">${esc(t('tr_ai_btn'))}</button></div>
+    </details>
+    ${ranking}
+    <div id="trends">${p.trends.map(trendHtml).join('') || `<div class="empty">${esc(t('tr_empty'))}</div>`}</div>
+    ${p.trends.length ? `<p class="hint">${esc(tf('tr_how', { d: p.half_life_days }))}</p><p class="hint">${esc(baseline)}</p>` : ''}
+  </div>`;
+
+  const $text = document.getElementById('tr-text');
+  autoGrow($text);
+  $text.oninput = () => { trendForm.text = $text.value; autoGrow($text); };
+  document.getElementById('tr-add').onclick = (e) => busy(e.currentTarget, e.currentTarget.textContent, async () => {
+    const out = await api('POST', '/api/trends', { text: $text.value });
+    trendForm.text = '';
+    toast(tf('tr_added', { n: out.added }) + (out.skipped ? tf('tr_skipped', { n: out.skipped }) : ''));
+    await renderTrends(out);
+  });
+  const $focus = document.getElementById('tr-focus');
+  $focus.oninput = () => { trendForm.focus = $focus.value; };
+  /* Looking trends up needs live web search, so this always goes through the copy-and-paste dialog. */
+  document.getElementById('tr-ai').onclick = (e) => busy(e.currentTarget, e.currentTarget.textContent, async () => {
+    const out = await manualBridge('trends', { focus: $focus.value });
+    if (!out) return;
+    toast(tf('tr_added', { n: out.added })
+      + (out.dropped_no_source ? tf('tr_dropped_source', { n: out.dropped_no_source }) : '')
+      + (out.dropped_too_old ? tf('tr_dropped_old', { n: out.dropped_too_old }) : ''));
+    await renderTrends(out);
+  });
+  $view.querySelectorAll('[data-weight]').forEach((b) => {
+    b.onclick = async () => {
+      try { await renderTrends(await api('PUT', '/api/trends/weight', { weight: b.dataset.weight })); } catch (err) { showError(err); }
+    };
+  });
+  const $list = document.getElementById('trends');
+  $list.onchange = async (e) => {
+    const card = e.target.closest('.trend');
+    if (!card || e.target.dataset.heat === undefined) return;
+    try { await renderTrends(await api('PUT', '/api/trends/' + card.dataset.id, { heat: e.target.value })); } catch (err) { showError(err); }
+  };
+  $list.onclick = async (e) => {
+    const card = e.target.closest('.trend');
+    if (!card) return;
+    const item = p.trends.find((x) => x.id === card.dataset.id);
+    if (e.target.closest('[data-use]')) {
+      const has = draft.keywords.some((k) => kwKey(k) === kwKey(item.keyword));
+      if (!has && draft.keywords.length < MAX_KEYWORDS) draft.keywords.push(item.keyword);
+      location.hash = '#/new';
+    } else if (e.target.closest('[data-del]')) {
+      if (!confirm(tf('tr_confirm_delete', { k: item.keyword }))) return;
+      try { await renderTrends(await api('DELETE', '/api/trends/' + item.id)); } catch (err) { showError(err); }
+    }
   };
 }
 

@@ -20,6 +20,7 @@ This is an early version. Read this before relying on it.
 | :--- | :--- |
 | Script editor, checks, teleprompter, library, exports | Working. Covered by automated tests and exercised in a real browser (headless Chrome, macOS). |
 | AI steps (draft, learn voice, topic ideas) | Working against stand-in model replies in tests. Output quality with real models has not been evaluated yet. |
+| Trend keywords | Pasting, ranking and keyword checks work, are covered by automated tests and were exercised in headless Chrome. The ranking weights are judgement calls that have **not** been tuned against real results. Lookups by a web-searching AI have only been tested with stand-in replies. |
 | 剪映 / CapCut | Exports standard files to import. Importing them has **not** been verified inside 剪映 or CapCut by the maintainers. It does not write 剪映 project drafts. |
 | MCP server | Tested at protocol level (JSON-RPC over stdio). **Not** yet verified with ChatGPT, Codex or Claude Desktop. |
 | Platforms | Developed on macOS with Python 3.9. Windows and Linux are untested. |
@@ -46,8 +47,9 @@ The interface starts in Chinese. Use the **English** button at the bottom of the
 1. **设置 / Settings**: choose how AI is provided (see the next section). The default needs no key.
 2. **素材库 / Library**: upload or paste scripts she wrote by hand (`.txt`, `.md`, `.docx`). Five or more is better. Add views, likes, collects and comments where you have them, and tick 商单 for sponsored ones.
 3. **我的声音 / Her voice**: click *Learn her voice from the library*, then enter her real speaking rate.
-4. **选题建议 / Ideas**: ask for topic suggestions, pick one, and draft it.
-5. **我的脚本 / Scripts**: edit the draft, read it with the teleprompter, and export the 剪映 kit.
+4. **热点 / Trends** (optional): paste keywords you see trending on Xiaohongshu to have them ranked against her own results.
+5. **选题建议 / Ideas**: ask for topic suggestions, pick one, and draft it.
+6. **我的脚本 / Scripts**: edit the draft, read it with the teleprompter, and export the 剪映 kit.
 
 Until step 3 is done the app uses a bundled *example* voice profile for a fictional creator, and says so on screen.
 
@@ -66,6 +68,9 @@ A ChatGPT subscription does not include API access, so the studio cannot call it
 each AI step shows a prepared prompt. Paste it into ChatGPT, then paste the reply back.
 The prompt contains her voice profile and the relevant script text.
 
+Looking up trend keywords always works this way, whichever AI option is selected, because it needs an AI that can
+search the web at that moment. That prompt contains her video titles rather than script text.
+
 ![Copy and paste dialog](docs/images/chatgpt-bridge-zh.png)
 
 ### Local models
@@ -81,7 +86,7 @@ tool supplies her voice, her past scripts, the checks and the storage. Scripts s
 
 Tools: `get_script_brief`, `save_script`, `update_script`, `check_script`, `list_scripts`, `get_script`,
 `get_voice_profile`, `list_library`, `get_voice_learning_brief`, `save_voice_profile`,
-`get_topic_ideas_brief`, `save_topic_ideas`, `export_jianying_kit`.
+`get_topic_ideas_brief`, `save_topic_ideas`, `export_jianying_kit`, `list_trends`, `add_trend_keywords`.
 
 The setups below follow each vendor's documentation as of November 2026. None has been verified by the maintainers yet.
 Use an absolute path; a path without spaces avoids quoting problems.
@@ -123,8 +128,9 @@ Then ask in chat, for example: *"Use Learn My Voice to write a 60-second script 
 - **Script editor**: one card per spoken line, with shot and on-screen text (花字) fields, live character count and read time, autosave.
 - **Live checks**, in Chinese and English: lines too long for one breath, phrases she never uses, influencer clichés, translated-sounding Chinese, risky advertising wording, and total length against the target duration. These are rules, not AI, so they are instant and repeatable.
 - **Voice learning**: builds a voice profile from her own scripts. Breath-length limits are measured in code rather than taken from the model. Sponsored scripts are kept out of the core profile. Earlier profiles are kept as backups.
-- **Drafting**: every draft is anchored on her own best-performing scripts as examples.
-- **Topic ideas**: ranks her past videos by interactions and suggests what to film next. Each idea must cite her own videos; citations that do not match a real title are removed.
+- **Drafting**: every draft is anchored on her own best-performing scripts as examples. A script can have up to 8 target keywords; her past scripts on those topics are then used as the examples first, and the editor shows whether each keyword ended up in the spoken lines or in the drafted title options, caption or hashtags. The title options, cover text, caption and hashtags that the AI drafts with a script are shown under it, to read and copy.
+- **Topic ideas**: ranks her past videos by interactions and suggests what to film next. Each idea must cite her own videos; citations that do not match a real title are removed. Tracked trend keywords are passed in as a second signal, and an idea can only name keywords that are actually tracked.
+- **Trend keywords** (热点): paste keywords you see trending, with an optional heat number, and the studio ranks them by how hot and recent they are and by how her own videos on that topic performed. You choose how much each side counts. The ranking is arithmetic, not AI. Keywords that clash with her voice profile are marked and left out of suggestions. A web-searching chat AI can also look keywords up through the copy & paste dialog or MCP; those need a source link and are labelled as unverified.
 - **Teleprompter**: full screen, adjustable speed and size.
 - **Exports**: 剪映 / CapCut kit, subtitle `.srt`, voiceover text, shot list, on-screen text list.
 
@@ -157,6 +163,7 @@ generator reports limits for drafts produced on macOS, so this needs testing aga
 - The web server listens on `127.0.0.1` only and rejects requests with an unexpected Host header.
 - AI steps send her voice profile, her notes and parts of her past scripts to whichever AI you chose. With a local model nothing leaves the computer.
 - Views, likes, collects and comments are typed in by hand. Nothing is fetched from any platform.
+- Trend keywords are pasted in by hand, or returned by a web-searching AI that you ask yourself. The studio makes no web requests for them. A trend lookup prompt contains her video titles, a one-line description of her persona if her voice has been learned, the area you typed and the keywords already tracked. It does not contain script text.
 
 ## Project layout
 
@@ -166,9 +173,10 @@ generator reports limits for drafts produced on macOS, so this needs testing aga
 | `studio/guardrails.py`, `studio/lexicon.json`, `studio/checks.py` | Rule-based checks and their bilingual messages |
 | `studio/pipeline.py`, `studio/llm.py` | Prompt building, reply validation, model providers |
 | `studio/corpus.py` | Reading her scripts, measured statistics, performance ranking |
+| `studio/trends.py` | Reading pasted trend keywords, scoring them against her own results, keyword coverage |
 | `studio/exports.py` | Text exports, `.srt`, 剪映 kit |
 | `studio/mcp_server.py`, `run_mcp.py` | MCP server |
-| `prompts/` | The prompt text. The app reads prompts 02, 04 and 06 directly from these files, so editing them changes behaviour. |
+| `prompts/` | The prompt text. The app reads prompts 02, 04, 06 and 07 directly from these files, so editing them changes behaviour. |
 | `SYSTEM_DESIGN.md` | The original, larger design. Parts of it are not built. |
 
 The prompts are written for one scenario: a Chinese creator who makes lifestyle and couple vlogs with an
@@ -186,6 +194,8 @@ python3 -m studio.guardrails tests/fixtures/worked_example_script.json --dna sch
 - The advertising-rule word lists are a starting point collected for this project. They have not been checked against current platform or legal rules and are not legal advice.
 - Speaking rate cannot be learned from text. It is a default until she enters her own.
 - With only a few videos that have numbers, topic suggestions are weak. The app says so.
+- Trend scores are a guide, not a measurement. The weights and the 14-day half-life are judgement calls that have not been tuned against real outcomes, and heat numbers are whatever was typed in. Matching a keyword to her past videos is by shared characters and words, so it can miss a video that covers the topic in other words.
+- Keywords found by an AI are only as good as the page it cites. The studio requires a web link and drops entries whose stated source date is more than 30 days old, but it never opens the page, so it cannot confirm the page says what the AI claims. They stay marked as unverified unless you paste the same keyword in yourself.
 - Sponsored-brief handling, a second-pass critic, learning from her edits to drafts, and video transcription are designed in `prompts/` and `SYSTEM_DESIGN.md` but not built.
 
 ## License

@@ -130,3 +130,30 @@ p.hint { margin: 8px 0 0; }
 .sheet label.field { margin-top: 16px; }
 textarea.mono { font: 13px/1.5 ui-monospace, "SF Mono", Menlo, monospace; overflow: auto; resize: vertical; background: var(--bg); }
 details.card > summary { color: var(--ink); font-size: 15px; }
+
+/* trends, target keywords */
+.trend { padding: 14px 16px; }
+.trend.off { opacity: .6; }
+.trend .row { flex-wrap: nowrap; }
+.trend .score { flex: none; min-width: 46px; height: 46px; padding: 0 6px; border-radius: 12px; background: var(--accent-soft); color: var(--accent); font-weight: 700; font-size: 18px; display: grid; place-items: center; }
+.trend .name { flex: 1; min-width: 0; }
+.trend h3 { margin: 0 0 2px; overflow-wrap: anywhere; }
+.trend p.meta { margin: 8px 0 0; }
+.trend .facts { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 16px; margin-top: 10px; font-size: 13px; color: var(--muted); }
+.trend .facts input { width: 120px; padding: 4px 8px; font-size: 13px; border-radius: 8px; }
+.trend .titles { margin-top: 8px; }
+.tag.warn { background: var(--warn-soft); color: #7a5410; }
+.tag.ok { background: #e8f5ee; color: #2c7a52; }
+.kw { display: inline-flex; align-items: center; gap: 6px; border: 1px solid var(--line); background: #fff; border-radius: 999px; padding: 4px 6px 4px 14px; font-size: 14px; }
+.kw small { color: var(--muted); }
+.kw.miss { background: var(--warn-soft); border-color: #f1dfb0; }
+.kw button { border: none; background: none; color: var(--muted); cursor: pointer; padding: 0 6px; }
+.kw-row input[type=text] { width: 240px; max-width: 100%; }
+@media (max-width: 720px) { .trend .row { flex-wrap: wrap; } }
+
+/* post copy drafted with a script */
+#post-box { margin-top: 24px; }
+.post h4 { margin: 14px 0 4px; font-size: 13px; font-weight: 600; color: var(--muted); }
+.post-row { display: flex; align-items: flex-start; gap: 8px; padding: 6px 0; border-top: 1px solid var(--line); }
+.post-row .text { flex: 1; min-width: 0; white-space: pre-wrap; overflow-wrap: anywhere; }
+.post-row small { display: block; color: var(--muted); }

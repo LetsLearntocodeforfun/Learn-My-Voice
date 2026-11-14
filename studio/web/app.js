@@ -65,7 +65,7 @@ const I18N = {
 };
 
 let lang = localStorage.getItem('lang') === 'en' ? 'en' : 'zh';
-let appState = { settings: { configured: false, keys: {} }, dna_is_example: true, video_formats: [], sample_count: 0 };
+let appState = { settings: { configured: false, keys: {} }, dna_is_example: true, video_formats: [], sample_count: 0, trend_count: 0 };
 const $view = document.getElementById('view');
 const $nav = document.getElementById('nav');
 const $toast = document.getElementById('toast');
@@ -123,6 +123,7 @@ function renderNav(route) {
   $nav.innerHTML = `<div class="brand">${esc(t('brand'))}</div>` +
     item('#/', 'nav_scripts', route === 'home' || route === 'new' || route === 'script') +
     item('#/ideas', 'nav_ideas', route === 'ideas') +
+    item('#/trends', 'nav_trends', route === 'trends') +
     item('#/library', 'nav_library', route === 'library') +
     item('#/voice', 'nav_voice', route === 'voice') +
     item('#/settings', 'nav_settings', route === 'settings') +
@@ -142,9 +143,10 @@ async function router() {
   const m = hash.match(/^#\/s\/([0-9a-f]{12})$/);
   try {
     appState = await api('GET', '/api/state');
-    if (m) { renderNav('script'); await renderScript(m[1]); }
-    else if (hash === '#/new') { renderNav('new'); renderNew(); }
+    if (m) { renderNav('script'); await loadTrendSuggestions(); await renderScript(m[1]); }
+    else if (hash === '#/new') { renderNav('new'); await loadTrendSuggestions(); renderNew(); }
     else if (hash === '#/ideas') { renderNav('ideas'); await renderIdeas(); }
+    else if (hash === '#/trends') { renderNav('trends'); await renderTrends(); }
     else if (hash === '#/library') { renderNav('library'); await renderLibrary(); }
     else if (hash === '#/voice') { renderNav('voice'); await renderVoice(); }
     else if (hash === '#/settings') { renderNav('settings'); renderSettings(); }
@@ -173,7 +175,7 @@ async function renderHome() {
 }
 
 /* ---------- new script ---------- */
-const draft = { notes: '', target_sec: 60, video_format: 'VLOG_VOICEOVER' };
+const draft = { notes: '', target_sec: 60, video_format: 'VLOG_VOICEOVER', keywords: [] };
 
 function renderNew() {
   const chips = (values, current, attr, label) => values.map((v) =>
@@ -190,12 +192,14 @@ function renderNew() {
     <div class="chips">${chips([30, 60, 90], draft.target_sec, 'sec', (v) => v + t('sec'))}</div>
     <label class="field">${esc(t('format'))}</label>
     <div class="chips">${chips(appState.video_formats, draft.video_format, 'fmt', (v) => t('fmt_' + v))}</div>
+    <div id="kw-box"></div>
     <div class="row" style="margin-top:28px">
       <button class="btn primary big" id="ai-btn" ${configured ? '' : 'disabled'}>${esc(t(appState.settings.manual ? 'ai_write_manual' : 'ai_write'))}</button>
       <button class="btn big" id="self-btn">${esc(t('self_write'))}</button>
     </div></div>`;
   const $notes = document.getElementById('notes');
   $notes.oninput = () => { draft.notes = $notes.value; autoGrow($notes); };
+  keywordPicker(document.getElementById('kw-box'), draft.keywords, (list) => { draft.keywords = list; });
   $view.querySelectorAll('[data-sec]').forEach((b) => { b.onclick = () => { draft.target_sec = Number(b.dataset.sec); renderNew(); }; });
   $view.querySelectorAll('[data-fmt]').forEach((b) => { b.onclick = () => { draft.video_format = b.dataset.fmt; renderNew(); }; });
   const create = async (useAi, btn) => {
@@ -206,7 +210,7 @@ function renderNew() {
       const body = Object.assign({ lang }, draft);
       const script = useAi ? await aiRun('draft', body) : await api('POST', '/api/scripts', body);
       if (!script) { btn.disabled = false; btn.textContent = label; return; }  // copy-and-paste was cancelled
-      draft.notes = '';
+      draft.notes = ''; draft.keywords = [];
       location.hash = '#/s/' + script.id;
     } catch (e) { showError(e); btn.disabled = false; btn.textContent = label; }
   };
@@ -232,17 +236,20 @@ async function flushSave() {
   if (dirty) await saveNow();
 }
 
+const lintBody = (s) => ({ lines: s.lines, target_sec: s.target_sec, keywords: s.keywords || [], post: s.post });
+
 async function saveNow() {
   if (!cur) return;
   dirty = false;
   const s = cur.script;
   const seq = ++lintSeq;
   try {
-    await api('PUT', '/api/scripts/' + s.id, { title: s.title, target_sec: s.target_sec, lines: s.lines });
-    const lint = await api('POST', '/api/lint', { lines: s.lines, target_sec: s.target_sec });
+    await api('PUT', '/api/scripts/' + s.id, { title: s.title, target_sec: s.target_sec, lines: s.lines, keywords: s.keywords || [] });
+    const lint = await api('POST', '/api/lint', lintBody(s));
     if (seq !== lintSeq || !cur || cur.script.id !== s.id) return;
     cur.findings = lint.findings;
     cur.stats = lint.stats;
+    cur.coverage = lint.keyword_coverage;
     paintChecks();
     if (!dirty) setSaved('saved');
   } catch (e) { dirty = true; setSaved('save_failed'); }
@@ -282,6 +289,8 @@ function paintChecks() {
     const no = Number(el.dataset.i) + 1;
     el.querySelector('[data-issues]').innerHTML = cur.findings.filter((f) => f.line_no === no).map(chip).join('');
   });
+  const kwBox = document.getElementById('kw-box');
+  if (kwBox && kwBox.kw) kwBox.kw.setCoverage(cur.coverage);
   const st = cur.stats || {};
   const whole = cur.findings.filter((f) => f.line_no === null);
   const lineIssues = cur.findings.length - whole.length;
@@ -318,10 +327,14 @@ function paintScript() {
     <input type="text" class="title-input" id="title" value="${esc(s.title)}" placeholder="${esc(t('untitled'))}">
     <div class="chips" style="margin:10px 0 4px">${secs.map((v) =>
       `<button type="button" class="chip ${v === s.target_sec ? 'on' : ''}" data-sec="${v}">${v}${esc(t('sec'))}</button>`).join('')}</div>
+    <div id="kw-box"></div>
     <div class="summary" id="summary"></div>
     <div id="lines">${s.lines.map(lineHtml).join('')}</div>
-    <button class="btn" id="add-line">${esc(t('add_line'))}</button></div>`;
+    <button class="btn" id="add-line">${esc(t('add_line'))}</button>
+    <div id="post-box"></div></div>`;
   $view.querySelectorAll('textarea').forEach(autoGrow);
+  keywordPicker(document.getElementById('kw-box'), s.keywords || [], (list) => { s.keywords = list; scheduleSave(); });
+  paintPost(document.getElementById('post-box'), s.post);
   paintChecks();
 
   document.getElementById('title').oninput = (e) => { s.title = e.target.value; scheduleSave(); };
@@ -372,8 +385,8 @@ function paintScript() {
 
 async function renderScript(id) {
   const script = await api('GET', '/api/scripts/' + id);
-  const lint = await api('POST', '/api/lint', { lines: script.lines, target_sec: script.target_sec });
-  cur = { script, findings: lint.findings, stats: lint.stats };
+  const lint = await api('POST', '/api/lint', lintBody(script));
+  cur = { script, findings: lint.findings, stats: lint.stats, coverage: lint.keyword_coverage };
   paintScript();
 }
 
