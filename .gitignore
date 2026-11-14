@@ -1,0 +1,5 @@
+# Local data: scripts database, API keys, voice profile. Never commit.
+data/
+__pycache__/
+*.pyc
+.DS_Store

@@ -1,0 +1,64 @@
+{
+  "_note": "Spoken lines transcribed unchanged from examples/worked_sponsored_vlog_example.md (Step 3) into the Stage 4 output shape. Line 2 mixes a live clip and voiceover in the source; it is kept as one VOICEOVER line with the clip inline.",
+  "metadata": {
+    "estimated_duration_sec": 59
+  },
+  "script_lines": [
+    {
+      "line_no": 1,
+      "beat_type": "HOOK",
+      "time_range_sec": "00:00-00:04",
+      "audio_mode": "VOICEOVER",
+      "spoken_script_zh": "周日下午趁冰箱空了 / 拉着某人去趟 Trader Joe's 补货嘛"
+    },
+    {
+      "line_no": 2,
+      "beat_type": "COUPLE_BANTER",
+      "time_range_sec": "00:04-00:11",
+      "audio_mode": "VOICEOVER",
+      "spoken_script_zh": "[原声: \"Wait can we get four boxes of the soup dumplings?\"] / 你们看他每次路过冰柜都走不动道哈 / 最后被我摁住只拿了两盒 [轻笑]"
+    },
+    {
+      "line_no": 3,
+      "beat_type": "VLOG_STORY",
+      "time_range_sec": "00:11-00:16",
+      "audio_mode": "VOICEOVER",
+      "spoken_script_zh": "买完出来外头那个妖风真的巨冷 / 吹得我俩脸都有点干干紧绷绷的"
+    },
+    {
+      "line_no": 4,
+      "beat_type": "TRANSITION_BRIDGE",
+      "time_range_sec": "00:16-00:22",
+      "audio_mode": "VOICEOVER",
+      "spoken_script_zh": "所以最近回家洗完澡第一件事 / 就是赶紧把我这罐面霜挖出来厚涂一层"
+    },
+    {
+      "line_no": 5,
+      "beat_type": "PRODUCT_EXPERIENCE",
+      "time_range_sec": "00:22-00:35",
+      "audio_mode": "VOICEOVER",
+      "spoken_script_zh": "我这种干敏皮一到换季就容易闹脾气嘛 / 它是那种三重神经酰胺的配方 / 质地软软糯糯像化开的冰淇淋一样 / 推开直接就吃进去了，一点不糊脸"
+    },
+    {
+      "line_no": 6,
+      "beat_type": "COUPLE_BANTER",
+      "time_range_sec": "00:35-00:45",
+      "audio_mode": "VOICEOVER",
+      "spoken_script_zh": "最搞笑的是某人前两天鼻翼起皮 / 顺手偷挖了我一点去涂 / 第二天早上还跑来问我那个 jar 叫什么哈"
+    },
+    {
+      "line_no": 7,
+      "beat_type": "REALISTIC_CAVEAT",
+      "time_range_sec": "00:45-00:53",
+      "audio_mode": "VOICEOVER",
+      "spoken_script_zh": "我现在睡前涂完，第二天上妆基本不怎么卡粉啦 / 不过它是偏滋润挂的 / 大油皮姐妹薄涂一层就够了"
+    },
+    {
+      "line_no": 8,
+      "beat_type": "CLOSING_CTA",
+      "time_range_sec": "00:53-00:59",
+      "audio_mode": "VOICEOVER",
+      "spoken_script_zh": "好啦，去煮刚才买的小笼包当晚饭啦 / 你们入冬还有什么救命面霜也可以种草给我哈，拜拜～"
+    }
+  ]
+}

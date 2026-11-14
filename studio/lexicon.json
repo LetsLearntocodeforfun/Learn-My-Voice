@@ -1,0 +1,38 @@
+{
+  "_source": "Machine-readable mirror of reference/rednote_anti_ai_and_compliance_lexicon.md and the red lines in prompts/03. It encodes this project's own lists; it is not a verified statement of current platform or advertising rules.",
+  "_severity": "error = unambiguous hit; review = context-dependent, a human or the Stage 5A critic should decide.",
+  "compliance": [
+    {"pattern": "100 ?%|百分之百|百分百", "severity": "error", "reason_en": "Absolute claim (lexicon 3A)"},
+    {"pattern": "全网最低|最低价", "severity": "error", "reason_en": "Price-war claim (lexicon 3A)"},
+    {"pattern": "国家级", "severity": "error", "reason_en": "Absolute superlative (lexicon 3A)"},
+    {"pattern": "消炎|杀菌|治疗|根治|祛斑|生发|排毒", "severity": "error", "reason_en": "Medical / efficacy claim (lexicon 3B, prompt 03)"},
+    {"pattern": "再生细胞|逆龄|一夜回春|立竿见影", "severity": "error", "reason_en": "Anti-aging / instant-result claim (lexicon 3B)"},
+    {"pattern": "私信领|私信发链接|点击下方购买|下单立减|赶紧下单|赶紧抢|加微", "severity": "error", "reason_en": "Hard-commerce / off-platform trigger (lexicon 3C)"},
+    {"pattern": "最(?!近|后|终|初|搞笑|戳|勤|多|爱|喜欢)", "severity": "review", "reason_en": "Possible superlative 最; personal-habit uses such as 最近 / 用得最勤 are allowed (lexicon 3A)"},
+    {"pattern": "第一(?!件|次|罐|瓶|天|步|眼|口|反应|时间|个|期)", "severity": "review", "reason_en": "Possible ranking claim 第一 (lexicon 3A)"},
+    {"pattern": "唯一(?!的小?缺点)", "severity": "review", "reason_en": "Possible absolute claim 唯一 (prompt 03)"},
+    {"pattern": "顶级|极致|绝对|秒杀", "severity": "review", "reason_en": "Possible absolute superlative (lexicon 3A)"},
+    {"pattern": "美白|抗衰", "severity": "review", "reason_en": "Whitening / anti-aging wording needs product registration check (lexicon 3B)"},
+    {"pattern": "微信|VX|vx|买它|冲就完了", "severity": "review", "reason_en": "Possible off-platform or hard-sell trigger (lexicon 3C)"}
+  ],
+  "translationese": [
+    {"pattern": "完美地?解决", "severity": "error"},
+    {"pattern": "改变了?.{0,4}游戏规则", "severity": "error"},
+    {"pattern": "不仅.{0,10}而且", "severity": "error"},
+    {"pattern": "留下了?深刻的?印象", "severity": "error"},
+    {"pattern": "进行一个|进行涂抹|进行搭配", "severity": "error"},
+    {"pattern": "总而言之|综上所述", "severity": "error"},
+    {"pattern": "无论是.{0,12}还是", "severity": "error"},
+    {"pattern": "让我们一起", "severity": "error"},
+    {"pattern": "元气满满", "severity": "error"},
+    {"pattern": "十分", "severity": "review"}
+  ],
+  "generic_slop": [
+    "家人们谁懂啊", "谁懂啊", "绝绝子", "yyds", "天花板", "封神", "王炸组合", "神仙单品",
+    "按头安利", "闭眼入", "不买后悔一辈子", "听我的准没错", "人手一件", "冲就完了",
+    "满满的高级感", "氛围感拉满", "狠狠拿捏", "心智", "赋能", "抓手", "组合拳"
+  ],
+  "audience_address_terms": [
+    "宝子", "家人们", "集美", "仙女们", "老婆们", "姐妹", "宝宝们", "小伙伴们", "大家好"
+  ]
+}

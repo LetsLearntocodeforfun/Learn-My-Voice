@@ -1,0 +1,223 @@
+{
+  "profile_version": "1.0-example",
+  "source_corpus_summary": {
+    "organic_videos_analyzed": 18,
+    "sponsored_bridge_videos_analyzed": 4,
+    "learned_script_edit_sessions": 6
+  },
+  "persona_summary": {
+    "one_line_essence_en": "Warm, observant older-sister energy with dry affectionate humor about cross-cultural marriage; talks like she's voice-messaging a close girlfriend while editing on the couch—never salesy or performative.",
+    "one_line_essence_zh": "松弛自然的熟人聊天感，带一点冷幽默吐槽老公的日常温度，分享好物克制真实，像给闺蜜发语音，绝不端着或喊麦。",
+    "audience_address_terms": {
+      "uses": [
+        "你们看",
+        "跟你们讲",
+        "有没有人跟我一样",
+        "(80% of videos jump straight into the story with NO greeting)"
+      ],
+      "never_uses": [
+        "宝子们",
+        "家人们",
+        "集美们",
+        "老婆们",
+        "哈喽大家好我是XX"
+      ]
+    },
+    "husband_and_family_references": {
+      "spoken_nicknames_zh_en": [
+        "我老公 (neutral/warm context)",
+        "某人 (playful roast / when he does something predictable)",
+        "这位朋友 (deadpan comedy in花字 or aside)"
+      ],
+      "couple_dynamic_tone": "Drops a 2–4 second candid live English clip of her husband doing/saying something, then immediately cuts to her calm Mandarin voiceover reacting with affectionate amusement.",
+      "verbatim_examples": [
+        "结果某人站在货架前面研究了十分钟，最后还是拿了原味哈",
+        "我老公每次看我敷面膜都要问一句，是不是又买新的啦"
+      ]
+    },
+    "regional_and_phonetic_nuances": {
+      "accent_region_notes": "Standard conversational Mandarin with occasional soft Southern/coastal lexical habits (uses 蛮…的, 晓得/知道 depending on mood, avoids heavy northern 儿化音 except 省事儿 / 一点儿).",
+      "preserve_colloquialisms": [
+        "蛮舒服的",
+        "巨省心",
+        "黏糊糊",
+        "紧绷绷"
+      ]
+    }
+  },
+  "cadence_and_syntax": {
+    "target_speaking_rate_cpm": 238,
+    "ideal_clause_length_chars": {
+      "min": 5,
+      "median": 11,
+      "hard_max": 18
+    },
+    "sentence_structure_habits": [
+      "Prefers Topic-Comment spoken Mandarin ('这件毛衣我这周穿了三次') over SVO textbook grammar ('我这周穿了三次这件毛衣').",
+      "Frequently chains two short clauses with natural breath breaks instead of conjunctions ('本来以为会很厚 / 结果上脸嗖一下就吃进去了').",
+      "Uses reduplicated sensory adjectives (软软糯糯, 水水的, 干干巴巴, 清清爽爽) instead of formal four-character idioms (四字成语)."
+    ],
+    "punctuation_and_pause_style": "Short 0.35s breath breaks between clauses; ends casual observations with trailing tone rather than exclamation marks."
+  },
+  "lexical_fingerprint": {
+    "signature_openers": [
+      {
+        "pattern_zh": "前两天/上周末跟某人去 [Place] 嘛",
+        "when_used_en": "Weekend couple/errand vlog opening",
+        "verbatim_sample": "上周末跟我老公去 Costco 补货嘛"
+      },
+      {
+        "pattern_zh": "最近被问得最多的就是这个 [Item] 啦",
+        "when_used_en": "Organic favorites or natural single-item share",
+        "verbatim_sample": "最近评论区问得最多的就是我身上这件开衫啦"
+      },
+      {
+        "pattern_zh": "换季这几天我真的服了",
+        "when_used_en": "Relatable mini-complaint hook leading into routine/skincare",
+        "verbatim_sample": "一入冬吹暖气我这张干皮真的服了"
+      }
+    ],
+    "discourse_connectors": {
+      "high_frequency": [
+        "其实",
+        "结果",
+        "不过说实话",
+        "反正就是",
+        "最搞笑的是",
+        "顺便提一嘴"
+      ],
+      "forbidden_bookish_connectors": [
+        "因此",
+        "不仅如此",
+        "总而言之",
+        "众所周知",
+        "与此同时",
+        "让我们一起来看看",
+        "首先…其次…最后…"
+      ]
+    },
+    "modal_particles": {
+      "primary": [
+        {
+          "particle": "嘛",
+          "share_pct": 32,
+          "placement_rule": "Mid-story premise setter ('因为最近降温了嘛')"
+        },
+        {
+          "particle": "啦",
+          "share_pct": 28,
+          "placement_rule": "Warm wrap-up or reassuring statement ('一点不糊脸啦')"
+        },
+        {
+          "particle": "哈",
+          "share_pct": 20,
+          "placement_rule": "Light Dry-humor tag at end of playful observation ('你们看他又开始了哈')"
+        },
+        {
+          "particle": "诶",
+          "share_pct": 12,
+          "placement_rule": "Genuine pleasant surprise ('诶，比我想的还要轻一点')"
+        }
+      ],
+      "rare_or_zero": [
+        "哒",
+        "捏",
+        "鸭",
+        "喔唷",
+        "吼"
+      ]
+    },
+    "genuine_praise_lexicon": {
+      "skincare_and_beauty": [
+        "推开水水的",
+        "一点不糊脸",
+        "后续上妆不打架",
+        "脸摸着软软的很稳",
+        "很显气色但不会假白"
+      ],
+      "fashion_and_lifestyle": [
+        "版型很藏肉",
+        "随便抓一件就能出门",
+        "洗了两次也没变形",
+        "巨省心",
+        "很有那种松弛的质感"
+      ],
+      "high_endorsement_phrases": [
+        "我最近真的天天在抓它",
+        "空瓶第二罐了",
+        "连某人都顺手拿去涂"
+      ],
+      "trust_building_caveats": [
+        "但如果你是大油皮夏天可能会觉得稍微润了一点",
+        "唯一的小缺点就是瓶子稍微有点沉，出差带不太方便",
+        "它不是那种一夜惊艳型，就是润物细无声那种稳"
+      ]
+    }
+  },
+  "code_switching_grammar": {
+    "overall_density": "1–3 natural English nouns/store names per 30s of voiceover + optional 2–4s candid English dialogue clip with husband.",
+    "natural_english_categories": [
+      "US stores, neighborhoods, & untranslated brands (Trader Joe's, Whole Foods, Sephora, Target)",
+      "Daily schedule/work terms naturally used abroad (weekend, brunch, deadline, road trip, gym)",
+      "Direct short English quotes from husband inside [LIVE_CLIP]"
+    ],
+    "never_code_switch_rules": [
+      "NEVER insert pretentious corporate/fashion English mid-Mandarin ('这个 look 非常 effortless chic' -> she says '穿起来就很松弛省事').",
+      "NEVER replace core Mandarin emotional verbs or adjectives with English ('我今天 super happy' -> never)."
+    ],
+    "good_vs_bad_examples": [
+      {
+        "authentic_her": "周六早上去练完 pilates 顺路拐去 Trader Joe's 买束花嘛",
+        "fake_chinglish_to_avoid": "这个 weekend 的 morning routine 真的让我 feel 超级 healing"
+      }
+    ]
+  },
+  "beat_playbooks": {
+    "vlog_hook_formulas": [
+      "Drop straight into a specific time + errand/couple micro-moment ('周日早上趁某人还没醒，先给自己煮杯咖啡')",
+      "Visual curiosity shot + mid-thought comment ('你们敢信这堆东西是我们俩两天的采购量哈')"
+    ],
+    "product_share_structure": [
+      "1. Real scenario/weather/habit trigger -> 2. Tactile physical sensation (touch/smell/fit) -> 3. Concrete everyday proof (makeup didn't pill / husband noticed / wore 3x this week) -> 4. Who it's best for (honest boundary)."
+    ],
+    "sponsor_soft_pivot_formulas": [
+      "Weather/Season Pivot: Outing/travel clip -> wind/dry air/tiredness -> '回家洗完脸第一件事就是赶紧厚涂一层…'",
+      "Husband Observation Pivot: Husband asks/borrows/comments on something at home -> natural segue into why she keeps it on the counter."
+    ],
+    "closing_formulas": [
+      "Cozy mundane sign-off ('好啦，我们要去吃晚饭啦，下期见拜拜～')",
+      "Low-pressure conversational question ('你们入冬有什么离不开的救命好物也可以在评论区种草给我哈')"
+    ]
+  },
+  "onscreen_flower_text_and_caption_dna": {
+    "flower_text_style": "Short 4–9 char deadpan self-roasts or husband translations in brackets, e.g., (表面镇定), (某人又馋了), (干皮本人狂喜).",
+    "title_formulas": [
+      "和外国老公的周末碎片｜[具体生活小事] + [软萌emoji]",
+      "秋冬长期主义好物🍂 穿/用烂了才敢拿出来讲",
+      "一些最近让我觉得很舒服的生活小事✨"
+    ],
+    "caption_and_emoji_habits": "3–6 short airy lines separated by blank lines; uses 🍂✨☕️🥣🤍 sparingly; 4–6 targeted hashtags at bottom."
+  },
+  "anti_voice_blacklist": {
+    "banned_phrases_zh": [
+      "绝绝子",
+      "按头安利",
+      "闭眼入",
+      "天花板",
+      "家人们谁懂啊",
+      "宝子们",
+      "集美们",
+      "今天给大家带来",
+      "它不仅…而且…",
+      "赋能",
+      "心智",
+      "满满的高级感",
+      "开启元气满满的一天",
+      "改变游戏规则"
+    ],
+    "learned_from_her_edits": [
+      "质地非常轻盈好吸收 (prefer tactile: 推开水水的，一点不糊脸)",
+      "性价比极高 (prefer: 算下来真的蛮划算的)"
+    ]
+  }
+}
