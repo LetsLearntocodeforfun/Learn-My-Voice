@@ -240,9 +240,11 @@ class McpProtocolTest(McpCase):
         self.assertEqual(len(names), len(set(names)))
         read_only = {t["name"] for t in tools if t["annotations"]["readOnlyHint"]}
         self.assertEqual(read_only, {"get_script_brief", "check_script", "list_scripts", "get_script", "get_voice_profile",
-                                     "list_library", "get_voice_learning_brief", "get_topic_ideas_brief"})
+                                     "list_library", "get_voice_learning_brief", "get_topic_ideas_brief",
+                                     "list_trends"})
         self.assertEqual({t["name"] for t in tools} - read_only,
-                         {"save_script", "update_script", "save_voice_profile", "save_topic_ideas", "export_jianying_kit"})
+                         {"save_script", "update_script", "save_voice_profile", "save_topic_ideas", "export_jianying_kit",
+                          "add_trend_keywords"})
         for t in tools:
             schema = t["inputSchema"]
             self.assertEqual(schema["type"], "object")
@@ -373,7 +375,7 @@ class McpSubprocessTest(unittest.TestCase):
             self.assertEqual((done.returncode, done.stderr), (0, b""))
             replies = [json.loads(line) for line in done.stdout.decode("ascii").splitlines()]
             self.assertEqual([r["id"] for r in replies], [1, 2, 3])
-            self.assertEqual(len(replies[1]["result"]["tools"]), 13)
+            self.assertEqual(len(replies[1]["result"]["tools"]), 15)
             saved = json.loads(replies[2]["result"]["content"][0]["text"])
             self.assertEqual(saved["check"]["findings"], [])
             stored = Store(tmp / "data").get_script(saved["script_id"])

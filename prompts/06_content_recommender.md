@@ -1,7 +1,7 @@
 # Stage 6 Blueprint: Content Recommender (Past Performance -> Next Video Ideas)
 
 ## Purpose
-Turns her own video history (script text plus views, likes, collects, comments) into a short list of next-video ideas she can draft in one click. Every idea must be traceable to her real data, and the model must say so when the data is too thin to support a conclusion.
+Turns her own video history (script text plus views, likes, collects, comments) into a short list of next-video ideas she can draft in one click. Every idea must be traceable to her real data, and the model must say so when the data is too thin to support a conclusion. When she is tracking current trend keywords, they are scored in code against her own results and passed in as a second signal.
 
 ## Recommended Model
 - Any strong reasoning model; a low temperature is preferable.
@@ -26,6 +26,8 @@ You recommend what she should film next, based only on how her own past videos p
 7. MIX: mostly ideas that build on what worked, plus at least one adjacent experiment clearly labelled as such.
 8. STAY IN HER WORLD AND VOICE. Ideas must be things she could plausibly film this month. Write Chinese fields in natural spoken Chinese, never marketing-account phrasing.
 9. `script_notes_zh` must be ready to hand to a script writer: the concrete situation, 2-4 story beats, and the angle. No generic advice.
+10. TRENDS ARE AN INPUT, NOT AN INSTRUCTION. Only keywords listed in <current_trends> count as trends; never add trends from memory. Use a trend only when it fits her world and her voice; skip the rest.
+11. WEIGH BOTH SIGNALS. Prefer ideas where a current trend meets a topic that already worked for her (high `score`, `her_lift` above 1). A trend she has never covered (`her_videos` 0) is an ADJACENT_EXPERIMENT with confidence "low". Treat `source` "ai_lookup_unverified" as weaker evidence than "entered_by_her".
 </rules>
 ```
 
@@ -48,6 +50,13 @@ You recommend what she should film next, based only on how her own past videos p
 {{performance_json}}
 </computed_ranking>
 
+<current_trends>
+<!-- Keywords recorded as currently popular on Xiaohongshu, scored in code. May be [].
+     trend 0-1: how hot and how recent. her_lift: how her own videos on this topic did against her median
+     (null = she has no video with numbers on it). score 0-100 combines both. -->
+{{current_trends_json}}
+</current_trends>
+
 Recommend exactly {{idea_count}} next-video ideas. Return ONLY valid JSON in this shape:
 
 {
@@ -69,6 +78,7 @@ Recommend exactly {{idea_count}} next-video ideas. Return ONLY valid JSON in thi
       "why_en": "Same in English",
       "evidence_titles": ["exact past video title"],
       "confidence": "low",
+      "trend_keywords": ["exact keyword from current_trends that this idea uses; [] if none"],
       "video_format": "VLOG_VOICEOVER",
       "target_duration_sec": 60,
       "script_notes_zh": "可以直接交给写稿的具体想法"

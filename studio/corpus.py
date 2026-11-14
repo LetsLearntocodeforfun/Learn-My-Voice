@@ -10,7 +10,7 @@ import io
 import re
 import zipfile
 from collections import Counter
-from typing import Any, Dict, Iterable, List, Optional
+from typing import Any, Callable, Dict, Iterable, List, Optional
 
 from . import textstats
 
@@ -119,10 +119,16 @@ def performance(samples: List[Dict[str, Any]]) -> Dict[str, Any]:
     }
 
 
-def exemplars(samples: List[Dict[str, Any]], budget_chars: int = 6000, per_script_chars: int = 1500) -> List[Dict[str, str]]:
-    """Her own non-sponsored scripts to anchor a draft: best-performing first, then newest."""
+def exemplars(samples: List[Dict[str, Any]], budget_chars: int = 6000, per_script_chars: int = 1500,
+              on_topic: Optional[Callable[[Dict[str, Any]], bool]] = None) -> List[Dict[str, str]]:
+    """Her own non-sponsored scripts to anchor a draft.
+
+    Order: scripts on the requested topic first (when ``on_topic`` is given),
+    then best-performing, then newest.
+    """
     organic = [s for s in samples if not s.get("is_sponsored") and (s.get("text") or "").strip()]
-    organic.sort(key=lambda s: (interactions(s) or 0, s.get("created_at") or 0), reverse=True)
+    relevant = on_topic or (lambda sample: False)
+    organic.sort(key=lambda s: (bool(relevant(s)), interactions(s) or 0, s.get("created_at") or 0), reverse=True)
     out: List[Dict[str, str]] = []
     used = 0
     for s in organic:

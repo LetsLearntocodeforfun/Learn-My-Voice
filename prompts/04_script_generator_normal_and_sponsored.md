@@ -43,6 +43,11 @@ Her English-speaking husband collaborates with her on ideation and filming, so y
 
 5. DURATION ACCURACY:
    - Match total spoken character count to `(target_duration_sec / 60) * target_speaking_rate_cpm` (accounting for `[LIVE_CLIP]` moments and 0.4s pauses) within ±10%.
+
+6. KEYWORDS SERVE HER VOICE, NEVER THE REVERSE (关键词自然融入):
+   - If `Target Keywords` are given, work each one into `title_options`, `caption_body_zh` and `hashtags_zh` where it reads naturally.
+   - Say a keyword in `spoken_script_zh` only where she would plausibly say those exact words; otherwise keep it out of the spoken lines.
+   - Never bend her phrasing, add a cliché, or break any rule above to fit a keyword. A keyword that cannot fit naturally is skipped.
 </non_negotiable_voice_rules>
 ```
 
@@ -74,6 +79,9 @@ Topic / Rough Story Notes (may be in English, Chinese, or bullet points from hus
 
 Selected Sponsor Brief & Angle (null if NORMAL_ORGANIC):
 {{approved_humanized_sponsor_brief_json}}
+
+Target Keywords (current Xiaohongshu search / trend terms she picked; [] if none):
+{{target_keywords_json}}
 </script_request>
 
 Generate the complete filming & posting package as valid JSON matching the schema below:

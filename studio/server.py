@@ -21,14 +21,14 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
-from . import checks, corpus, exports, llm, pipeline
+from . import checks, corpus, exports, llm, pipeline, trends
 from .store import MANUAL_PROVIDER, PROVIDERS, ROOT, Store
 
 WEB_DIR = Path(__file__).with_name("web")
 MAX_BODY = 12 * 1024 * 1024  # room for a base64 .docx
 DEFAULT_PORT = 8765
 UNTITLED = {"zh": "未命名脚本", "en": "Untitled script"}
-MANUAL_TASKS = ("draft", "voice", "ideas")
+MANUAL_TASKS = ("draft", "voice", "ideas", "trends")
 
 
 class ApiError(Exception):
@@ -146,9 +146,11 @@ class Handler(BaseHTTPRequestHandler):
             if not notes:
                 raise ApiError(400, "notes_required")
             system, user = pipeline.draft_prompt(store, notes=notes, target_sec=_target_sec(body),
-                                                 video_format=_video_format(body))
+                                                 video_format=_video_format(body), keywords=body.get("keywords"))
         elif task == "voice":
             system, user = pipeline.voice_prompt(store)
+        elif task == "trends":
+            system, user = pipeline.trends_prompt(store, focus=str(body.get("focus") or ""))
         else:
             system, user = pipeline.ideas_prompt(store)
         return pipeline.single_prompt(system, user)
@@ -159,10 +161,14 @@ class Handler(BaseHTTPRequestHandler):
         if task == "draft":
             script = pipeline.apply_draft(
                 store, result, notes=str(body.get("notes") or "").strip(), target_sec=_target_sec(body),
-                video_format=_video_format(body), default_title=UNTITLED[self._lang(body)])
+                video_format=_video_format(body), default_title=UNTITLED[self._lang(body)],
+                keywords=body.get("keywords"))
             return self._json(script, 201)
         if task == "voice":
             return self._json({"dna": pipeline.apply_voice(store, result), "is_example": False})
+        if task == "trends":
+            counts = pipeline.apply_trends(store, result)
+            return self._json(dict(trends.payload(store), **counts))
         ideas = pipeline.apply_ideas(store, result)
         return self._json({"performance": corpus.performance(store.list_samples()), "result": ideas})
 
@@ -176,6 +182,7 @@ class Handler(BaseHTTPRequestHandler):
             return self._json({
                 "settings": store.public_settings(), "dna_is_example": is_example,
                 "video_formats": list(pipeline.VIDEO_FORMATS), "sample_count": len(store.list_samples()),
+                "trend_count": len(store.list_trends()),
                 "mcp": {"python": sys.executable or "python3", "script": str(ROOT / "run_mcp.py")},
             })
         if route == ("GET", "/api/dna"):
@@ -188,10 +195,11 @@ class Handler(BaseHTTPRequestHandler):
             return self._json(store.create_script(
                 title=str(body.get("title") or ""), notes=str(body.get("notes") or ""),
                 target_sec=_target_sec(body), video_format=_video_format(body), lines=body.get("lines"),
-                default_title=UNTITLED[self._lang(body)]), 201)
+                keywords=body.get("keywords"), default_title=UNTITLED[self._lang(body)]), 201)
         if route == ("POST", "/api/lint"):
             body = self._read_json()
-            return self._json(checks.lint_payload(store, body.get("lines"), _target_sec(body)))
+            return self._json(checks.lint_payload(store, body.get("lines"), _target_sec(body),
+                                                  body.get("keywords"), body.get("post")))
         if route == ("POST", "/api/generate"):
             body = self._read_json()
             notes = str(body.get("notes") or "").strip()
@@ -200,7 +208,8 @@ class Handler(BaseHTTPRequestHandler):
             self._require_ai()
             return self._json(pipeline.generate_script(
                 store, notes=notes, target_sec=_target_sec(body), video_format=_video_format(body),
-                transport=self.app.transport, default_title=UNTITLED[self._lang(body)]), 201)
+                transport=self.app.transport, default_title=UNTITLED[self._lang(body)],
+                keywords=body.get("keywords")), 201)
         if route == ("POST", "/api/manual/prompt"):
             return self._json({"prompt": self._manual_prompt(self._read_json())})
         if route == ("POST", "/api/manual/reply"):
@@ -280,6 +289,34 @@ class Handler(BaseHTTPRequestHandler):
                 raise ApiError(400, "no_samples")
             return self._json({"performance": corpus.performance(store.list_samples()),
                                "result": pipeline.recommend_topics(store, transport=self.app.transport)})
+
+        if route == ("GET", "/api/trends"):
+            return self._json(trends.payload(store))
+        if route == ("POST", "/api/trends"):
+            items, skipped = trends.parse_keywords(str(self._read_json().get("text") or ""))
+            if not items:
+                raise ApiError(400, "no_keywords")
+            added = store.upsert_trends(items, source="manual")
+            return self._json(dict(trends.payload(store), added=added, skipped=skipped), 201)
+        if route == ("PUT", "/api/trends/weight"):
+            weight = self._read_json().get("weight")
+            if weight not in trends.WEIGHTS:
+                raise ApiError(400, "bad_weight")
+            config = store.load_config()
+            config["trend_weight"] = weight
+            store.save_config(config)
+            return self._json(trends.payload(store))
+
+        m = re.fullmatch(r"/api/trends/([0-9a-f]{12})", path)
+        if m:
+            if store.get_trend(m.group(1)) is None:
+                raise ApiError(404, "not_found")
+            if method == "PUT":
+                store.update_trend(m.group(1), self._read_json().get("heat"))
+                return self._json(trends.payload(store))
+            if method == "DELETE":
+                store.delete_trend(m.group(1))
+                return self._json(trends.payload(store))
 
         m = re.fullmatch(r"/api/samples/([0-9a-f]{12})", path)
         if m:

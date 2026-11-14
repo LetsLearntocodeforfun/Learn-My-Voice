@@ -3,8 +3,8 @@ from __future__ import annotations
 
 from typing import Any, Dict, Optional
 
-from . import guardrails, textstats
-from .store import Store
+from . import guardrails, textstats, trends
+from .store import Store, normalize_keywords
 
 _MESSAGES = {
     (guardrails.CADENCE_TOO_LONG, "error"): ("这一句有 {n} 个字，一口气念不完，建议断开", "This clause is {n} units; too long for one breath"),
@@ -32,10 +32,12 @@ def describe(finding: guardrails.Finding, stats: Dict[str, Any]) -> Dict[str, An
             "matched": finding.matched, "message_zh": zh, "message_en": en}
 
 
-def lint_payload(store: Store, lines: Any, target_sec: Optional[float]) -> Dict[str, Any]:
-    """Stats plus bilingual findings for a list of script lines, against the active voice profile."""
+def lint_payload(store: Store, lines: Any, target_sec: Optional[float], keywords: Any = None,
+                 post: Any = None) -> Dict[str, Any]:
+    """Stats, bilingual findings and target-keyword coverage for script lines, against the active voice profile."""
     dna, is_example = store.load_dna()
     script = {"script_lines": lines if isinstance(lines, list) else []}
     stats = guardrails.script_stats(script, dna, target_sec)
     findings = guardrails.lint_script(script, dna, target_duration_sec=target_sec)
-    return {"stats": stats, "findings": [describe(f, stats) for f in findings], "dna_is_example": is_example}
+    return {"stats": stats, "findings": [describe(f, stats) for f in findings], "dna_is_example": is_example,
+            "keyword_coverage": trends.coverage(normalize_keywords(keywords), script["script_lines"], post)}

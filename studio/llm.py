@@ -33,7 +33,8 @@ class LLMError(Exception):
     ``code`` is a stable identifier the UI translates (Chinese / English);
     the message is an English detail that is safe to show.
     Codes: not_configured, manual_mode, local_address, http, network,
-    bad_response, bad_json, empty_result, no_samples, unknown_provider, other.
+    bad_response, bad_json, empty_result, no_samples, unknown_provider,
+    cannot_browse, no_focus, other.
     """
 
     def __init__(self, message: str, code: str = "other") -> None:

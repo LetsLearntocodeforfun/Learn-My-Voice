@@ -17,16 +17,19 @@ from __future__ import annotations
 import json
 import re
 import time
+import urllib.parse
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
-from . import corpus, llm
-from .store import MANUAL_PROVIDER, Store, normalize_lines
+from . import corpus, llm, trends
+from .store import (MANUAL_PROVIDER, MAX_KEYWORD_CHARS, Store, clean_keyword, keyword_key, normalize_keywords,
+                    normalize_lines)
 
 PROMPTS_DIR = Path(__file__).resolve().parent.parent / "prompts"
 STAGE2 = "02_voice_dna_synthesizer.md"
 STAGE4 = "04_script_generator_normal_and_sponsored.md"
 STAGE6 = "06_content_recommender.md"
+STAGE7 = "07_trend_researcher.md"
 VIDEO_FORMATS = ("VLOG_VOICEOVER", "COUPLE_VLOG", "FAVORITES_ROUNDUP", "SINGLE_PRODUCT_SHARE")
 
 DEFAULT_SPEAKING_RATE = 240       # used until her real rate is entered; cannot be measured from text
@@ -34,6 +37,8 @@ MIN_CLAUSES_FOR_MEASURED_CADENCE = 30
 LEARN_CORPUS_CHARS = 40000
 RECOMMEND_EXCERPT_CHARS = 400
 RECOMMEND_MAX_VIDEOS = 60
+IDEAS_MAX_TRENDS = 12
+TREND_SOURCE_MAX_AGE_DAYS = 30
 
 MANUAL_REPLY_RULE = (
     "IMPORTANT: Reply with ONLY the JSON object described above, inside one ```json code block. "
@@ -95,10 +100,17 @@ def complete(store: Store, system: str, user: str, transport: Optional[llm.Trans
 
 
 # ---- drafting ---------------------------------------------------------------
-def draft_prompt(store: Store, *, notes: str, target_sec: int, video_format: str) -> Tuple[str, str]:
-    """Prompt for a normal (non-sponsored) script, anchored on her own past scripts."""
+def draft_prompt(store: Store, *, notes: str, target_sec: int, video_format: str,
+                 keywords: Any = None) -> Tuple[str, str]:
+    """Prompt for a normal (non-sponsored) script, anchored on her own past scripts.
+
+    ``keywords`` are trend or search terms to work in where they fit her voice.
+    When given, her own scripts on those topics come first among the examples.
+    """
     dna, _ = store.load_dna()
-    anchors = corpus.exemplars(store.list_samples())
+    words = normalize_keywords(keywords)
+    on_topic = (lambda sample: trends.is_on_topic(sample, words)) if words else None
+    anchors = corpus.exemplars(store.list_samples(), on_topic=on_topic)
     exemplars_text = _dump(anchors) if anchors else "[]  (no past scripts have been imported yet; rely on the Voice DNA)"
     return _blueprint(STAGE4, {
         "voice_dna_json": _dump(dna),
@@ -109,28 +121,30 @@ def draft_prompt(store: Store, *, notes: str, target_sec: int, video_format: str
         "target_duration_sec": str(int(target_sec)),
         "user_topic_and_story_notes": notes.strip(),
         "approved_humanized_sponsor_brief_json": "null",
+        "target_keywords_json": json.dumps(words, ensure_ascii=False),
     })
 
 
 def apply_draft(store: Store, result: Dict[str, Any], *, notes: str, target_sec: int, video_format: str,
-                default_title: str = "未命名脚本") -> Dict[str, Any]:
-    """Validate a drafted script and save it; returns the stored script."""
+                default_title: str = "未命名脚本", keywords: Any = None) -> Dict[str, Any]:
+    """Validate a drafted script and save it with its target keywords; returns the stored script."""
     lines = [l for l in normalize_lines(result.get("script_lines")) if l["spoken_script_zh"].strip()]
     if not lines:
         raise llm.LLMError("Model reply contained no script lines", "empty_result")
     post = result.get("rednote_post_package")
     return store.create_script(
         notes=notes, target_sec=target_sec, video_format=video_format, default_title=default_title,
-        lines=normalize_lines(lines), post=post if isinstance(post, dict) else {}, from_ai=True,
+        lines=normalize_lines(lines), post=post if isinstance(post, dict) else {}, from_ai=True, keywords=keywords,
     )
 
 
 def generate_script(store: Store, *, notes: str, target_sec: int, video_format: str,
-                    transport: Optional[llm.Transport] = None, default_title: str = "未命名脚本") -> Dict[str, Any]:
-    system, user = draft_prompt(store, notes=notes, target_sec=target_sec, video_format=video_format)
+                    transport: Optional[llm.Transport] = None, default_title: str = "未命名脚本",
+                    keywords: Any = None) -> Dict[str, Any]:
+    system, user = draft_prompt(store, notes=notes, target_sec=target_sec, video_format=video_format, keywords=keywords)
     result = complete(store, system, user, transport)
     return apply_draft(store, result, notes=notes, target_sec=target_sec, video_format=video_format,
-                       default_title=default_title)
+                       default_title=default_title, keywords=keywords)
 
 
 # ---- learning her voice -----------------------------------------------------
@@ -224,8 +238,17 @@ def _usable_samples(store: Store) -> List[Dict[str, Any]]:
     return samples
 
 
+def _current_trends(store: Store) -> List[Dict[str, Any]]:
+    """Scored trend keywords for the ideas prompt. Keywords that clash with her voice are left out."""
+    return [{
+        "keyword": t["keyword"], "score": t["score"], "trend": t["trend"], "her_videos": t["her_videos"],
+        "her_lift": t["lift_raw"], "her_evidence_titles": t["evidence_titles"],
+        "source": "ai_lookup_unverified" if t["source"] == "ai" else "entered_by_her",
+    } for t in trends.payload(store)["trends"] if t["usable"]][:IDEAS_MAX_TRENDS]
+
+
 def ideas_prompt(store: Store, idea_count: int = 6) -> Tuple[str, str]:
-    """Prompt that suggests next videos from her own history and numbers."""
+    """Prompt that suggests next videos from her own history, her numbers and current trend keywords."""
     samples = _usable_samples(store)
     perf = corpus.performance(samples)
     ranked_ids = [r["id"] for r in perf["rows"]]
@@ -246,15 +269,20 @@ def ideas_prompt(store: Store, idea_count: int = 6) -> Tuple[str, str]:
             "median_interactions": perf["median_interactions"],
             "ranking": [{k: r[k] for k in ("title", "interactions", "interaction_rate_pct", "views")} for r in perf["rows"]],
         }),
+        "current_trends_json": _dump(_current_trends(store)),
         "idea_count": str(int(idea_count)),
     })
 
 
 def apply_ideas(store: Store, result: Dict[str, Any]) -> Dict[str, Any]:
-    """Sanitise suggested ideas, drop citations that are not her videos, and save them."""
+    """Sanitise suggested ideas and save them.
+
+    Cited video titles that are not hers and trend keywords she is not tracking are removed.
+    """
     samples = _usable_samples(store)
     perf = corpus.performance(samples)
     known_titles = {s["title"] for s in samples}
+    tracked = {keyword_key(t["keyword"]): t["keyword"] for t in store.list_trends()}
     ideas: List[Dict[str, Any]] = []
     for raw in result.get("ideas") if isinstance(result.get("ideas"), list) else []:
         if not isinstance(raw, dict) or not str(raw.get("title_zh") or "").strip():
@@ -265,6 +293,9 @@ def apply_ideas(store: Store, result: Dict[str, Any]) -> Dict[str, Any]:
         cited = [str(t) for t in raw.get("evidence_titles") or [] if isinstance(t, str)]
         idea["evidence_titles"] = [t for t in cited if t in known_titles]
         idea["unverified_evidence"] = len(cited) - len(idea["evidence_titles"])
+        named = raw.get("trend_keywords") if isinstance(raw.get("trend_keywords"), list) else []
+        idea["trend_keywords"] = normalize_keywords(
+            [tracked[keyword_key(k)] for k in named if isinstance(k, str) and keyword_key(k) in tracked])
         ideas.append(idea)
     if not ideas:
         raise llm.LLMError("Model reply contained no ideas", "empty_result")
@@ -281,3 +312,65 @@ def apply_ideas(store: Store, result: Dict[str, Any]) -> Dict[str, Any]:
 def recommend_topics(store: Store, idea_count: int = 6, transport: Optional[llm.Transport] = None) -> Dict[str, Any]:
     system, user = ideas_prompt(store, idea_count)
     return apply_ideas(store, complete(store, system, user, transport))
+
+
+# ---- trend research ---------------------------------------------------------
+def trends_prompt(store: Store, focus: str = "", keyword_count: int = 12) -> Tuple[str, str]:
+    """Prompt for an AI that can search the web to look up current trend keywords in her niches."""
+    titles = [s["title"] for s in store.list_samples() if not s["is_sponsored"]][:20]
+    focus = focus.strip()
+    if not focus and not titles:
+        raise llm.LLMError("Nothing says what her niches are: no focus was typed and the library is empty", "no_focus")
+    dna, is_example = store.load_dna()
+    persona = None if is_example else (dna.get("persona_summary") or {}).get("one_line_essence_zh")
+    return _blueprint(STAGE7, {
+        "today": time.strftime("%Y-%m-%d"),
+        "max_age_days": str(TREND_SOURCE_MAX_AGE_DAYS),
+        "niche_json": _dump({"focus_she_typed": focus or None, "her_video_titles": titles, "persona": persona}),
+        "known_keywords_json": _dump([t["keyword"] for t in store.list_trends()]),
+        "keyword_count": str(int(keyword_count)),
+    })
+
+
+def _source_time(value: Any, now: float) -> Optional[float]:
+    """When the evidence dates from: ``now`` if no usable date was given, None if it is too old."""
+    try:
+        seen = time.mktime(time.strptime(str(value or "").strip()[:10], "%Y-%m-%d"))
+    except (ValueError, OverflowError):
+        return now
+    if seen > now:
+        return now
+    return None if now - seen > TREND_SOURCE_MAX_AGE_DAYS * 86400 else seen
+
+
+def apply_trends(store: Store, result: Dict[str, Any], now: Optional[float] = None) -> Dict[str, int]:
+    """Store keywords an AI found on the web, marked as AI-found and unverified.
+
+    A keyword is kept only if it comes with an http(s) source link and its
+    source is not older than TREND_SOURCE_MAX_AGE_DAYS. Heat numbers from an AI are ignored.
+    """
+    if result.get("cannot_browse") is True:
+        raise llm.LLMError("The AI said it cannot search the web, so nothing was added", "cannot_browse")
+    now = time.time() if now is None else now
+    items: List[Dict[str, Any]] = []
+    no_source = too_old = 0
+    for raw in result.get("keywords") if isinstance(result.get("keywords"), list) else []:
+        if not isinstance(raw, dict):
+            continue
+        keyword = clean_keyword(raw.get("keyword"))
+        url = str(raw.get("source_url") or "").strip()
+        parts = urllib.parse.urlsplit(url)
+        if not keyword or len(keyword) > MAX_KEYWORD_CHARS:
+            continue
+        if parts.scheme not in ("http", "https") or not parts.hostname:
+            no_source += 1
+            continue
+        seen = _source_time(raw.get("source_date"), now)
+        if seen is None:
+            too_old += 1
+            continue
+        items.append({"keyword": keyword, "source_url": url, "seen_at": seen,
+                      "note_zh": str(raw.get("why_zh") or "")[:200], "note_en": str(raw.get("why_en") or "")[:200]})
+    if not items:
+        raise llm.LLMError("No keyword came with a usable source link", "empty_result")
+    return {"added": store.upsert_trends(items, source="ai"), "dropped_no_source": no_source, "dropped_too_old": too_old}

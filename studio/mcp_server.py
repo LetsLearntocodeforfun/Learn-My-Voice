@@ -19,11 +19,11 @@ import traceback
 from pathlib import Path
 from typing import Any, BinaryIO, Callable, Dict, List, Optional
 
-from . import checks, corpus, exports, llm, pipeline
+from . import checks, corpus, exports, llm, pipeline, trends
 from .store import Store
 
 PROTOCOL_VERSIONS = ("2025-06-18", "2025-03-26", "2024-11-05")
-SERVER_INFO = {"name": "learn-my-voice", "title": "Learn My Voice", "version": "0.3.0"}
+SERVER_INFO = {"name": "learn-my-voice", "title": "Learn My Voice", "version": "0.4.0"}
 MCP_CORPUS_CHARS = 20000
 
 INSTRUCTIONS = (
@@ -34,7 +34,9 @@ INSTRUCTIONS = (
     "save_topic_ideas. Script text is Chinese; talk to her in the language she uses. "
     "Never invent view counts or other numbers; use only what the tools return. "
     "Tool results contain 'check' findings with message_zh / message_en: treat severity 'error' as must-fix "
-    "and 'review' as a question to put to her. After saving, tell her the script is in the app under 我的脚本."
+    "and 'review' as a question to put to her. After saving, tell her the script is in the app under 我的脚本. "
+    "list_trends shows trend keywords scored against her own results; pass the ones you choose as `keywords` "
+    "to get_script_brief and save_script. Keywords must never bend her voice."
 )
 
 
@@ -92,7 +94,8 @@ def _script(store: Store, args: Dict[str, Any]) -> Dict[str, Any]:
 
 
 def _checked(store: Store, script: Dict[str, Any]) -> Dict[str, Any]:
-    check = checks.lint_payload(store, script["lines"], script["target_sec"])
+    check = checks.lint_payload(store, script["lines"], script["target_sec"], script.get("keywords"),
+                                script.get("post"))
     errors = sum(1 for f in check["findings"] if f["severity"] == "error")
     return {
         "script_id": script["id"], "title": script["title"], "target_duration_sec": script["target_sec"],
@@ -106,7 +109,7 @@ def _checked(store: Store, script: Dict[str, Any]) -> Dict[str, Any]:
 def t_get_script_brief(store: Store, args: Dict[str, Any]) -> str:
     system, user = pipeline.draft_prompt(
         store, notes=_text(args, "notes", required=True), video_format=_format(args),
-        target_sec=_int(args, "target_duration_sec", 60, 5, 900))
+        target_sec=_int(args, "target_duration_sec", 60, 5, 900), keywords=_keywords(args))
     return ("%s\n\n%s\n\nNEXT STEP: do not show this JSON to her. Call save_script with `script` set to the JSON "
             "object, and the same notes, target_duration_sec and video_format.") % (system.strip(), user.strip())
 
@@ -114,7 +117,7 @@ def t_get_script_brief(store: Store, args: Dict[str, Any]) -> str:
 def t_save_script(store: Store, args: Dict[str, Any]) -> Dict[str, Any]:
     script = pipeline.apply_draft(
         store, _obj(args, "script"), notes=_text(args, "notes"), video_format=_format(args),
-        target_sec=_int(args, "target_duration_sec", 60, 5, 900))
+        target_sec=_int(args, "target_duration_sec", 60, 5, 900), keywords=_keywords(args))
     return _checked(store, script)
 
 
@@ -136,7 +139,8 @@ def t_list_scripts(store: Store, args: Dict[str, Any]) -> Dict[str, Any]:
 
 def t_get_script(store: Store, args: Dict[str, Any]) -> Dict[str, Any]:
     script = _script(store, args)
-    return {"script": script, "check": checks.lint_payload(store, script["lines"], script["target_sec"])}
+    return {"script": script, "check": checks.lint_payload(store, script["lines"], script["target_sec"],
+                                                           script.get("keywords"), script.get("post"))}
 
 
 def t_get_voice_profile(store: Store, args: Dict[str, Any]) -> Dict[str, Any]:
@@ -200,6 +204,35 @@ def t_export_jianying_kit(store: Store, args: Dict[str, Any]) -> Dict[str, Any]:
     }
 
 
+def _keywords(args: Dict[str, Any]) -> List[str]:
+    value = args.get("keywords", [])
+    if not isinstance(value, list) or not all(isinstance(k, str) for k in value):
+        raise ToolError("'keywords' must be an array of strings")
+    return value
+
+
+def t_list_trends(store: Store, args: Dict[str, Any]) -> Dict[str, Any]:
+    data = trends.payload(store)
+    return {
+        "note": "Trend keywords she is tracking. 'score' (0-100) combines 'trend' (how hot and recent) with "
+                "'performance' (how her own videos on the topic did; 0.5 means like her usual video, and "
+                "'her_videos' 0 means she has no evidence yet). source 'ai' means an AI lookup, unverified. "
+                "usable false means the keyword clashes with her voice; do not use those.",
+        "weighting": data["weights"], "trends": data["trends"],
+    }
+
+
+def t_add_trend_keywords(store: Store, args: Dict[str, Any]) -> Dict[str, Any]:
+    items = args.get("keywords")
+    if not isinstance(items, list) or not items:
+        raise ToolError("'keywords' must be a non-empty array of objects with keyword and source_url")
+    counts = pipeline.apply_trends(store, {"keywords": items})
+    return dict(counts, note="Saved as AI-found and unverified. She can open each source link on the 热点 page.")
+
+
+_KEYWORDS_PROP = {"type": "array", "items": {"type": "string"},
+                  "description": "Optional trend or search keywords to work in where they fit her voice, usually "
+                                 "chosen from list_trends. At most 8."}
 _FORMAT_PROP = {"type": "string", "enum": list(pipeline.VIDEO_FORMATS), "default": pipeline.VIDEO_FORMATS[0],
                 "description": "VLOG_VOICEOVER daily vlog voiceover; COUPLE_VLOG couple vlog; FAVORITES_ROUNDUP "
                                "several products; SINGLE_PRODUCT_SHARE one product."}
@@ -227,13 +260,15 @@ TOOLS: Dict[str, Dict[str, Any]] = {t["public"]["name"]: t for t in [
           "examples, the writing rules and the exact JSON shape to produce. Always call this before writing a script; "
           "do not write one from memory.",
           {"notes": {"type": "string", "description": "Her idea or rough notes, in Chinese or English."},
-           "target_duration_sec": _DURATION_PROP, "video_format": _FORMAT_PROP}, ["notes"], read_only=True),
+           "target_duration_sec": _DURATION_PROP, "video_format": _FORMAT_PROP, "keywords": _KEYWORDS_PROP},
+          ["notes"], read_only=True),
     _tool("save_script", t_save_script,
           "Use this right after writing a script from get_script_brief. Saves it as a new script in her app and "
           "returns deterministic checks (length, her banned phrases, clichés, ad-rule wording).",
           {"script": {"type": "object", "description": "The JSON object produced from the brief (with script_lines)."},
            "notes": {"type": "string", "description": "The same notes given to get_script_brief."},
-           "target_duration_sec": _DURATION_PROP, "video_format": _FORMAT_PROP}, ["script"], read_only=False),
+           "target_duration_sec": _DURATION_PROP, "video_format": _FORMAT_PROP, "keywords": _KEYWORDS_PROP},
+          ["script"], read_only=False),
     _tool("update_script", t_update_script,
           "Use this to fix or revise a saved script. Replaces all of its lines with the ones given, so always send "
           "the complete list, then returns fresh checks.",
@@ -277,6 +312,21 @@ TOOLS: Dict[str, Dict[str, Any]] = {t["public"]["name"]: t for t in [
           {"script_id": _ID_PROP, "language": {"type": "string", "enum": ["zh", "en"], "default": "zh",
                                                "description": "Language of file names and instructions."}},
           ["script_id"], read_only=False),
+    _tool("list_trends", t_list_trends,
+          "Use this to see the trend keywords she is tracking, scored against her own results: how hot and recent "
+          "each one is, how her videos on that topic performed, and whether it clashes with her voice. Call it "
+          "before suggesting topics or choosing keywords for a script.", {}, [], read_only=True),
+    _tool("add_trend_keywords", t_add_trend_keywords,
+          "Use this only after you searched the web in this conversation and found keywords that are popular on "
+          "Xiaohongshu right now in her niches. Each keyword needs the URL of the page where you saw it. Never add "
+          "keywords from memory. They are saved as AI-found and unverified.",
+          {"keywords": {"type": "array", "description": "Keywords with their evidence.", "items": {
+              "type": "object", "required": ["keyword", "source_url"], "properties": {
+                  "keyword": {"type": "string"},
+                  "source_url": {"type": "string", "description": "Page you opened that shows it is current."},
+                  "source_date": {"type": "string", "description": "YYYY-MM-DD the page was published or updated."},
+                  "why_zh": {"type": "string"}, "why_en": {"type": "string"}}}}},
+          ["keywords"], read_only=False),
 ]}
 
 

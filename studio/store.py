@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import sqlite3
 import time
 import uuid
@@ -20,6 +21,8 @@ CLOUD_PROVIDERS = ("gemini", "openai")
 PROVIDERS = CLOUD_PROVIDERS + ("local",)
 MANUAL_PROVIDER = "manual"  # copy-and-paste with a chat subscription: no key, no model
 METRIC_FIELDS = ("views", "likes", "collects", "comments")
+MAX_KEYWORD_CHARS = 40
+MAX_KEYWORDS_PER_SCRIPT = 8
 
 LINE_FIELDS = (
     "beat_type", "time_range_sec", "audio_mode", "spoken_script_zh", "delivery_cue",
@@ -38,6 +41,7 @@ CREATE TABLE IF NOT EXISTS scripts (
     post_json TEXT NOT NULL DEFAULT '{}',
     ai_lines_json TEXT,
     status TEXT NOT NULL DEFAULT 'DRAFT',
+    keywords_json TEXT NOT NULL DEFAULT '[]',
     created_at REAL NOT NULL,
     updated_at REAL NOT NULL
 );
@@ -50,6 +54,18 @@ CREATE TABLE IF NOT EXISTS samples (
     likes INTEGER,
     collects INTEGER,
     comments INTEGER,
+    created_at REAL NOT NULL,
+    updated_at REAL NOT NULL
+);
+CREATE TABLE IF NOT EXISTS trends (
+    id TEXT PRIMARY KEY,
+    key TEXT NOT NULL UNIQUE,
+    keyword TEXT NOT NULL,
+    heat INTEGER,
+    source TEXT NOT NULL DEFAULT 'manual',
+    source_url TEXT NOT NULL DEFAULT '',
+    note_zh TEXT NOT NULL DEFAULT '',
+    note_en TEXT NOT NULL DEFAULT '',
     created_at REAL NOT NULL,
     updated_at REAL NOT NULL
 );
@@ -82,6 +98,34 @@ def _metric(value: Any) -> Optional[int]:
     return number if number >= 0 else None
 
 
+def clean_keyword(text: Any) -> str:
+    """Display form of a keyword: single spaces, no leading #."""
+    return re.sub(r"\s+", " ", str(text or "")).strip().lstrip("#\uff03").strip()
+
+
+def keyword_key(text: Any) -> str:
+    """Comparison form of a keyword: no spaces, no leading #, lower case."""
+    return re.sub(r"\s+", "", str(text or "").replace("\u2019", "'")).lstrip("#\uff03").lower()
+
+
+def normalize_keywords(value: Any) -> List[str]:
+    """Up to MAX_KEYWORDS_PER_SCRIPT distinct, cleaned keyword strings."""
+    out: List[str] = []
+    seen = set()
+    for raw in value if isinstance(value, (list, tuple)) else []:
+        if not isinstance(raw, str):
+            continue
+        keyword = clean_keyword(raw)
+        key = keyword_key(keyword)
+        if not key or key in seen or len(keyword) > MAX_KEYWORD_CHARS:
+            continue
+        seen.add(key)
+        out.append(keyword)
+        if len(out) == MAX_KEYWORDS_PER_SCRIPT:
+            break
+    return out
+
+
 class Store:
     def __init__(self, data_dir: Optional[Path] = None) -> None:
         self.data_dir = Path(data_dir or os.environ.get("STUDIO_DATA_DIR") or ROOT / "data")
@@ -93,6 +137,9 @@ class Store:
         self.recommendations_path = self.data_dir / "recommendations.json"
         with self._db() as db:
             db.executescript(_SCHEMA)
+            columns = {row["name"] for row in db.execute("PRAGMA table_info(scripts)")}
+            if "keywords_json" not in columns:   # database created before trend keywords existed
+                db.execute("ALTER TABLE scripts ADD COLUMN keywords_json TEXT NOT NULL DEFAULT '[]'")
 
     def _db(self) -> sqlite3.Connection:
         db = sqlite3.connect(str(self.db_path), timeout=10)
@@ -108,7 +155,7 @@ class Store:
 
     # ---- settings -------------------------------------------------------
     def load_config(self) -> Dict[str, Any]:
-        config: Dict[str, Any] = {"provider": "", "model": "", "keys": {}, "local_base_url": ""}
+        config: Dict[str, Any] = {"provider": "", "model": "", "keys": {}, "local_base_url": "", "trend_weight": "balanced"}
         if self.config_path.exists():
             try:
                 loaded = json.loads(self.config_path.read_text(encoding="utf-8"))
@@ -232,6 +279,67 @@ class Store:
         with self._db() as db:
             return db.execute("DELETE FROM samples WHERE id = ?", (sample_id,)).rowcount > 0
 
+    # ---- trend keywords ---------------------------------------------------
+    @staticmethod
+    def _trend_row(row: sqlite3.Row) -> Dict[str, Any]:
+        return {key: row[key] for key in ("id", "keyword", "heat", "source", "source_url", "note_zh", "note_en",
+                                          "created_at", "updated_at")}
+
+    def list_trends(self) -> List[Dict[str, Any]]:
+        with self._db() as db:
+            rows = db.execute("SELECT * FROM trends ORDER BY updated_at DESC, rowid DESC").fetchall()
+        return [self._trend_row(r) for r in rows]
+
+    def get_trend(self, trend_id: str) -> Optional[Dict[str, Any]]:
+        with self._db() as db:
+            row = db.execute("SELECT * FROM trends WHERE id = ?", (trend_id,)).fetchone()
+        return self._trend_row(row) if row else None
+
+    def upsert_trends(self, items: List[Dict[str, Any]], source: str = "manual") -> int:
+        """Add keywords, or refresh ones already tracked. Returns how many were stored.
+
+        A keyword she entered herself stays marked as hers even if an AI lookup
+        reports it again. ``seen_at`` (when the evidence dates from) may be given per item.
+        """
+        now = time.time()
+        stored = 0
+        with self._db() as db:
+            for item in items:
+                keyword = clean_keyword(item.get("keyword"))
+                key = keyword_key(keyword)
+                if not key or len(keyword) > MAX_KEYWORD_CHARS:
+                    continue
+                heat = _metric(item.get("heat")) or None
+                seen = float(item.get("seen_at") or now)
+                row = db.execute("SELECT * FROM trends WHERE key = ?", (key,)).fetchone()
+                if row is None:
+                    db.execute(
+                        "INSERT INTO trends (id, key, keyword, heat, source, source_url, note_zh, note_en,"
+                        " created_at, updated_at) VALUES (?,?,?,?,?,?,?,?,?,?)",
+                        (uuid.uuid4().hex[:12], key, keyword, heat, source, str(item.get("source_url") or ""),
+                         str(item.get("note_zh") or ""), str(item.get("note_en") or ""), now, seen))
+                else:
+                    db.execute(
+                        "UPDATE trends SET heat = ?, source = ?, source_url = ?, note_zh = ?, note_en = ?,"
+                        " updated_at = ? WHERE id = ?",
+                        (heat if heat is not None else row["heat"],
+                         "manual" if "manual" in (source, row["source"]) else source,
+                         str(item.get("source_url") or row["source_url"]), str(item.get("note_zh") or row["note_zh"]),
+                         str(item.get("note_en") or row["note_en"]), max(seen, row["updated_at"]), row["id"]))
+                stored += 1
+        return stored
+
+    def update_trend(self, trend_id: str, heat: Any) -> Optional[Dict[str, Any]]:
+        """Set (or clear) the heat number; counts as seeing the trend again today."""
+        with self._db() as db:
+            db.execute("UPDATE trends SET heat = ?, updated_at = ? WHERE id = ?",
+                       (_metric(heat) or None, time.time(), trend_id))
+        return self.get_trend(trend_id)
+
+    def delete_trend(self, trend_id: str) -> bool:
+        with self._db() as db:
+            return db.execute("DELETE FROM trends WHERE id = ?", (trend_id,)).rowcount > 0
+
     # ---- scripts --------------------------------------------------------
     @staticmethod
     def _row(row: sqlite3.Row) -> Dict[str, Any]:
@@ -241,6 +349,7 @@ class Store:
             "notes": row["notes"], "lines": json.loads(row["lines_json"]),
             "post": json.loads(row["post_json"]), "status": row["status"],
             "has_ai_draft": row["ai_lines_json"] is not None,
+            "keywords": json.loads(row["keywords_json"] or "[]"),
             "created_at": row["created_at"], "updated_at": row["updated_at"],
         }
 
@@ -266,7 +375,7 @@ class Store:
     def create_script(self, *, title: str = "", notes: str = "", target_sec: int = 60,
                       video_format: str = "VLOG_VOICEOVER", lines: Any = None,
                       post: Optional[Dict[str, Any]] = None, from_ai: bool = False,
-                      default_title: str = "未命名脚本") -> Dict[str, Any]:
+                      default_title: str = "未命名脚本", keywords: Any = None) -> Dict[str, Any]:
         normalized = normalize_lines(lines) or normalize_lines([{}])
         now = time.time()
         script_id = uuid.uuid4().hex[:12]
@@ -276,9 +385,10 @@ class Store:
         with self._db() as db:
             db.execute(
                 "INSERT INTO scripts (id, title, video_format, target_sec, notes, lines_json, post_json,"
-                " ai_lines_json, created_at, updated_at) VALUES (?,?,?,?,?,?,?,?,?,?)",
+                " ai_lines_json, keywords_json, created_at, updated_at) VALUES (?,?,?,?,?,?,?,?,?,?,?)",
                 (script_id, title, video_format, int(target_sec), notes, lines_json,
-                 json.dumps(post or {}, ensure_ascii=False), lines_json if from_ai else None, now, now),
+                 json.dumps(post or {}, ensure_ascii=False), lines_json if from_ai else None,
+                 json.dumps(normalize_keywords(keywords), ensure_ascii=False), now, now),
             )
         return self.get_script(script_id)  # type: ignore[return-value]
 
@@ -297,6 +407,9 @@ class Store:
             sets.append("lines_json = ?"); values.append(json.dumps(normalize_lines(changes["lines"]), ensure_ascii=False))
         if isinstance(changes.get("post"), dict):
             sets.append("post_json = ?"); values.append(json.dumps(changes["post"], ensure_ascii=False))
+        if "keywords" in changes:
+            sets.append("keywords_json = ?")
+            values.append(json.dumps(normalize_keywords(changes["keywords"]), ensure_ascii=False))
         if sets:
             sets.append("updated_at = ?"); values.append(time.time())
             values.append(script_id)
