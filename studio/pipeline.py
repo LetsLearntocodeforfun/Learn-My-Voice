@@ -1,5 +1,14 @@
 """Model-backed steps: drafting, learning her voice, and recommending topics.
 
+Each step is split in two so it can run three ways:
+
+- ``*_prompt``  builds the exact text a model needs (her profile, her scripts, the rules);
+- ``apply_*``   validates a model's JSON reply and saves it.
+
+The app calls a model in between (``generate_script`` etc.). Copy-and-paste
+mode and the MCP server hand the prompt to an outside model (for example a
+ChatGPT subscription) and feed its reply back through the same ``apply_*``.
+
 The markdown blueprints in prompts/ stay the single source of truth for prompt
 text; this module only extracts the fenced blocks and fills ``{{placeholders}}``.
 """
@@ -12,7 +21,7 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
 from . import corpus, llm
-from .store import Store, normalize_lines
+from .store import MANUAL_PROVIDER, Store, normalize_lines
 
 PROMPTS_DIR = Path(__file__).resolve().parent.parent / "prompts"
 STAGE2 = "02_voice_dna_synthesizer.md"
@@ -25,6 +34,11 @@ MIN_CLAUSES_FOR_MEASURED_CADENCE = 30
 LEARN_CORPUS_CHARS = 40000
 RECOMMEND_EXCERPT_CHARS = 400
 RECOMMEND_MAX_VIDEOS = 60
+
+MANUAL_REPLY_RULE = (
+    "IMPORTANT: Reply with ONLY the JSON object described above, inside one ```json code block. "
+    "No explanation before or after it."
+)
 
 _PLACEHOLDER = re.compile(r"\{\{(\w+)\}\}")
 
@@ -57,27 +71,36 @@ def _dump(value: Any) -> str:
     return json.dumps(value, ensure_ascii=False, indent=1)
 
 
-def _ask(store: Store, blueprint: str, values: Dict[str, str], transport: Optional[llm.Transport]) -> Dict[str, Any]:
-    """Run one blueprint against the configured provider."""
+def _blueprint(filename: str, values: Dict[str, str]) -> Tuple[str, str]:
+    system, user_template = load_prompt_pair(filename)
+    return system, render(user_template, values)
+
+
+def single_prompt(system: str, user: str) -> str:
+    """One pasteable text for chat products that have no separate system prompt."""
+    return "%s\n\n%s\n\n%s\n" % (system.strip(), user.strip(), MANUAL_REPLY_RULE)
+
+
+def complete(store: Store, system: str, user: str, transport: Optional[llm.Transport] = None) -> Dict[str, Any]:
+    """Call the provider chosen in settings."""
     config = store.load_config()
     provider, model = config.get("provider") or "", config.get("model") or ""
+    if provider == MANUAL_PROVIDER:
+        raise llm.LLMError("Copy-and-paste mode is on; there is no model to call directly", "manual_mode")
     api_key = config["keys"].get(provider) or ""
     base_url = config.get("local_base_url") or None
     if not model or (provider == "local" and not base_url) or (provider != "local" and not api_key):
-        raise llm.LLMError("AI is not set up yet")
-    system, user_template = load_prompt_pair(blueprint)
-    return llm.complete_json(provider, api_key, model, system, render(user_template, values),
-                             transport=transport, base_url=base_url)
+        raise llm.LLMError("AI is not set up yet", "not_configured")
+    return llm.complete_json(provider, api_key, model, system, user, transport=transport, base_url=base_url)
 
 
 # ---- drafting ---------------------------------------------------------------
-def generate_script(store: Store, *, notes: str, target_sec: int, video_format: str,
-                    transport: Optional[llm.Transport] = None) -> Dict[str, Any]:
-    """Draft a normal (non-sponsored) script, anchored on her own past scripts, and save it."""
+def draft_prompt(store: Store, *, notes: str, target_sec: int, video_format: str) -> Tuple[str, str]:
+    """Prompt for a normal (non-sponsored) script, anchored on her own past scripts."""
     dna, _ = store.load_dna()
     anchors = corpus.exemplars(store.list_samples())
     exemplars_text = _dump(anchors) if anchors else "[]  (no past scripts have been imported yet; rely on the Voice DNA)"
-    result = _ask(store, STAGE4, {
+    return _blueprint(STAGE4, {
         "voice_dna_json": _dump(dna),
         "retrieved_beat_exemplars_json": exemplars_text,
         "top_10_wife_edit_diff_rules_json": "[]",
@@ -86,34 +109,45 @@ def generate_script(store: Store, *, notes: str, target_sec: int, video_format: 
         "target_duration_sec": str(int(target_sec)),
         "user_topic_and_story_notes": notes.strip(),
         "approved_humanized_sponsor_brief_json": "null",
-    }, transport)
+    })
+
+
+def apply_draft(store: Store, result: Dict[str, Any], *, notes: str, target_sec: int, video_format: str,
+                default_title: str = "未命名脚本") -> Dict[str, Any]:
+    """Validate a drafted script and save it; returns the stored script."""
     lines = [l for l in normalize_lines(result.get("script_lines")) if l["spoken_script_zh"].strip()]
     if not lines:
-        raise llm.LLMError("Model reply contained no script lines")
+        raise llm.LLMError("Model reply contained no script lines", "empty_result")
     post = result.get("rednote_post_package")
     return store.create_script(
-        notes=notes, target_sec=target_sec, video_format=video_format,
+        notes=notes, target_sec=target_sec, video_format=video_format, default_title=default_title,
         lines=normalize_lines(lines), post=post if isinstance(post, dict) else {}, from_ai=True,
     )
 
 
+def generate_script(store: Store, *, notes: str, target_sec: int, video_format: str,
+                    transport: Optional[llm.Transport] = None, default_title: str = "未命名脚本") -> Dict[str, Any]:
+    system, user = draft_prompt(store, notes=notes, target_sec=target_sec, video_format=video_format)
+    result = complete(store, system, user, transport)
+    return apply_draft(store, result, notes=notes, target_sec=target_sec, video_format=video_format,
+                       default_title=default_title)
+
+
 # ---- learning her voice -----------------------------------------------------
-def learn_voice(store: Store, transport: Optional[llm.Transport] = None) -> Dict[str, Any]:
-    """Build her Voice DNA from imported scripts and save it as the active profile.
+def _organic_texts(samples: List[Dict[str, Any]]) -> List[str]:
+    return [s["text"] for s in samples if not s["is_sponsored"] and s["text"].strip()]
 
-    Clause-length numbers come from measurement, not from the model, once there
-    are enough clauses. Speaking rate cannot be measured from text: an existing
-    real profile's rate is kept, otherwise a default is used and flagged.
-    """
+
+def voice_prompt(store: Store, corpus_chars: int = LEARN_CORPUS_CHARS) -> Tuple[str, str]:
+    """Prompt that turns her imported scripts into a Voice DNA profile."""
     samples = store.list_samples()
-    organic_texts = [s["text"] for s in samples if not s["is_sponsored"] and s["text"].strip()]
+    organic_texts = _organic_texts(samples)
     if not organic_texts:
-        raise llm.LLMError("No non-sponsored scripts to learn from")
+        raise llm.LLMError("No non-sponsored scripts to learn from", "no_samples")
     stats = corpus.voice_stats(organic_texts)
-    organic = corpus.corpus_slice(samples, sponsored=False, budget_chars=LEARN_CORPUS_CHARS)
-    sponsored = corpus.corpus_slice(samples, sponsored=True, budget_chars=LEARN_CORPUS_CHARS // 4)
-
-    dna = _ask(store, STAGE2, {
+    organic = corpus.corpus_slice(samples, sponsored=False, budget_chars=corpus_chars)
+    sponsored = corpus.corpus_slice(samples, sponsored=True, budget_chars=corpus_chars // 4)
+    return _blueprint(STAGE2, {
         "python_aggregated_acoustic_metrics_json": _dump({
             "note": "Measured from her hand-written scripts. No audio was analysed, so there is no speaking-rate "
                     "measurement; do not infer one. Use these clause-length and particle numbers as ground truth.",
@@ -125,10 +159,25 @@ def learn_voice(store: Store, transport: Optional[llm.Transport] = None) -> Dict
         }),
         "sponsored_videos_bridge_and_review_beats_only_json": _dump(sponsored) if sponsored else "[]",
         "wife_past_script_edits_diff_log_if_any": "[]",
-    }, transport)
+    })
 
+
+def apply_voice(store: Store, dna: Dict[str, Any], corpus_chars: int = LEARN_CORPUS_CHARS) -> Dict[str, Any]:
+    """Validate a Voice DNA reply, overwrite its numbers with measurements, and make it the active profile.
+
+    Clause-length numbers come from measurement, not from the model, once there
+    are enough clauses. Speaking rate cannot be measured from text: an existing
+    confirmed rate is kept, otherwise a default is used and flagged.
+    """
     if not isinstance(dna.get("cadence_and_syntax"), dict) or not isinstance(dna.get("anti_voice_blacklist"), dict):
-        raise llm.LLMError("Model reply is not a usable voice profile")
+        raise llm.LLMError("Model reply is not a usable voice profile", "empty_result")
+    samples = store.list_samples()
+    organic_texts = _organic_texts(samples)
+    if not organic_texts:
+        raise llm.LLMError("No non-sponsored scripts to learn from", "no_samples")
+    stats = corpus.voice_stats(organic_texts)
+    organic = corpus.corpus_slice(samples, sponsored=False, budget_chars=corpus_chars)
+    sponsored = corpus.corpus_slice(samples, sponsored=True, budget_chars=corpus_chars // 4)
 
     previous, previous_is_example = store.load_dna()
     previous_rate = previous.get("cadence_and_syntax", {}).get("target_speaking_rate_cpm")
@@ -148,6 +197,11 @@ def learn_voice(store: Store, transport: Optional[llm.Transport] = None) -> Dict
     return dna
 
 
+def learn_voice(store: Store, transport: Optional[llm.Transport] = None) -> Dict[str, Any]:
+    system, user = voice_prompt(store)
+    return apply_voice(store, complete(store, system, user, transport))
+
+
 def set_speaking_rate(store: Store, cpm: int) -> Dict[str, Any]:
     """Record her real speaking rate on her own profile (never on the bundled example)."""
     dna, is_example = store.load_dna()
@@ -163,11 +217,16 @@ def set_speaking_rate(store: Store, cpm: int) -> Dict[str, Any]:
 _IDEA_TEXT_FIELDS = ("title_zh", "title_en", "kind", "why_zh", "why_en", "confidence", "script_notes_zh")
 
 
-def recommend_topics(store: Store, idea_count: int = 6, transport: Optional[llm.Transport] = None) -> Dict[str, Any]:
-    """Suggest next videos from her own history and numbers; saves and returns the result."""
+def _usable_samples(store: Store) -> List[Dict[str, Any]]:
     samples = [s for s in store.list_samples() if s["text"].strip()]
     if not samples:
-        raise llm.LLMError("No past scripts to analyse")
+        raise llm.LLMError("No past scripts to analyse", "no_samples")
+    return samples
+
+
+def ideas_prompt(store: Store, idea_count: int = 6) -> Tuple[str, str]:
+    """Prompt that suggests next videos from her own history and numbers."""
+    samples = _usable_samples(store)
     perf = corpus.performance(samples)
     ranked_ids = [r["id"] for r in perf["rows"]]
     ordered = sorted(samples, key=lambda s: ranked_ids.index(s["id"]) if s["id"] in ranked_ids else len(ranked_ids))
@@ -179,8 +238,7 @@ def recommend_topics(store: Store, idea_count: int = 6, transport: Optional[llm.
     dna, is_example = store.load_dna()
     voice_summary: Any = "(no personal voice profile yet)" if is_example else {
         "persona_summary": dna.get("persona_summary"), "beat_playbooks": dna.get("beat_playbooks")}
-
-    result = _ask(store, STAGE6, {
+    return _blueprint(STAGE6, {
         "voice_summary_json": _dump(voice_summary),
         "video_history_json": _dump(history),
         "performance_json": _dump({
@@ -189,8 +247,13 @@ def recommend_topics(store: Store, idea_count: int = 6, transport: Optional[llm.
             "ranking": [{k: r[k] for k in ("title", "interactions", "interaction_rate_pct", "views")} for r in perf["rows"]],
         }),
         "idea_count": str(int(idea_count)),
-    }, transport)
+    })
 
+
+def apply_ideas(store: Store, result: Dict[str, Any]) -> Dict[str, Any]:
+    """Sanitise suggested ideas, drop citations that are not her videos, and save them."""
+    samples = _usable_samples(store)
+    perf = corpus.performance(samples)
     known_titles = {s["title"] for s in samples}
     ideas: List[Dict[str, Any]] = []
     for raw in result.get("ideas") if isinstance(result.get("ideas"), list) else []:
@@ -200,11 +263,11 @@ def recommend_topics(store: Store, idea_count: int = 6, transport: Optional[llm.
         idea["video_format"] = raw.get("video_format") if raw.get("video_format") in VIDEO_FORMATS else VIDEO_FORMATS[0]
         idea["target_duration_sec"] = raw.get("target_duration_sec") if raw.get("target_duration_sec") in (30, 60, 90) else 60
         cited = [str(t) for t in raw.get("evidence_titles") or [] if isinstance(t, str)]
-        idea["evidence_titles"] = [t for t in cited if t in known_titles]   # drop citations that are not her videos
+        idea["evidence_titles"] = [t for t in cited if t in known_titles]
         idea["unverified_evidence"] = len(cited) - len(idea["evidence_titles"])
         ideas.append(idea)
     if not ideas:
-        raise llm.LLMError("Model reply contained no ideas")
+        raise llm.LLMError("Model reply contained no ideas", "empty_result")
     payload = {
         "generated_at": time.time(),
         "videos_with_metrics": perf["with_metrics"], "total_videos": perf["total_videos"],
@@ -213,3 +276,8 @@ def recommend_topics(store: Store, idea_count: int = 6, transport: Optional[llm.
     }
     store.save_recommendations(payload)
     return payload
+
+
+def recommend_topics(store: Store, idea_count: int = 6, transport: Optional[llm.Transport] = None) -> Dict[str, Any]:
+    system, user = ideas_prompt(store, idea_count)
+    return apply_ideas(store, complete(store, system, user, transport))

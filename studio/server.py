@@ -19,14 +19,16 @@ import urllib.parse
 import webbrowser
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
-from typing import Any, Callable, Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional
 
-from . import corpus, guardrails, llm, pipeline, textstats
-from .store import PROVIDERS, Store
+from . import checks, corpus, exports, llm, pipeline
+from .store import MANUAL_PROVIDER, PROVIDERS, ROOT, Store
 
 WEB_DIR = Path(__file__).with_name("web")
 MAX_BODY = 12 * 1024 * 1024  # room for a base64 .docx
 DEFAULT_PORT = 8765
+UNTITLED = {"zh": "未命名脚本", "en": "Untitled script"}
+MANUAL_TASKS = ("draft", "voice", "ideas")
 
 
 class ApiError(Exception):
@@ -35,65 +37,6 @@ class ApiError(Exception):
         self.status, self.code, self.message = status, code, message or code
 
 
-# ---- findings in her language -------------------------------------------
-_MESSAGES = {
-    (guardrails.CADENCE_TOO_LONG, "error"): ("这一句有 {n} 个字，一口气念不完，建议断开", "This clause is {n} units; too long for one breath"),
-    (guardrails.GENERIC_XHS_SLOP, "error"): ("「{m}」是营销号常用说法，不像你的口吻", "\"{m}\" is generic influencer wording, not her voice"),
-    (guardrails.GENERIC_XHS_SLOP, "review"): ("「{m}」你平时很少这么说，确认一下", "\"{m}\" is not something she usually says; please check"),
-    (guardrails.BOOKISH_MANDARIN, "error"): ("「{m}」太书面了，口语里不这么说", "\"{m}\" is written-style Chinese, not spoken"),
-    (guardrails.TRANSLATIONESE, "error"): ("「{m}」有点翻译腔", "\"{m}\" reads like translated English"),
-    (guardrails.TRANSLATIONESE, "review"): ("「{m}」偏书面，确认一下", "\"{m}\" may be too formal; please check"),
-    (guardrails.UNNATURAL_CODESWITCH, "review"): ("英文词「{m}」你平时不常夹在中文里，确认一下", "English word \"{m}\" is not in her usual code-switching; please check"),
-    (guardrails.COMPLIANCE_RISK, "error"): ("「{m}」可能违规（极限词或功效词），建议换个说法", "\"{m}\" may break ad rules (absolute or efficacy claim)"),
-    (guardrails.COMPLIANCE_RISK, "review"): ("「{m}」可能被当成极限词，确认一下", "\"{m}\" may be read as an absolute claim; please check"),
-}
-
-
-def describe(finding: guardrails.Finding, stats: Dict[str, Any]) -> Dict[str, Any]:
-    if finding.category == guardrails.DURATION_OFF_BUDGET:
-        over = stats["budget"] is not None and stats["units"] > stats["budget"]
-        zh = "全篇 %s 字，这个时长大约念 %s 字，%s" % (stats["units"], stats["budget"], "偏长了" if over else "偏短了")
-        en = "%s units against a budget of about %s: %s" % (stats["units"], stats["budget"], "too long" if over else "too short")
-    else:
-        zh, en = _MESSAGES.get((finding.category, finding.severity), ("「{m}」需要确认", "\"{m}\" needs a check"))
-        n = textstats.spoken_units(finding.matched)
-        zh, en = zh.format(m=finding.matched, n=n), en.format(m=finding.matched, n=n)
-    return {"line_no": finding.line_no, "category": finding.category, "severity": finding.severity,
-            "matched": finding.matched, "message_zh": zh, "message_en": en}
-
-
-def lint_payload(store: Store, lines: Any, target_sec: Optional[float]) -> Dict[str, Any]:
-    dna, is_example = store.load_dna()
-    script = {"script_lines": lines if isinstance(lines, list) else []}
-    stats = guardrails.script_stats(script, dna, target_sec)
-    findings = guardrails.lint_script(script, dna, target_duration_sec=target_sec)
-    return {"stats": stats, "findings": [describe(f, stats) for f in findings], "dna_is_example": is_example}
-
-
-# ---- exports -------------------------------------------------------------
-def export_text(script: Dict[str, Any], kind: str) -> Tuple[str, str]:
-    """Return ``(filename, text)`` for a plain-text export."""
-    lines = script["lines"]
-    title = script["title"]
-    if kind == "voiceover":  # one breath per line: teleprompter / subtitle text
-        out: List[str] = []
-        for line in lines:
-            if str(line.get("audio_mode", "")).upper() == "LIVE_CLIP":
-                continue
-            out.extend(textstats.split_clauses(line.get("spoken_script_zh", ""), punctuation_breaks=False))
-        return title + "-口播文稿.txt", "\n".join(out) + "\n"
-    if kind == "shots":
-        rows = ["%d. %s  %s" % (l["line_no"], l.get("time_range_sec", ""), l.get("visual_broll_en_zh", ""))
-                for l in lines if l.get("visual_broll_en_zh", "").strip()]
-        return title + "-拍摄清单.txt", "\n".join(rows) + "\n"
-    if kind == "flower":
-        rows = ["%d. %s  %s" % (l["line_no"], l.get("time_range_sec", ""), l.get("onscreen_flower_text_zh", ""))
-                for l in lines if l.get("onscreen_flower_text_zh", "").strip()]
-        return title + "-花字清单.txt", "\n".join(rows) + "\n"
-    raise ApiError(404, "unknown_export")
-
-
-# ---- http ----------------------------------------------------------------
 class App:
     def __init__(self, store: Store, transport: Optional[llm.Transport] = None) -> None:
         self.store = store
@@ -102,6 +45,7 @@ class App:
 
 class Handler(BaseHTTPRequestHandler):
     server_version = "Studio"
+    query: Dict[str, List[str]] = {}
 
     @property
     def app(self) -> App:
@@ -138,8 +82,15 @@ class Handler(BaseHTTPRequestHandler):
             raise ApiError(400, "bad_json")
         return body
 
+    def _lang(self, body: Optional[Dict[str, Any]] = None) -> str:
+        value = (body or {}).get("lang") or (self.query.get("lang") or [""])[0]
+        return "en" if value == "en" else "zh"
+
     def _require_ai(self) -> None:
-        if not self.app.store.public_settings()["configured"]:
+        settings = self.app.store.public_settings()
+        if settings["manual"]:
+            raise ApiError(400, "manual_mode")
+        if not settings["configured"]:
             raise ApiError(400, "ai_not_configured")
 
     def _dispatch(self, method: str) -> None:
@@ -147,17 +98,18 @@ class Handler(BaseHTTPRequestHandler):
             port = self.server.server_address[1]
             if (self.headers.get("Host") or "") not in ("127.0.0.1:%d" % port, "localhost:%d" % port):
                 raise ApiError(403, "bad_host")
-            path = urllib.parse.urlsplit(self.path).path
-            if path.startswith("/api/"):
-                self._api(method, path)
+            split = urllib.parse.urlsplit(self.path)
+            self.query = urllib.parse.parse_qs(split.query)
+            if split.path.startswith("/api/"):
+                self._api(method, split.path)
             elif method == "GET":
-                self._static(path)
+                self._static(split.path)
             else:
                 raise ApiError(405, "method_not_allowed")
         except ApiError as exc:
             self._json({"error": exc.code, "message": exc.message}, exc.status)
         except llm.LLMError as exc:
-            self._json({"error": "ai_failed", "message": str(exc)}, 502)
+            self._json({"error": "ai_failed", "reason": exc.code, "message": str(exc)}, 502)
         except (BrokenPipeError, ConnectionResetError):
             pass
         except Exception:  # noqa: BLE001 - last-resort handler; details go to the terminal only
@@ -186,15 +138,46 @@ class Handler(BaseHTTPRequestHandler):
             ctype += "; charset=utf-8"
         self._send(200, target.read_bytes(), ctype)
 
+    # ---- copy-and-paste mode ------------------------------------------------
+    def _manual_prompt(self, body: Dict[str, Any]) -> str:
+        store, task = self.app.store, _task(body)
+        if task == "draft":
+            notes = str(body.get("notes") or "").strip()
+            if not notes:
+                raise ApiError(400, "notes_required")
+            system, user = pipeline.draft_prompt(store, notes=notes, target_sec=_target_sec(body),
+                                                 video_format=_video_format(body))
+        elif task == "voice":
+            system, user = pipeline.voice_prompt(store)
+        else:
+            system, user = pipeline.ideas_prompt(store)
+        return pipeline.single_prompt(system, user)
+
+    def _manual_reply(self, body: Dict[str, Any]) -> None:
+        store, task = self.app.store, _task(body)
+        result = llm.parse_json_text(str(body.get("reply") or ""))
+        if task == "draft":
+            script = pipeline.apply_draft(
+                store, result, notes=str(body.get("notes") or "").strip(), target_sec=_target_sec(body),
+                video_format=_video_format(body), default_title=UNTITLED[self._lang(body)])
+            return self._json(script, 201)
+        if task == "voice":
+            return self._json({"dna": pipeline.apply_voice(store, result), "is_example": False})
+        ideas = pipeline.apply_ideas(store, result)
+        return self._json({"performance": corpus.performance(store.list_samples()), "result": ideas})
+
+    # ---- api ----------------------------------------------------------------
     def _api(self, method: str, path: str) -> None:
         store = self.app.store
         route = (method, path)
 
         if route == ("GET", "/api/state"):
             _, is_example = store.load_dna()
-            return self._json({"settings": store.public_settings(), "dna_is_example": is_example,
-                               "video_formats": list(pipeline.VIDEO_FORMATS),
-                               "sample_count": len(store.list_samples())})
+            return self._json({
+                "settings": store.public_settings(), "dna_is_example": is_example,
+                "video_formats": list(pipeline.VIDEO_FORMATS), "sample_count": len(store.list_samples()),
+                "mcp": {"python": sys.executable or "python3", "script": str(ROOT / "run_mcp.py")},
+            })
         if route == ("GET", "/api/dna"):
             dna, is_example = store.load_dna()
             return self._json({"dna": dna, "is_example": is_example})
@@ -204,20 +187,25 @@ class Handler(BaseHTTPRequestHandler):
             body = self._read_json()
             return self._json(store.create_script(
                 title=str(body.get("title") or ""), notes=str(body.get("notes") or ""),
-                target_sec=_target_sec(body), video_format=_video_format(body), lines=body.get("lines")), 201)
+                target_sec=_target_sec(body), video_format=_video_format(body), lines=body.get("lines"),
+                default_title=UNTITLED[self._lang(body)]), 201)
         if route == ("POST", "/api/lint"):
             body = self._read_json()
-            return self._json(lint_payload(store, body.get("lines"), _target_sec(body)))
+            return self._json(checks.lint_payload(store, body.get("lines"), _target_sec(body)))
         if route == ("POST", "/api/generate"):
             body = self._read_json()
             notes = str(body.get("notes") or "").strip()
             if not notes:
                 raise ApiError(400, "notes_required")
-            if not store.public_settings()["configured"]:
-                raise ApiError(400, "ai_not_configured")
+            self._require_ai()
             return self._json(pipeline.generate_script(
                 store, notes=notes, target_sec=_target_sec(body), video_format=_video_format(body),
-                transport=self.app.transport), 201)
+                transport=self.app.transport, default_title=UNTITLED[self._lang(body)]), 201)
+        if route == ("POST", "/api/manual/prompt"):
+            return self._json({"prompt": self._manual_prompt(self._read_json())})
+        if route == ("POST", "/api/manual/reply"):
+            return self._manual_reply(self._read_json())
+
         if route == ("POST", "/api/settings/models"):
             body = self._read_json()
             provider = _provider(body)
@@ -236,15 +224,18 @@ class Handler(BaseHTTPRequestHandler):
             return self._json({"models": models, "settings": store.public_settings()})
         if route == ("POST", "/api/settings"):
             body = self._read_json()
-            provider = _provider(body)
             config = store.load_config()
-            key = str(body.get("key") or "").strip()
-            if provider == "local":
-                if body.get("base_url"):
-                    config["local_base_url"] = llm.normalize_local_base(str(body["base_url"]))
-            elif key:
-                config["keys"][provider] = key
-            config["provider"], config["model"] = provider, str(body.get("model") or "").strip()
+            if body.get("provider") == MANUAL_PROVIDER:
+                config["provider"] = MANUAL_PROVIDER
+            else:
+                provider = _provider(body)
+                key = str(body.get("key") or "").strip()
+                if provider == "local":
+                    if body.get("base_url"):
+                        config["local_base_url"] = llm.normalize_local_base(str(body["base_url"]))
+                elif key:
+                    config["keys"][provider] = key
+                config["provider"], config["model"] = provider, str(body.get("model") or "").strip()
             store.save_config(config)
             return self._json({"settings": store.public_settings()})
 
@@ -307,9 +298,13 @@ class Handler(BaseHTTPRequestHandler):
             if script is None:
                 raise ApiError(404, "not_found")
             if export_kind and method == "GET":
-                filename, text = export_text(script, export_kind)
+                dna, _ = store.load_dna()
+                try:
+                    filename, data, content_type = exports.export_file(script, export_kind, dna, self._lang())
+                except KeyError:
+                    raise ApiError(404, "unknown_export")
                 disposition = "attachment; filename*=UTF-8''" + urllib.parse.quote(filename)
-                return self._send(200, text.encode("utf-8"), "text/plain; charset=utf-8", {"Content-Disposition": disposition})
+                return self._send(200, data, content_type, {"Content-Disposition": disposition})
             if not export_kind and method == "GET":
                 return self._json(script)
             if not export_kind and method == "PUT":
@@ -341,6 +336,13 @@ def _provider(body: Dict[str, Any]) -> str:
     return value
 
 
+def _task(body: Dict[str, Any]) -> str:
+    value = body.get("task")
+    if value not in MANUAL_TASKS:
+        raise ApiError(400, "bad_task")
+    return value
+
+
 def make_server(port: int, store: Store, transport: Optional[llm.Transport] = None) -> ThreadingHTTPServer:
     server = ThreadingHTTPServer(("127.0.0.1", port), Handler)
     server.daemon_threads = True
@@ -349,7 +351,7 @@ def make_server(port: int, store: Store, transport: Optional[llm.Transport] = No
 
 
 def main(argv: Optional[List[str]] = None) -> int:
-    parser = argparse.ArgumentParser(description="RedNote script studio (local web app)")
+    parser = argparse.ArgumentParser(description="Learn My Voice script studio (local web app)")
     parser.add_argument("--port", type=int, default=DEFAULT_PORT)
     parser.add_argument("--no-browser", action="store_true")
     args = parser.parse_args(argv)
@@ -363,7 +365,8 @@ def main(argv: Optional[List[str]] = None) -> int:
         except OSError:
             continue
     if server is None:
-        print("无法启动：端口 %d–%d 都被占用。" % (args.port, args.port + 9), file=sys.stderr)
+        print("无法启动：端口 %d–%d 都被占用。/ Could not start: ports %d-%d are all in use."
+              % (args.port, args.port + 9, args.port, args.port + 9), file=sys.stderr)
         return 1
     url = "http://127.0.0.1:%d/" % server.server_address[1]
     print("工作台已启动 / Studio running: %s\n关闭这个窗口即可退出。/ Close this window to quit." % url)

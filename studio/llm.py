@@ -28,7 +28,17 @@ _NON_CHAT_HINTS = ("embedding", "whisper", "tts", "dall-e", "moderation", "image
 
 
 class LLMError(Exception):
-    """Provider call failed; the message is safe to show to the user."""
+    """An AI step failed.
+
+    ``code`` is a stable identifier the UI translates (Chinese / English);
+    the message is an English detail that is safe to show.
+    Codes: not_configured, manual_mode, local_address, http, network,
+    bad_response, bad_json, empty_result, no_samples, unknown_provider, other.
+    """
+
+    def __init__(self, message: str, code: str = "other") -> None:
+        super().__init__(message)
+        self.code = code
 
 
 def normalize_local_base(url: str) -> str:
@@ -36,7 +46,7 @@ def normalize_local_base(url: str) -> str:
     url = (url or "").strip().rstrip("/") or DEFAULT_LOCAL_BASE
     parts = urllib.parse.urlsplit(url)
     if parts.scheme not in ("http", "https") or parts.hostname not in _LOOPBACK_HOSTS:
-        raise LLMError("Local model address must be on this computer (127.0.0.1 or localhost)")
+        raise LLMError("Local model address must be on this computer (127.0.0.1 or localhost)", "local_address")
     return url
 
 
@@ -55,11 +65,11 @@ def _http(method: str, url: str, headers: Dict[str, str], body: Optional[Dict[st
             detail = error.get("message", detail) if isinstance(error, dict) else error
         except (ValueError, AttributeError):
             pass
-        raise LLMError("HTTP %s: %s" % (exc.code, str(detail)[:300]))
+        raise LLMError("HTTP %s: %s" % (exc.code, str(detail)[:300]), "http")
     except (urllib.error.URLError, TimeoutError, OSError) as exc:
-        raise LLMError("Network error: %s" % exc)
+        raise LLMError("Network error: %s" % exc, "network")
     except ValueError:
-        raise LLMError("Provider returned a non-JSON response")
+        raise LLMError("Provider returned a non-JSON response", "bad_response")
 
 
 def _openai_style(provider: str, api_key: str, base_url: Optional[str]):
@@ -67,7 +77,7 @@ def _openai_style(provider: str, api_key: str, base_url: Optional[str]):
         return OPENAI_BASE, {"Authorization": "Bearer " + api_key}
     if provider == "local":
         return normalize_local_base(base_url or ""), {}
-    raise LLMError("Unknown provider: %s" % provider)
+    raise LLMError("Unknown provider: %s" % provider, "unknown_provider")
 
 
 def list_models(provider: str, api_key: str = "", transport: Optional[Transport] = None,
@@ -96,13 +106,13 @@ def parse_json_text(text: str) -> Dict[str, Any]:
     except ValueError:
         start, end = cleaned.find("{"), cleaned.rfind("}")
         if start == -1 or end <= start:
-            raise LLMError("Model did not return valid JSON")
+            raise LLMError("Model did not return valid JSON", "bad_json")
         try:
             value = json.loads(cleaned[start:end + 1])
         except ValueError:
-            raise LLMError("Model did not return valid JSON")
+            raise LLMError("Model did not return valid JSON", "bad_json")
     if not isinstance(value, dict):
-        raise LLMError("Model returned JSON that is not an object")
+        raise LLMError("Model returned JSON that is not an object", "bad_json")
     return value
 
 
@@ -120,7 +130,7 @@ def complete_json(provider: str, api_key: str, model: str, system: str, user: st
             parts = data["candidates"][0]["content"]["parts"]
             text = "".join(p.get("text", "") for p in parts)
         except (KeyError, IndexError, TypeError):
-            raise LLMError("Unexpected Gemini response shape (the reply may have been blocked)")
+            raise LLMError("Unexpected Gemini response shape (the reply may have been blocked)", "bad_response")
         return parse_json_text(text)
 
     base, headers = _openai_style(provider, api_key, base_url)
@@ -132,5 +142,5 @@ def complete_json(provider: str, api_key: str, model: str, system: str, user: st
     try:
         text = data["choices"][0]["message"]["content"]
     except (KeyError, IndexError, TypeError):
-        raise LLMError("Unexpected response shape from %s" % provider)
+        raise LLMError("Unexpected response shape from %s" % provider, "bad_response")
     return parse_json_text(text)

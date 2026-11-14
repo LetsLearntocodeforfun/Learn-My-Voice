@@ -30,10 +30,10 @@ const I18N = {
     connect: '连接并读取模型', model: '模型', pick_model: '请选择模型', save: '保存', connected: '已连接',
     not_connected: '未连接', settings_saved: '已保存', current: '当前使用',
     err_ai_not_configured: '还没连接 AI，请先到「设置」。', err_notes_required: '先写一点想法吧。',
-    err_key_required: '请先填写密钥。', err_ai_failed: 'AI 调用失败：', err_default: '出错了，请再试一次。',
+    err_key_required: '请先填写密钥。', err_default: '出错了，请再试一次。',
   },
   en: {
-    brand: 'Script Studio', nav_scripts: 'Scripts', nav_voice: 'Her voice', nav_settings: 'Settings', lang_btn: '中文',
+    brand: 'Learn My Voice', nav_scripts: 'Scripts', nav_voice: 'Her voice', nav_settings: 'Settings', lang_btn: '中文',
     home_title: 'Scripts', home_sub: 'Write, edit and read from one place.', new_script: '+ New script',
     empty: 'No scripts yet. Use the button above to start one.', lines_n: 'lines', sec: 's',
     no_ai: 'AI is not connected. You can write by hand, or connect it in Settings.', go_settings: 'Open settings',
@@ -60,7 +60,7 @@ const I18N = {
     connect: 'Connect and list models', model: 'Model', pick_model: 'Choose a model', save: 'Save', connected: 'connected',
     not_connected: 'not connected', settings_saved: 'Saved', current: 'In use',
     err_ai_not_configured: 'AI is not connected. Open Settings first.', err_notes_required: 'Write a few notes first.',
-    err_key_required: 'Enter a key first.', err_ai_failed: 'AI call failed: ', err_default: 'Something went wrong. Please try again.',
+    err_key_required: 'Enter a key first.', err_default: 'Something went wrong. Please try again.',
   },
 };
 
@@ -87,12 +87,17 @@ async function api(method, path, body) {
   if (body !== undefined) { opts.headers['Content-Type'] = 'application/json'; opts.body = JSON.stringify(body); }
   const res = await fetch(path, opts);
   const data = await res.json().catch(() => ({}));
-  if (!res.ok) { const e = new Error(data.message || data.error || 'error'); e.code = data.error; e.detail = data.message; throw e; }
+  if (!res.ok) { const e = new Error(data.message || data.error || 'error'); e.code = data.error; e.reason = data.reason; e.detail = data.message; throw e; }
   return data;
 }
 
 function showError(e) {
-  if (e.code === 'ai_failed') return toast(t('err_ai_failed') + (e.detail || ''));
+  if (e.code === 'ai_failed') {
+    const key = 'ai_' + e.reason;
+    const known = I18N[lang][key] !== undefined;
+    const detail = (!known || e.reason === 'http' || e.reason === 'other') ? (e.detail || '') : '';
+    return toast(t(known ? key : 'ai_other') + detail);
+  }
   const key = 'err_' + e.code;
   toast(I18N[lang][key] ? t(key) : t('err_default'));
 }
@@ -186,25 +191,27 @@ function renderNew() {
     <label class="field">${esc(t('format'))}</label>
     <div class="chips">${chips(appState.video_formats, draft.video_format, 'fmt', (v) => t('fmt_' + v))}</div>
     <div class="row" style="margin-top:28px">
-      <button class="btn primary big" id="ai-btn" ${configured ? '' : 'disabled'}>${esc(t('ai_write'))}</button>
+      <button class="btn primary big" id="ai-btn" ${configured ? '' : 'disabled'}>${esc(t(appState.settings.manual ? 'ai_write_manual' : 'ai_write'))}</button>
       <button class="btn big" id="self-btn">${esc(t('self_write'))}</button>
     </div></div>`;
   const $notes = document.getElementById('notes');
   $notes.oninput = () => { draft.notes = $notes.value; autoGrow($notes); };
   $view.querySelectorAll('[data-sec]').forEach((b) => { b.onclick = () => { draft.target_sec = Number(b.dataset.sec); renderNew(); }; });
   $view.querySelectorAll('[data-fmt]').forEach((b) => { b.onclick = () => { draft.video_format = b.dataset.fmt; renderNew(); }; });
-  const create = async (path, btn) => {
+  const create = async (useAi, btn) => {
     const label = btn.textContent;
     btn.disabled = true;
-    if (path === '/api/generate') btn.textContent = t('writing');
+    if (useAi && !appState.settings.manual) btn.textContent = t('writing');
     try {
-      const script = await api('POST', path, draft);
+      const body = Object.assign({ lang }, draft);
+      const script = useAi ? await aiRun('draft', body) : await api('POST', '/api/scripts', body);
+      if (!script) { btn.disabled = false; btn.textContent = label; return; }  // copy-and-paste was cancelled
       draft.notes = '';
       location.hash = '#/s/' + script.id;
     } catch (e) { showError(e); btn.disabled = false; btn.textContent = label; }
   };
-  document.getElementById('ai-btn').onclick = (e) => create('/api/generate', e.currentTarget);
-  document.getElementById('self-btn').onclick = (e) => create('/api/scripts', e.currentTarget);
+  document.getElementById('ai-btn').onclick = (e) => create(true, e.currentTarget);
+  document.getElementById('self-btn').onclick = (e) => create(false, e.currentTarget);
 }
 
 /* ---------- script workspace ---------- */
@@ -264,7 +271,7 @@ function paintCounts() {
   $view.querySelectorAll('.line').forEach((el) => {
     const units = spokenUnits(cur.script.lines[Number(el.dataset.i)].spoken_script_zh);
     const secs = cpm ? ` · ${t('about')}${Math.max(1, Math.round(units / cpm * 60))}${t('sec')}` : '';
-    el.querySelector('[data-count]').textContent = units ? `${units}${t('chars')}${secs}` : '';
+    el.querySelector('[data-count]').textContent = units ? `${units}${lang === 'zh' ? '' : ' '}${t('chars')}${secs}` : '';
   });
 }
 
@@ -301,6 +308,8 @@ function paintScript() {
       <button class="btn" id="prompter-btn">${esc(t('prompter'))}</button>
       <div class="menu"><button class="btn" id="export-btn">${esc(t('export'))} ▾</button>
         <div class="pop" id="export-pop" hidden>
+          <a href="#" data-export="jianying">${esc(t('exp_kit'))}<small>${esc(t('exp_kit_d'))}</small></a>
+          <a href="#" data-export="srt">${esc(t('exp_srt'))}<small>${esc(t('exp_srt_d'))}</small></a>
           <a href="#" data-export="voiceover">${esc(t('exp_voice'))}<small>${esc(t('exp_voice_d'))}</small></a>
           <a href="#" data-export="shots">${esc(t('exp_shots'))}<small>${esc(t('exp_shots_d'))}</small></a>
           <a href="#" data-export="flower">${esc(t('exp_flower'))}<small>${esc(t('exp_flower_d'))}</small></a>
@@ -350,7 +359,7 @@ function paintScript() {
     if (!a) return;
     e.preventDefault(); $pop.hidden = true;
     await flushSave();
-    location.href = `/api/scripts/${s.id}/export/${a.dataset.export}`;
+    location.href = `/api/scripts/${s.id}/export/${a.dataset.export}?lang=${lang}`;
   };
   document.getElementById('delete-btn').onclick = async () => {
     if (!confirm(t('confirm_delete'))) return;

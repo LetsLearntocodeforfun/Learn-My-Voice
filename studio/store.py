@@ -18,6 +18,7 @@ ROOT = Path(__file__).resolve().parent.parent
 EXAMPLE_DNA_PATH = ROOT / "schemas" / "voice_dna.example.json"
 CLOUD_PROVIDERS = ("gemini", "openai")
 PROVIDERS = CLOUD_PROVIDERS + ("local",)
+MANUAL_PROVIDER = "manual"  # copy-and-paste with a chat subscription: no key, no model
 METRIC_FIELDS = ("views", "likes", "collects", "comments")
 
 LINE_FIELDS = (
@@ -134,7 +135,8 @@ class Store:
             "model": model,
             "keys": keys,
             "local_base_url": local_url,
-            "configured": bool(provider in PROVIDERS and model and keys.get(provider)),
+            "manual": provider == MANUAL_PROVIDER,
+            "configured": provider == MANUAL_PROVIDER or bool(provider in PROVIDERS and model and keys.get(provider)),
         }
 
     # ---- voice dna ------------------------------------------------------
@@ -263,12 +265,13 @@ class Store:
 
     def create_script(self, *, title: str = "", notes: str = "", target_sec: int = 60,
                       video_format: str = "VLOG_VOICEOVER", lines: Any = None,
-                      post: Optional[Dict[str, Any]] = None, from_ai: bool = False) -> Dict[str, Any]:
+                      post: Optional[Dict[str, Any]] = None, from_ai: bool = False,
+                      default_title: str = "未命名脚本") -> Dict[str, Any]:
         normalized = normalize_lines(lines) or normalize_lines([{}])
         now = time.time()
         script_id = uuid.uuid4().hex[:12]
         first_note = next((l.strip() for l in notes.splitlines() if l.strip()), "")
-        title = title.strip() or first_note[:16] or "未命名脚本"
+        title = title.strip() or first_note[:16] or default_title
         lines_json = json.dumps(normalized, ensure_ascii=False)
         with self._db() as db:
             db.execute(

@@ -53,6 +53,51 @@ Object.assign(I18N.en, {
   err_empty_text: 'The text is empty.', err_bad_rate: 'Enter a rate between 100 and 500.', err_no_profile: 'Learn her voice first.',
 });
 
+Object.assign(I18N.zh, {
+  manual_name: 'ChatGPT 订阅（复制粘贴）', no_key_needed: '不需要密钥',
+  manual_explain: '没有 API 密钥也能用。每次需要 AI 时，工作台会准备好一段提示词：把它粘贴给 ChatGPT，再把 ChatGPT 的回复粘贴回来就行。',
+  ai_write_manual: '✨ 用 ChatGPT 写初稿',
+  mb_title: '用 ChatGPT 完成这一步', mb_intro: '提示词里已经包含你的声音档案和相关的脚本内容，会随提示词一起发给 ChatGPT。',
+  mb_step1: '第一步：复制提示词，发给 ChatGPT', mb_copy: '复制提示词', mb_open: '打开 ChatGPT ↗', mb_size: '共 {n} 个字符',
+  mb_step2: '第二步：把 ChatGPT 的完整回复粘贴到这里', mb_reply_ph: '粘贴回复（一段 JSON）',
+  mb_done: '完成', mb_cancel: '取消', mb_copied: '已复制', mb_copy_failed: '复制失败，请点一下提示词，全选后手动复制',
+  mcp_title: '进阶：让 ChatGPT / Codex 直接使用工作台（MCP）',
+  mcp_explain: '把下面的配置加到支持 MCP 的 AI 应用里，它就能直接读取你的声音档案、写脚本、检查并保存到这里。具体步骤见项目的 README。',
+  exp_kit: '剪映素材包', exp_kit_d: '字幕、花字、口播文稿、拍摄清单，一次打包',
+  exp_srt: '字幕文件（.srt）', exp_srt_d: '时间按语速估算，导入剪映后需要微调',
+  exp_voice_d: '一口气一行，可用于提词，或剪映的「文稿匹配」',
+  err_manual_mode: '现在是复制粘贴模式，请用页面上的按钮操作。', err_bad_task: '出错了，请再试一次。',
+  ai_not_configured: '还没连接 AI，请先到「设置」。', ai_manual_mode: '现在是复制粘贴模式。',
+  ai_local_address: '本地模型地址必须在这台电脑上（127.0.0.1 或 localhost）。',
+  ai_http: 'AI 服务返回了错误：', ai_network: '连不上 AI 服务。请检查网络，或确认本地模型已经启动。',
+  ai_bad_response: 'AI 服务的回复无法识别，请再试一次。',
+  ai_bad_json: '回复的格式不对。请确认粘贴的是完整回复，或者再试一次。',
+  ai_empty_result: '回复里没有可用的内容，请再试一次。', ai_no_samples: '素材库里还没有可用的脚本。',
+  ai_unknown_provider: '不支持这个 AI 服务。', ai_other: 'AI 调用失败：',
+});
+Object.assign(I18N.en, {
+  manual_name: 'ChatGPT subscription (copy & paste)', no_key_needed: 'no key needed',
+  manual_explain: 'Works without an API key. Whenever AI is needed, the studio prepares a prompt: paste it into ChatGPT, then paste ChatGPT\'s reply back.',
+  ai_write_manual: '✨ Draft with ChatGPT',
+  mb_title: 'Finish this step with ChatGPT', mb_intro: 'The prompt already contains her voice profile and the relevant script text, which is sent to ChatGPT with it.',
+  mb_step1: 'Step 1: copy the prompt and send it to ChatGPT', mb_copy: 'Copy prompt', mb_open: 'Open ChatGPT ↗', mb_size: '{n} characters',
+  mb_step2: 'Step 2: paste ChatGPT\'s full reply here', mb_reply_ph: 'Paste the reply (a block of JSON)',
+  mb_done: 'Done', mb_cancel: 'Cancel', mb_copied: 'Copied', mb_copy_failed: 'Copy failed. Click the prompt, select all and copy by hand.',
+  mcp_title: 'Advanced: let ChatGPT / Codex use the studio directly (MCP)',
+  mcp_explain: 'Add this configuration to an AI app that supports MCP and it can read her voice profile, write scripts, check them and save them here. See the project README for steps.',
+  exp_kit: 'CapCut / Jianying kit', exp_kit_d: 'Subtitles, on-screen text, voiceover text and shot list in one zip',
+  exp_srt: 'Subtitle file (.srt)', exp_srt_d: 'Timing is estimated from speaking rate; adjust after importing',
+  exp_voice_d: 'One breath per line, for prompting or Jianying script matching (文稿匹配)',
+  err_manual_mode: 'Copy-and-paste mode is on; use the buttons on the page.', err_bad_task: 'Something went wrong. Please try again.',
+  ai_not_configured: 'AI is not connected. Open Settings first.', ai_manual_mode: 'Copy-and-paste mode is on.',
+  ai_local_address: 'The local model address must be on this computer (127.0.0.1 or localhost).',
+  ai_http: 'The AI service returned an error: ', ai_network: 'Could not reach the AI service. Check the network, or that the local model is running.',
+  ai_bad_response: 'The AI service sent a reply that could not be read. Please try again.',
+  ai_bad_json: 'The reply is not in the expected format. Make sure the whole reply was pasted, or try again.',
+  ai_empty_result: 'The reply had nothing usable in it. Please try again.', ai_no_samples: 'There are no usable scripts in the library yet.',
+  ai_unknown_provider: 'That AI service is not supported.', ai_other: 'AI call failed: ',
+});
+
 const tf = (key, vars) => t(key).replace(/\{(\w+)\}/g, (_, k) => (vars[k] !== undefined ? vars[k] : ''));
 const num = (v) => (v === null || v === undefined ? '–' : Number(v).toLocaleString(lang === 'zh' ? 'zh-CN' : 'en-US'));
 
@@ -63,43 +108,118 @@ async function busy(btn, label, fn) {
   finally { if (btn.isConnected) { btn.disabled = false; btn.textContent = original; } }
 }
 
+/* ---------- AI: direct call, or copy-and-paste with a chat subscription ---------- */
+const AI_ENDPOINTS = { draft: '/api/generate', voice: '/api/voice/learn', ideas: '/api/recommendations' };
+
+/* Resolves with the server result, or undefined if she cancelled the copy-and-paste dialog. */
+async function aiRun(task, payload) {
+  if (appState.settings.manual) return manualBridge(task, payload);
+  return api('POST', AI_ENDPOINTS[task], payload);
+}
+
+async function copyText(text, fallbackEl) {
+  try { await navigator.clipboard.writeText(text); return true; } catch (e) { /* fall through */ }
+  fallbackEl.focus(); fallbackEl.select();
+  try { return document.execCommand('copy'); } catch (e) { return false; }
+}
+
+async function manualBridge(task, payload) {
+  const { prompt } = await api('POST', '/api/manual/prompt', Object.assign({ task }, payload));
+  const $modal = document.getElementById('modal');
+  return new Promise((resolve) => {
+    $modal.innerHTML = `<div class="sheet" role="dialog" aria-modal="true">
+      <h2>${esc(t('mb_title'))}</h2>
+      <p class="hint">${esc(t('mb_intro'))}</p>
+      <label class="field" for="mb-prompt">${esc(t('mb_step1'))}</label>
+      <textarea id="mb-prompt" class="mono" rows="5" readonly></textarea>
+      <div class="row" style="margin-top:8px">
+        <button class="btn primary" id="mb-copy">${esc(t('mb_copy'))}</button>
+        <a class="btn" href="https://chatgpt.com/" target="_blank" rel="noopener">${esc(t('mb_open'))}</a>
+        <span class="meta">${esc(tf('mb_size', { n: prompt.length.toLocaleString() }))}</span></div>
+      <label class="field" for="mb-reply">${esc(t('mb_step2'))}</label>
+      <textarea id="mb-reply" class="mono" rows="6" placeholder="${esc(t('mb_reply_ph'))}"></textarea>
+      <div class="row" style="margin-top:14px">
+        <button class="btn primary big" id="mb-done">${esc(t('mb_done'))}</button>
+        <button class="btn" id="mb-cancel">${esc(t('mb_cancel'))}</button></div>
+    </div>`;
+    $modal.hidden = false;
+    const $prompt = document.getElementById('mb-prompt');
+    $prompt.value = prompt;
+    const close = (value) => { $modal.hidden = true; $modal.innerHTML = ''; resolve(value); };
+    document.getElementById('mb-copy').onclick = async () => {
+      toast(t((await copyText(prompt, $prompt)) ? 'mb_copied' : 'mb_copy_failed'));
+    };
+    document.getElementById('mb-cancel').onclick = () => close(undefined);
+    document.getElementById('mb-done').onclick = async (e) => {
+      const btn = e.currentTarget;
+      btn.disabled = true;
+      try {
+        const reply = document.getElementById('mb-reply').value;
+        close(await api('POST', '/api/manual/reply', Object.assign({ task, reply }, payload)));
+      } catch (err) { showError(err); btn.disabled = false; }
+    };
+  });
+}
+
 /* ---------- settings ---------- */
 const LOCAL_PRESETS = { Ollama: 'http://127.0.0.1:11434/v1', 'LM Studio': 'http://127.0.0.1:1234/v1' };
 const settingsForm = { provider: '', models: [], model: '', localUrl: '' };
 
 function renderSettings() {
   const st = appState.settings;
-  if (!settingsForm.provider) { settingsForm.provider = st.provider || 'gemini'; settingsForm.model = st.model || ''; }
+  if (!settingsForm.provider) { settingsForm.provider = st.provider || 'manual'; settingsForm.model = st.model || ''; }
   if (!settingsForm.localUrl) settingsForm.localUrl = st.local_base_url || LOCAL_PRESETS.Ollama;
   const p = settingsForm.provider;
   const isLocal = p === 'local';
-  const names = { gemini: 'Google Gemini', openai: 'OpenAI', local: t('local_models') };
+  const isManual = p === 'manual';
+  const names = { manual: t('manual_name'), gemini: 'Google Gemini', openai: 'OpenAI', local: t('local_models') };
+  const status = (k) => (k === 'manual' ? t('no_key_needed') : t(st.keys[k] ? 'connected' : 'not_connected'));
   const models = settingsForm.models.length ? settingsForm.models : (st.provider === p && st.model ? [st.model] : []);
-  const access = isLocal
-    ? `<label class="field" for="key">${esc(t('local_url'))}</label>
+  let access;
+  if (isManual) {
+    access = `<div class="card" style="margin-top:16px"><p style="margin:0">${esc(t('manual_explain'))}</p></div>`;
+  } else if (isLocal) {
+    access = `<label class="field" for="key">${esc(t('local_url'))}</label>
        <input type="text" id="key" autocomplete="off" spellcheck="false" value="${esc(settingsForm.localUrl)}">
        <div class="chips" style="margin-top:8px">${Object.keys(LOCAL_PRESETS).map((k) =>
          `<button type="button" class="chip" data-preset="${esc(k)}">${esc(k)}</button>`).join('')}</div>
-       <p class="hint">${esc(t('local_hint'))}</p>`
-    : `<label class="field" for="key">${esc(t('api_key'))}</label>
+       <p class="hint">${esc(t('local_hint'))}</p>`;
+  } else {
+    access = `<label class="field" for="key">${esc(t('api_key'))}</label>
        <input type="password" id="key" autocomplete="off" placeholder="${esc(t(st.keys[p] ? 'key_saved_ph' : 'key_ph'))}">`;
-  $view.innerHTML = `<div class="wrap"><h1>${esc(t('settings_title'))}</h1><p class="sub">${esc(t('settings_sub'))}</p>
-    ${st.configured ? `<div class="card meta">${esc(t('current'))}: ${esc(names[st.provider])} · ${esc(st.model)}</div>` : ''}
-    <label class="field">${esc(t('provider'))}</label>
-    <div class="chips">${Object.keys(names).map((k) =>
-      `<button type="button" class="chip ${k === p ? 'on' : ''}" data-provider="${k}">${esc(names[k])}
-       <span class="hint">· ${esc(t(st.keys[k] ? 'connected' : 'not_connected'))}</span></button>`).join('')}</div>
-    ${access}
+  }
+  const modelPart = isManual ? '' : `
     <div class="row" style="margin-top:14px"><button class="btn" id="connect">${esc(t('connect'))}</button></div>
     <label class="field" for="model">${esc(t('model'))}</label>
     <select id="model" ${models.length ? '' : 'disabled'}>
       <option value="">${esc(t('pick_model'))}</option>
       ${models.map((m) => `<option value="${esc(m)}" ${m === settingsForm.model ? 'selected' : ''}>${esc(m)}</option>`).join('')}
-    </select>
-    <div class="row" style="margin-top:24px"><button class="btn primary big" id="save">${esc(t('save'))}</button></div></div>`;
+    </select>`;
+  const current = st.configured
+    ? `<div class="card meta" id="current">${esc(t('current'))}: ${esc(names[st.provider] || st.provider)}${st.manual ? '' : ' · ' + esc(st.model)}</div>` : '';
+  const mcp = appState.mcp;
+  const mcpCard = mcp ? `<details class="card" style="margin-top:32px"><summary>${esc(t('mcp_title'))}</summary>
+      <p class="hint">${esc(t('mcp_explain'))}</p>
+      <textarea id="mcp-snippet" class="mono" rows="4" readonly></textarea></details>` : '';
+  $view.innerHTML = `<div class="wrap"><h1>${esc(t('settings_title'))}</h1><p class="sub">${esc(t('settings_sub'))}</p>
+    ${current}
+    <label class="field">${esc(t('provider'))}</label>
+    <div class="chips">${Object.keys(names).map((k) =>
+      `<button type="button" class="chip ${k === p ? 'on' : ''}" data-provider="${k}">${esc(names[k])}
+       <span class="hint">· ${esc(status(k))}</span></button>`).join('')}</div>
+    ${access}${modelPart}
+    <div class="row" style="margin-top:24px"><button class="btn primary big" id="save">${esc(t('save'))}</button></div>
+    ${mcpCard}</div>`;
 
+  if (mcp) {
+    document.getElementById('mcp-snippet').value =
+      `# Codex: ~/.codex/config.toml\n[mcp_servers.learn_my_voice]\ncommand = ${JSON.stringify(mcp.python)}\nargs = [${JSON.stringify(mcp.script)}]`;
+  }
   const $key = document.getElementById('key');
-  const access_body = () => (isLocal ? { provider: p, base_url: $key.value.trim() } : { provider: p, key: $key.value });
+  const accessBody = () => {
+    if (isManual) return { provider: p };
+    return isLocal ? { provider: p, base_url: $key.value.trim() } : { provider: p, key: $key.value };
+  };
   if (isLocal) $key.oninput = () => { settingsForm.localUrl = $key.value; };
   $view.querySelectorAll('[data-preset]').forEach((b) => {
     b.onclick = () => { settingsForm.localUrl = LOCAL_PRESETS[b.dataset.preset]; settingsForm.models = []; renderSettings(); };
@@ -107,21 +227,23 @@ function renderSettings() {
   $view.querySelectorAll('[data-provider]').forEach((b) => {
     b.onclick = () => { settingsForm.provider = b.dataset.provider; settingsForm.models = []; settingsForm.model = ''; renderSettings(); };
   });
-  const $model = document.getElementById('model');
-  $model.onchange = () => { settingsForm.model = $model.value; };
-  document.getElementById('connect').onclick = async (e) => {
-    e.currentTarget.disabled = true;
-    try {
-      const out = await api('POST', '/api/settings/models', access_body());
-      appState.settings = out.settings; settingsForm.models = out.models;
-      if (!out.models.includes(settingsForm.model)) settingsForm.model = out.models.length === 1 ? out.models[0] : '';
-    } catch (err) { showError(err); }
-    renderSettings();
-  };
+  if (!isManual) {
+    const $model = document.getElementById('model');
+    $model.onchange = () => { settingsForm.model = $model.value; };
+    document.getElementById('connect').onclick = async (e) => {
+      e.currentTarget.disabled = true;
+      try {
+        const out = await api('POST', '/api/settings/models', accessBody());
+        appState.settings = out.settings; settingsForm.models = out.models;
+        if (!out.models.includes(settingsForm.model)) settingsForm.model = out.models.length === 1 ? out.models[0] : '';
+      } catch (err) { showError(err); }
+      renderSettings();
+    };
+  }
   document.getElementById('save').onclick = async () => {
-    if (!settingsForm.model) return toast(t('pick_model'));
+    if (!isManual && !settingsForm.model) return toast(t('pick_model'));
     try {
-      const out = await api('POST', '/api/settings', Object.assign(access_body(), { model: settingsForm.model }));
+      const out = await api('POST', '/api/settings', Object.assign(accessBody(), { model: settingsForm.model }));
       appState.settings = out.settings; toast(t('settings_saved')); renderSettings();
     } catch (err) { showError(err); }
   };
@@ -165,7 +287,7 @@ function sampleHtml(s) {
       <button class="btn ghost" data-del aria-label="${esc(t('delete'))}">✕</button>
     </div>
     <div class="metrics">${['views', 'likes', 'collects', 'comments'].map(metric).join('')}</div>
-    <details><summary>${esc(t('show_text'))} · ${spokenUnits(s.text)}${esc(t('chars'))}</summary>
+    <details><summary>${esc(t('show_text'))} · ${spokenUnits(s.text)}${lang === 'zh' ? '' : ' '}${esc(t('chars'))}</summary>
       <textarea data-f="text" rows="8">${esc(s.text)}</textarea></details>
   </div>`;
 }
@@ -235,8 +357,8 @@ function paintVoiceActions(dna, isExample) {
     <div class="row"><button class="btn primary big" id="learn" ${ready ? '' : 'disabled'}>${esc(t(isExample ? 'learn_btn' : 'learn_again'))}</button>
       ${!isExample && source.organic_scripts_analyzed ? `<span class="meta">${esc(tf('learn_source', { n: source.organic_scripts_analyzed }))} · ${esc(source.learned_at || '')}</span>` : ''}</div>
     ${hint ? `<p class="hint">${hint}</p>` : ''}`;
-  document.getElementById('learn').onclick = (e) => busy(e.currentTarget, t('learning'), async () => {
-    await api('POST', '/api/voice/learn', {});
+  document.getElementById('learn').onclick = (e) => busy(e.currentTarget, appState.settings.manual ? e.currentTarget.textContent : t('learning'), async () => {
+    if (!(await aiRun('voice', {}))) return;
     toast(t('learned'));
     await router();
   });
@@ -293,8 +415,8 @@ async function renderIdeas() {
       ${result ? `<span class="meta">${esc(t('generated_at'))} ${esc(fmtDate(result.generated_at))}</span>` : ''}</div>
     ${note ? `<p class="meta">${esc(note)}</p>` : ''}
     <div id="ideas">${ideas.map(ideaHtml).join('')}</div></div>`;
-  document.getElementById('ideas-btn').onclick = (e) => busy(e.currentTarget, t('thinking'), async () => {
-    await api('POST', '/api/recommendations', {});
+  document.getElementById('ideas-btn').onclick = (e) => busy(e.currentTarget, appState.settings.manual ? e.currentTarget.textContent : t('thinking'), async () => {
+    if (!(await aiRun('ideas', {}))) return;
     await renderIdeas();
   });
   document.getElementById('ideas').onclick = (e) => {
