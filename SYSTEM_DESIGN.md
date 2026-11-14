@@ -1,5 +1,7 @@
 # RedNote Personal Voice-Cloning & Bilingual Script Studio — System Architecture
 
+> **Status / 状态:** This is the original design document. Parts of it (link and video ingestion, transcription, sponsored briefs, the critic and the edit-diff learner, the vector store) are not built. See [README.md](./README.md) for what exists today. 这是最初的设计文档，其中一部分尚未实现；现状请看 [README.zh-CN.md](./README.zh-CN.md)。
+
 ## 1. Why Generic AI Fails for Chinese RedNote Creators ("AI味太重")
 
 When standard LLM prompts generate Chinese RedNote (`小红书`) scripts, they fail across five predictable dimensions:
@@ -163,6 +165,8 @@ When standard LLM prompts generate Chinese RedNote (`小红书`) scripts, they f
 - [`studio/corpus.py`](./studio/corpus.py) — Her imported scripts: `.docx` reading, measured clause lengths and particles, performance ranking, exemplar selection.
 - Voice learning runs `prompts/02_…md` over the library; topic ideas run [`prompts/06_content_recommender.md`](./prompts/06_content_recommender.md).
 - Providers: Gemini, OpenAI, or a local OpenAI-compatible server on this machine (Ollama, LM Studio). Local addresses are restricted to loopback.
+- Copy-and-paste mode lets a chat subscription with no API key do the AI steps; [`studio/mcp_server.py`](./studio/mcp_server.py) + [`run_mcp.py`](./run_mcp.py) expose the same steps to MCP clients over stdio.
+- [`studio/exports.py`](./studio/exports.py) — Text exports, `.srt` with estimated timing, and the 剪映 / CapCut kit. [`studio/checks.py`](./studio/checks.py) — Bilingual check messages.
 
 
 ---
