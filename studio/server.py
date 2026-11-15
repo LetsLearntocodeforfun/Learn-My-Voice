@@ -3,7 +3,16 @@
     python3 -m studio.server            # opens http://127.0.0.1:8765
 
 Binds to 127.0.0.1 only. Requests with an unexpected Host header are refused
-(DNS-rebinding protection) and writes must be JSON (blocks cross-site forms).
+(DNS-rebinding protection).
+
+Writes from another website are kept out in two ways:
+
+1. A write that names another site as its ``Origin`` is refused. Current
+   browsers put that header on every POST, PUT and DELETE a page sends.
+2. Every request body must be exactly ``application/json``. A page on another
+   site can make a browser send a form or plain text here without asking, but
+   not that type: for it the browser first asks this server for permission
+   (a CORS preflight), which it never gives.
 """
 from __future__ import annotations
 
@@ -69,7 +78,10 @@ class Handler(BaseHTTPRequestHandler):
         self._send(status, json.dumps(payload, ensure_ascii=False).encode("utf-8"), "application/json; charset=utf-8")
 
     def _read_json(self) -> Dict[str, Any]:
-        if "application/json" not in (self.headers.get("Content-Type") or ""):
+        # The media type has to be exactly application/json. Looking for those words anywhere in the header is
+        # not enough: "text/plain;application/json" contains them, and a page on another site can make a
+        # browser send that value without asking this server first.
+        if (self.headers.get("Content-Type") or "").split(";")[0].strip().lower() != "application/json":
             raise ApiError(415, "json_required")
         length = int(self.headers.get("Content-Length") or 0)
         if length > MAX_BODY:
@@ -96,8 +108,12 @@ class Handler(BaseHTTPRequestHandler):
     def _dispatch(self, method: str) -> None:
         try:
             port = self.server.server_address[1]
-            if (self.headers.get("Host") or "") not in ("127.0.0.1:%d" % port, "localhost:%d" % port):
+            hosts = ("127.0.0.1:%d" % port, "localhost:%d" % port)
+            if (self.headers.get("Host") or "") not in hosts:
                 raise ApiError(403, "bad_host")
+            origin = self.headers.get("Origin")
+            if method != "GET" and origin is not None and origin not in tuple("http://" + host for host in hosts):
+                raise ApiError(403, "bad_origin")      # a write sent by a page that is not this app
             split = urllib.parse.urlsplit(self.path)
             self.query = urllib.parse.parse_qs(split.query)
             if split.path.startswith("/api/"):

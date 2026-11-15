@@ -101,7 +101,16 @@ def list_models(provider: str, api_key: str = "", transport: Optional[Transport]
 
 def parse_json_text(text: str) -> Dict[str, Any]:
     """Parse model text as a JSON object, tolerating ```json fences and stray prose."""
-    cleaned = re.sub(r"^\s*```(?:json)?\s*|\s*```\s*$", "", text or "")
+    # Plain string work on purpose. A pattern did this before, and on a reply that was mostly white space
+    # its running time grew with the square of the length: 128,000 spaces held the server for 18 seconds.
+    cleaned = (text or "").strip()
+    if cleaned.startswith("```"):
+        cleaned = cleaned[3:]
+        if cleaned[:4].lower() == "json":
+            cleaned = cleaned[4:]
+        cleaned = cleaned.lstrip()
+    if cleaned.endswith("```"):
+        cleaned = cleaned[:-3].rstrip()
     try:
         value = json.loads(cleaned)
     except ValueError:

@@ -14,7 +14,11 @@ _EN_WORD = re.compile(r"[A-Za-z][A-Za-z'\u2019\-]*")
 _DIGIT = re.compile(r"\d")
 
 # [轻笑] / [停顿0.5s] / [原声: "..."] and full-width variants are cues, not her voiceover.
-_BRACKET_CUE = re.compile(r"\[[^\]]*\]|\uff3b[^\uff3d]*\uff3d|\u3010[^\u3011]*\u3011")
+# A cue runs from an opening bracket to the nearest closing one with no other opening bracket between. Stopping
+# at an opening bracket matters: without it, text with many "[" and no "]" is searched to its end once for every
+# "[", and one library item of 250,000 such characters made the library take 25 seconds to load while every
+# other request waited.
+_BRACKET_CUE = re.compile(r"\[[^\[\]]*\]|\uff3b[^\uff3b\uff3d]*\uff3d|\u3010[^\u3010\u3011]*\u3011")
 
 # "/" is the explicit breath separator used by the prompts. Pause punctuation is
 # treated as a breath break too unless punctuation_breaks=False.

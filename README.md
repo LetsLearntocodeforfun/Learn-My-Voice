@@ -160,7 +160,7 @@ generator reports limits for drafts produced on macOS, so this needs testing aga
 
 - Everything is stored in `data/` inside the project folder: scripts, library, voice profile, settings. The folder is git-ignored.
 - API keys are stored in `data/config.json` with owner-only permissions and are never sent back to the browser.
-- The web server listens on `127.0.0.1` only and rejects requests with an unexpected Host header.
+- The web server listens on `127.0.0.1` only, rejects requests with an unexpected Host header, and refuses writes sent by other websites.
 - AI steps send her voice profile, her notes and parts of her past scripts to whichever AI you chose. With a local model nothing leaves the computer.
 - Views, likes, collects and comments are typed in by hand. Nothing is fetched from any platform.
 - Trend keywords are pasted in by hand, or returned by a web-searching AI that you ask yourself. The studio makes no web requests for them. A trend lookup prompt contains her video titles, a one-line description of her persona if her voice has been learned, the area you typed and the keywords already tracked. It does not contain script text.

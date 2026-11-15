@@ -322,7 +322,8 @@ def trends_prompt(store: Store, focus: str = "", keyword_count: int = 12) -> Tup
     if not focus and not titles:
         raise llm.LLMError("Nothing says what her niches are: no focus was typed and the library is empty", "no_focus")
     dna, is_example = store.load_dna()
-    persona = None if is_example else (dna.get("persona_summary") or {}).get("one_line_essence_zh")
+    summary = dna.get("persona_summary")        # written by a model, so it may not be an object
+    persona = None if is_example or not isinstance(summary, dict) else summary.get("one_line_essence_zh")
     return _blueprint(STAGE7, {
         "today": time.strftime("%Y-%m-%d"),
         "max_age_days": str(TREND_SOURCE_MAX_AGE_DAYS),

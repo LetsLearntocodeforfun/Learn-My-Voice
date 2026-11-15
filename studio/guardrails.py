@@ -82,14 +82,22 @@ def _phrase_to_regex(phrase: str) -> Optional["re.Pattern[str]"]:
 
 
 def _attested_strings(dna: Dict[str, Any]) -> List[str]:
-    """Positive evidence of how she really speaks (never the ban lists)."""
-    out: List[str] = []
-    out += _get(dna, "persona_summary.audience_address_terms.uses", []) or []
-    out += _get(dna, "persona_summary.husband_and_family_references.verbatim_examples", []) or []
-    out += _get(dna, "lexical_fingerprint.discourse_connectors.high_frequency", []) or []
-    out += [o.get("verbatim_sample", "") for o in _get(dna, "lexical_fingerprint.signature_openers", []) or []]
-    out += _get(dna, "code_switching_grammar.natural_english_categories", []) or []
-    out += [e.get("authentic_her", "") for e in _get(dna, "code_switching_grammar.good_vs_bad_examples", []) or []]
+    """Positive evidence of how she really speaks (never the ban lists).
+
+    A profile is written by a model, so a list may be missing, not a list, or
+    hold the wrong kind of entry; anything that is not usable is skipped.
+    """
+    def items(path: str) -> List[Any]:
+        value = _get(dna, path, [])
+        return list(value) if isinstance(value, (list, tuple)) else []
+
+    out: List[Any] = []
+    out += items("persona_summary.audience_address_terms.uses")
+    out += items("persona_summary.husband_and_family_references.verbatim_examples")
+    out += items("lexical_fingerprint.discourse_connectors.high_frequency")
+    out += [o.get("verbatim_sample", "") for o in items("lexical_fingerprint.signature_openers") if isinstance(o, dict)]
+    out += items("code_switching_grammar.natural_english_categories")
+    out += [e.get("authentic_her", "") for e in items("code_switching_grammar.good_vs_bad_examples") if isinstance(e, dict)]
     return [s for s in out if isinstance(s, str)]
 
 
@@ -146,7 +154,10 @@ def lint_script(
     rules: List[Tuple["re.Pattern[str]", str, str, str]] = []
 
     def add_phrases(phrases: Iterable[str], category: str, severity: str, detail: str, skip_attested: bool = False) -> None:
-        for phrase in phrases or []:
+        # A profile is written by a model: a list may arrive as one string or hold objects. Only strings in a list count.
+        for phrase in phrases if isinstance(phrases, (list, tuple)) else []:
+            if not isinstance(phrase, str):
+                continue
             if skip_attested and phrase in attested_text:
                 continue
             rx = _phrase_to_regex(phrase)
@@ -164,7 +175,8 @@ def lint_script(
     for entry in lexicon.get("compliance", []):
         rules.append((re.compile(entry["pattern"]), COMPLIANCE_RISK, entry.get("severity", REVIEW), entry.get("reason_en", "Lexicon compliance term")))
 
-    rare_particles = [p for p in _get(dna, "lexical_fingerprint.modal_particles.rare_or_zero", []) or [] if p]
+    rare = _get(dna, "lexical_fingerprint.modal_particles.rare_or_zero", [])
+    rare_particles = [p for p in (rare if isinstance(rare, (list, tuple)) else []) if isinstance(p, str) and p]
 
     total_units = 0
     live_clip_sec = 0.0

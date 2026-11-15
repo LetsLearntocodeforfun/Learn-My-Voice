@@ -9,6 +9,7 @@ from __future__ import annotations
 import json
 import os
 import re
+import shutil
 import sqlite3
 import time
 import uuid
@@ -194,7 +195,11 @@ class Store:
         return json.loads(EXAMPLE_DNA_PATH.read_text(encoding="utf-8")), True
 
     def save_dna(self, dna: Dict[str, Any]) -> None:
-        """Replace her profile, keeping the previous one in voice_dna_history/."""
+        """Replace her profile, keeping the previous one in voice_dna_history/.
+
+        The previous profile is copied to the history folder, not moved there, so it stays in use if the
+        new one cannot be written (text that cannot be encoded, a full disk).
+        """
         if self.dna_path.exists():
             self.dna_history_dir.mkdir(exist_ok=True)
             stamp = time.strftime("%Y%m%d-%H%M%S")
@@ -203,7 +208,7 @@ class Store:
             while target.exists():
                 n += 1
                 target = self.dna_history_dir / ("voice_dna-%s-%d.json" % (stamp, n))
-            os.replace(str(self.dna_path), str(target))
+            shutil.copyfile(str(self.dna_path), str(target))
         self._write_json(self.dna_path, dna)
 
     # ---- recommendations ------------------------------------------------
