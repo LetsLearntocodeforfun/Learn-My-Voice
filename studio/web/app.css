@@ -85,13 +85,47 @@ textarea { resize: none; overflow: hidden; }
 #toast { position: fixed; left: 50%; bottom: 28px; transform: translateX(-50%); background: var(--ink); color: #fff; padding: 10px 20px; border-radius: 999px; opacity: 0; pointer-events: none; transition: opacity .2s; max-width: 80vw; font-size: 14px; }
 #toast.show { opacity: .95; }
 
-/* teleprompter */
-#prompter { position: fixed; inset: 0; background: #000; color: #fff; z-index: 100; display: flex; flex-direction: column; }
+/* teleprompter (prompter.js) */
+#prompter { position: fixed; inset: 0; z-index: 100; }
 #prompter[hidden] { display: none; }
-#prompter .bar { display: flex; gap: 10px; padding: 12px 16px; align-items: center; background: #111; flex-wrap: wrap; }
-#prompter .bar .btn { background: #222; border-color: #333; color: #fff; }
-#prompter .scroll { flex: 1; overflow-y: auto; padding: 40vh 8vw; text-align: center; }
-#prompter .scroll p { margin: 0 0 .9em; font-weight: 600; line-height: 1.5; }
+/* tp-look:start
+   How the prompter looks. studio/exports.py copies this block as it stands into the single file made for a
+   phone, so it uses no variable from the top of this sheet and loads nothing. */
+.tp { display: flex; flex-direction: column; background: #000; color: #fff; touch-action: manipulation; -webkit-tap-highlight-color: transparent; }
+.tp button { font: inherit; color: #fff; background: #222; border: 1px solid #3a3a3a; border-radius: 999px; padding: 8px 16px; cursor: pointer; white-space: nowrap; }
+/* Only where a pointer can rest on a button: on a touch screen the last one tapped would stay lit. */
+@media (hover: hover) { .tp button:hover { border-color: #e0523f; } }
+.tp button:focus-visible { outline: 2px solid #fff; outline-offset: 2px; }
+.tp button[aria-disabled="true"] { opacity: .4; cursor: not-allowed; }
+.tp button[aria-pressed="true"], .tp button.tp-go { background: #e0523f; border-color: #e0523f; }
+.tp button.tp-go { font-weight: 600; min-width: 6.5em; }
+.tp-bar { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 10px; padding: 10px 14px; background: #111; }
+.tp-group { display: flex; align-items: center; gap: 6px; }
+.tp-pace { min-width: 3em; text-align: center; font-variant-numeric: tabular-nums; }
+.tp-key { margin-left: 8px; font-size: 12px; opacity: .6; }
+.tp-spacer { flex: 1; }
+.tp-status { display: flex; flex-wrap: wrap; gap: 2px 16px; padding: 4px 16px 8px; background: #111; color: #bbb; font-size: 14px; }
+.tp-time { color: #fff; font-variant-numeric: tabular-nums; }
+.tp-progress { height: 3px; background: #2a2a2a; }
+.tp-progress i { display: block; width: 0; height: 100%; background: #e0523f; }
+.tp-stage { position: relative; flex: 1; min-height: 0; overflow: hidden; cursor: pointer; -webkit-user-select: none; user-select: none; }
+/* Mirrored for a teleprompter glass: the text only, so the buttons stay readable from where she stands. */
+.tp-mirror .tp-flip { transform: scaleX(-1); }
+.tp-text { position: relative; padding: 0 9vw; text-align: center; font-weight: 600; line-height: 1.5; will-change: transform; }
+.tp-text p { margin: 0; padding-bottom: .9em; opacity: .55; transition: opacity .2s; word-break: break-word; overflow-wrap: anywhere; }
+.tp-text p.tp-past { opacity: .25; }
+.tp-text p.tp-now, .tp-text p.tp-end { opacity: 1; }
+.tp-text p.tp-end { color: #e0523f; }
+/* The reading line: a mark at each edge, 40% of the way down (TP_READ_AT in prompter.js). The marks light up while the text is moving. */
+.tp-line { position: absolute; top: 40%; left: 0; right: 0; height: 0; pointer-events: none; }
+.tp-line::before, .tp-line::after { content: ''; position: absolute; top: -2px; width: 5vw; height: 4px; border-radius: 2px; background: #555; }
+.tp-line::before { left: 0; }
+.tp-line::after { right: 0; }
+.tp[data-state="running"] .tp-line::before, .tp[data-state="running"] .tp-line::after { background: #e0523f; }
+.tp-count { position: absolute; top: 0; right: 0; bottom: 0; left: 0; display: grid; place-items: center; background: rgba(0, 0, 0, .6); font-size: 28vmin; font-weight: 700; pointer-events: none; }
+.tp-count[hidden] { display: none; }
+@media (prefers-reduced-motion: reduce) { .tp-text p { transition: none; } }
+/* tp-look:end */
 
 @media (max-width: 720px) {
   body { flex-direction: column; }

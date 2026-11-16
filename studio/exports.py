@@ -1,30 +1,43 @@
-"""Files she takes out of the studio: text lists, subtitle files, and the 剪映 / CapCut kit.
+"""Files she takes out of the studio: text lists, subtitle files, the 剪映 / CapCut kit, and a teleprompter for a phone.
 
 Subtitle timing here is an ESTIMATE: clauses are laid back to back at her
 speaking rate. Nothing listens to her recording. For subtitles aligned to the
 real audio, the kit also contains plain voiceover text for 剪映's 文稿匹配.
+
+The phone teleprompter is one page with everything inside it. It is paced by
+arithmetic on the same speaking rate, it loads nothing and sends nothing, and
+it is put together from the code and the styles of the app's own prompter
+(``_shared``), so the two cannot drift apart.
 """
 from __future__ import annotations
 
+import html
 import io
+import json
 import math
+import re
 import zipfile
+from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
-from . import textstats
+from . import creator, textstats
 
 Cue = Tuple[float, float, str]
 
 DEFAULT_RATE = 240.0     # units per minute, used when the profile has no rate
 MIN_CUE_SEC = 0.5
 SILENT_FLOWER_SEC = 2.0  # on-screen text on a line with nothing spoken
-KINDS = ("jianying", "srt", "flower_srt", "voiceover", "shots", "flower")
+KINDS = ("jianying", "srt", "flower_srt", "voiceover", "shots", "flower", "prompter")
+WEB_DIR = Path(__file__).with_name("web")
+# Whose rate the teleprompter is paced by. The prompter has one sentence for each (tp_src_* in web/prompter.js).
+SOURCE_MINE, SOURCE_DEFAULT, SOURCE_EXAMPLE = "mine", "default", "example"
 
 _NAMES = {
     "zh": {"voiceover": "口播文稿.txt", "shots": "拍摄清单.txt", "flower": "花字清单.txt", "srt": "字幕.srt",
-           "flower_srt": "花字.srt", "howto": "使用说明.txt", "jianying": "剪映素材包.zip"},
+           "flower_srt": "花字.srt", "howto": "使用说明.txt", "jianying": "剪映素材包.zip", "prompter": "提词器.html"},
     "en": {"voiceover": "voiceover.txt", "shots": "shot_list.txt", "flower": "onscreen_text.txt", "srt": "subtitles.srt",
-           "flower_srt": "onscreen_text.srt", "howto": "HOW_TO_USE.txt", "jianying": "capcut-kit.zip"},
+           "flower_srt": "onscreen_text.srt", "howto": "HOW_TO_USE.txt", "jianying": "capcut-kit.zip",
+           "prompter": "teleprompter.html"},
 }
 
 
@@ -141,9 +154,160 @@ _FLOWER_PART = {
 }
 
 
+def _profile_rate(dna: Any) -> Optional[float]:
+    """The speaking rate a voice profile holds, or None when it holds none that can be used."""
+    # A stored profile may have the wrong shape (one saved by an early version from a wrong-shaped reply), and
+    # its rate may not be a number: then the default rate is used, as when there is no profile.
+    cadence = dna.get("cadence_and_syntax") if isinstance(dna, dict) else None
+    rate = cadence.get("target_speaking_rate_cpm") if isinstance(cadence, dict) else None
+    if isinstance(rate, bool) or not isinstance(rate, (int, float)) or not math.isfinite(rate) or rate <= 0:
+        return None
+    return rate
+
+
+# ---- the teleprompter for a phone ------------------------------------------------------------------------
+def prompter_breaths(script: Dict[str, Any]) -> List[Tuple[str, int]]:
+    """``(text, spoken units)`` for each breath she reads, in order. Must match ``tpBreaths`` in web/prompter.js.
+
+    Live clips and [cues] are left out, as in the voiceover text. A breath with nothing this app counts in it
+    (only punctuation, say) still gets one unit, so the prompter shows it for a moment and never passes over it.
+    """
+    out: List[Tuple[str, int]] = []
+    for line in script["lines"]:
+        if not isinstance(line, dict) or _is_live(line):
+            continue
+        spoken = line.get("spoken_script_zh")
+        for clause in textstats.split_clauses(spoken if isinstance(spoken, str) else "", punctuation_breaks=False):
+            out.append((clause, max(1, textstats.spoken_units(clause))))
+    return out
+
+
+def prompter_pace(dna: Any, is_example: bool = False) -> Tuple[float, str]:
+    """``(units per minute, whose rate that is)`` for the teleprompter.
+
+    It is called hers only when it was measured from her recordings or typed in by her, on her own profile.
+    The bundled example's rate is called the example's. Anything else is called the default: no usable rate
+    at all (then DEFAULT_RATE), or the one a profile holds before either has happened. The voice page and the
+    prompter in the app draw the same line.
+    """
+    rate = _profile_rate(dna)
+    if rate is None:
+        return DEFAULT_RATE, SOURCE_DEFAULT
+    if is_example:
+        return rate, SOURCE_EXAMPLE
+    summary = dna.get("source_corpus_summary")
+    summary = summary if isinstance(summary, dict) else {}
+    hers = summary.get("speaking_rate_source") == "measured" or summary.get("speaking_rate_confirmed") is True
+    return rate, SOURCE_MINE if hers else SOURCE_DEFAULT
+
+
+def _shared(name: str, mark: str) -> str:
+    """The part of a file of the interface between its ``<mark>:start`` and ``<mark>:end`` comments.
+
+    The phone teleprompter runs the very code, and wears the very styles, of the prompter in the app. Those
+    parts use nothing else from the app and name no address. tests/test_prompter.py checks both.
+    """
+    text = (WEB_DIR / name).read_text(encoding="utf-8")
+    last = "/* %s:end */" % mark
+    start = text.index("/* %s:start" % mark)
+    return text[start:text.index(last, start) + len(last)] + "\n"
+
+
+def _page_text(text: str) -> str:
+    """Text for the markup of the phone page.
+
+    "/" is written as a character reference as well. Nothing she typed (a web address in a title, say) can
+    then put two slashes in a row into the file, which is checked to hold no address at all.
+    """
+    return html.escape(text, quote=True).replace("/", "&#47;")
+
+
+_IN_SCRIPT = {"<": "\\u003c", ">": "\\u003e", "&": "\\u0026", "\u2028": "\\u2028", "\u2029": "\\u2029", "/": "\\/"}
+
+
+def _page_json(value: Any) -> str:
+    """JSON that is safe inside a script element of the phone page.
+
+    "<", ">" and "&" are written as escapes, so a line that says ``</script>`` stays a line of the script and
+    ends nothing. U+2028 and U+2029 are escaped because older browsers read them as line ends in code. "/" is
+    escaped for the reason given in ``_page_text``. A JSON reader gets the same text back in every case.
+    """
+    text = json.dumps(value, ensure_ascii=False, allow_nan=False, separators=(",", ":"))
+    return re.sub("[<>&/\u2028\u2029]", lambda found: _IN_SCRIPT[found.group()], text)
+
+
+_PHONE_WORDS = {
+    "zh": {"title": "提词器", "empty": "脚本还是空的。",
+           "cannot_run": "这个打开方式不能运行提词器，所以文字不会自己走。下面是全文，可以用手滑动；"
+                         "换用浏览器打开这个文件，它才会按语速走。"},
+    "en": {"title": "Teleprompter", "empty": "The script is empty.",
+           "cannot_run": "The prompter cannot run in this view, so the text will not move on its own. The whole "
+                         "text is below and can be scrolled by hand; open this file in a browser to have it paced."},
+}
+
+# On top of the shared styles: the page is the prompter, the buttons sit under the thumb and are large enough
+# to hit, keys are not named (a phone has none), and the text can be read and scrolled where code cannot run.
+_PHONE_CSS = """html, body { height: 100%; margin: 0; background: #000; }
+body { font: 16px/1.5 -apple-system, "PingFang SC", "Hiragino Sans GB", "Microsoft YaHei", sans-serif; -webkit-text-size-adjust: 100%; }
+.tp { position: fixed; top: 0; right: 0; bottom: 0; left: 0; }
+.tp-status { padding-top: calc(8px + env(safe-area-inset-top)); }
+.tp-bar { order: 1; justify-content: center; padding-bottom: calc(10px + env(safe-area-inset-bottom)); }
+.tp button { min-height: 44px; }
+.tp-key { display: none; }
+.tp-note { margin: 0; padding: 12px 16px; background: #111; color: #bbb; font-size: 14px; }
+.tp-static { flex: 1; min-height: 0; overflow-y: auto; -webkit-overflow-scrolling: touch; padding: 24px 9vw; text-align: center; font-size: 30px; font-weight: 600; }
+.tp-static p { margin: 0 0 .9em; word-break: break-word; overflow-wrap: anywhere; }
+"""
+
+# Starts the shared prompter on the data written into the page. The text size it begins with suits a phone.
+_PHONE_START = """(function () {
+  var data = JSON.parse(document.getElementById('tp-data').textContent);
+  var words = TP_TEXT[data.lang];
+  tpMount(document.getElementById('tp'), {
+    breaths: data.breaths.map(function (b) { return { text: b[0], units: b[1] }; }),
+    cpm: data.cpm,
+    source: data.source,
+    size: 34,
+    say: function (key) { return String(words[key]).split('{@names}').join(data.names); }
+  });
+}());
+"""
+
+
+def prompter_page(script: Dict[str, Any], dna: Any = None, lang: str = "zh", dna_is_example: bool = False,
+                  who: Any = None) -> str:
+    """The teleprompter as one page that needs nothing else: styles, code and the script are all inside it.
+
+    Her text is in the page twice. Once as JSON, which the prompter reads (``_page_json``). And once as plain
+    paragraphs, which are what shows where code is not run at all (a file preview on a phone, for one) and
+    which the prompter replaces where it does run. ``who`` is the creator profile: English text names her.
+    """
+    lang = "en" if lang == "en" else "zh"
+    words = _PHONE_WORDS[lang]
+    breaths = prompter_breaths(script)
+    rate, source = prompter_pace(dna, dna_is_example)
+    data = {"lang": lang, "cpm": rate, "source": source, "names": creator.english_name(who) + "'s",
+            "breaths": [[text, units] for text, units in breaths]}
+    plain = "".join("<p>%s</p>" % _page_text(text) for text, _ in breaths) or "<p>%s</p>" % _page_text(words["empty"])
+    return "".join((
+        '<!doctype html>\n<html lang="%s">\n<head>\n<meta charset="utf-8">\n' % ("en" if lang == "en" else "zh-CN"),
+        '<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">\n',
+        "<title>%s</title>\n" % _page_text("%s · %s" % (script["title"], words["title"])),
+        "<style>\n", _shared("app.css", "tp-look"), _PHONE_CSS, "</style>\n</head>\n<body>\n",
+        '<div id="tp" class="tp"><noscript><p class="tp-note">%s</p></noscript><div class="tp-static">%s</div></div>\n'
+        % (_page_text(words["cannot_run"]), plain),
+        '<script type="application/json" id="tp-data">', _page_json(data), "</script>\n",
+        "<script>\n'use strict';\n", _shared("prompter.js", "tp-core"), _PHONE_START, "</script>\n</body>\n</html>\n",
+    ))
+
+
 def export_file(script: Dict[str, Any], kind: str, dna: Optional[Dict[str, Any]] = None,
-                lang: str = "zh") -> Tuple[str, bytes, str]:
-    """Return ``(filename, body, content_type)``; raises KeyError for an unknown kind."""
+                lang: str = "zh", dna_is_example: bool = False, who: Any = None) -> Tuple[str, bytes, str]:
+    """Return ``(filename, body, content_type)``; raises KeyError for an unknown kind.
+
+    ``dna_is_example`` and ``who`` (the creator profile) matter to the phone teleprompter only, which says
+    whose rate it is paced by.
+    """
     if kind not in KINDS:
         raise KeyError(kind)
     names = _NAMES["en" if lang == "en" else "zh"]
@@ -157,13 +321,11 @@ def export_file(script: Dict[str, Any], kind: str, dna: Optional[Dict[str, Any]]
         return filename, _numbered(script, "visual_broll_en_zh").encode("utf-8"), text_type
     if kind == "flower":
         return filename, _numbered(script, "onscreen_flower_text_zh").encode("utf-8"), text_type
+    if kind == "prompter":
+        page = prompter_page(script, dna, lang, dna_is_example, who)
+        return filename, page.encode("utf-8"), "text/html; charset=utf-8"
 
-    # A stored profile may have the wrong shape (one saved by an early version from a wrong-shaped reply), and
-    # its rate may not be a number: then the default rate is used, as when there is no profile.
-    cadence = dna.get("cadence_and_syntax") if isinstance(dna, dict) else None
-    rate = cadence.get("target_speaking_rate_cpm") if isinstance(cadence, dict) else None
-    if isinstance(rate, bool) or not isinstance(rate, (int, float)) or not math.isfinite(rate) or rate <= 0:
-        rate = None
+    rate = _profile_rate(dna)
     subtitles, flowers, total = build_cues(script["lines"], rate)
     if kind == "srt":
         return filename, to_srt(subtitles).encode("utf-8"), "application/x-subrip; charset=utf-8"

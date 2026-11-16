@@ -968,9 +968,10 @@ class Handler(BaseHTTPRequestHandler):
             if script is None:
                 raise ApiError(404, "not_found")
             if export_kind and method == "GET":
-                dna, _ = store.load_dna()
+                dna, is_example = store.load_dna()
                 try:
-                    filename, data, content_type = exports.export_file(script, export_kind, dna, self._lang())
+                    filename, data, content_type = exports.export_file(
+                        script, export_kind, dna, self._lang(), dna_is_example=is_example, who=store.load_creator())
                 except KeyError:
                     raise ApiError(404, "unknown_export")
                 disposition = "attachment; filename*=UTF-8''" + urllib.parse.quote(filename)

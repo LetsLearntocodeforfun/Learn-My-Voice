@@ -21,7 +21,7 @@ const I18N = {
     exp_voice: '口播文稿', exp_voice_d: '一口气一行，可用于提词或字幕文稿',
     exp_shots: '拍摄清单', exp_shots_d: '每一句对应的画面', exp_flower: '花字清单', exp_flower_d: '剪辑时要加的花字',
     all_good: '没有发现问题 👍', issues_n: '处需要看一下',
-    start: '开始', pause: '暂停', speed: '速度', size: '字号', close: '关闭', prompter_empty: '脚本还是空的。',
+    close: '关闭',
     voice_title: '我的声音', voice_sub: 'AI 写稿和检查时参照的说话习惯。',
     v_essence: '整体感觉', v_rate: '语速', v_rate_u: '字/分钟', v_clause: '每口气字数', v_particles: '常用语气词',
     v_address: '怎么称呼大家', v_partner: '怎么称呼{@partner}', v_partner_any: '怎么称呼一起出镜的人',
@@ -53,7 +53,7 @@ const I18N = {
     exp_voice: 'Voiceover text', exp_voice_d: 'One breath per line, for prompting or subtitle text',
     exp_shots: 'Shot list', exp_shots_d: 'What to film for each line', exp_flower: 'On-screen text list', exp_flower_d: 'Text overlays to add when editing',
     all_good: 'No issues found 👍', issues_n: 'things to check',
-    start: 'Start', pause: 'Pause', speed: 'Speed', size: 'Size', close: 'Close', prompter_empty: 'The script is empty.',
+    close: 'Close',
     voice_title: '{@Names} voice', voice_sub: 'The speech habits used for drafting and checking.',
     v_essence: 'Overall feel', v_rate: 'Speaking rate', v_rate_u: 'units/min', v_clause: 'Units per breath', v_particles: 'Particles',
     v_address: 'Addresses viewers as', v_partner: 'Refers to {@partner} as', v_partner_any: 'Refers to an on-camera partner as',
@@ -374,6 +374,7 @@ function paintScript() {
           <a href="#" data-export="voiceover">${esc(t('exp_voice'))}<small>${esc(t('exp_voice_d'))}</small></a>
           <a href="#" data-export="shots">${esc(t('exp_shots'))}<small>${esc(t('exp_shots_d'))}</small></a>
           <a href="#" data-export="flower">${esc(t('exp_flower'))}<small>${esc(t('exp_flower_d'))}</small></a>
+          <a href="#" data-export="prompter">${esc(t('tp_exp'))}<small>${esc(t('tp_exp_d'))}</small></a>
         </div></div>
       <button class="btn ghost" id="delete-btn">${esc(t('delete'))}</button></div>
     <input type="text" class="title-input" id="title" value="${esc(s.title)}" placeholder="${esc(t('untitled'))}">
@@ -436,7 +437,7 @@ function paintScript() {
     await api('DELETE', '/api/scripts/' + s.id);
     cur = null; location.hash = '#/';
   };
-  document.getElementById('prompter-btn').onclick = openPrompter;
+  document.getElementById('prompter-btn').onclick = openPrompter;   // in prompter.js
   craftAttach();    // craft.js: the per-line writing tools and whichever of them is open
 }
 
@@ -445,56 +446,6 @@ async function renderScript(id) {
   const lint = await api('POST', '/api/lint', lintBody(script));
   cur = { script, findings: lint.findings, stats: lint.stats, coverage: lint.keyword_coverage, voice: lint.voice_match };
   paintScript();
-}
-
-/* ---------- teleprompter ---------- */
-const prompter = { running: false, speed: 40, size: 44, raf: 0, last: 0, pos: 0 };
-
-function openPrompter() {
-  const clauses = [];
-  cur.script.lines.forEach((l) => {
-    if (String(l.audio_mode || '').toUpperCase() === 'LIVE_CLIP') return;
-    String(l.spoken_script_zh || '').replace(/\[[^\]]*\]|［[^］]*］|【[^】]*】/g, '').split(/[\/\n]/)
-      .map((c) => c.trim()).filter(Boolean).forEach((c) => clauses.push(c));
-  });
-  $prompter.innerHTML = `<div class="bar">
-      <button class="btn" data-p="toggle">${esc(t('start'))}</button>
-      <span>${esc(t('speed'))}</span><button class="btn" data-p="slower">−</button><button class="btn" data-p="faster">＋</button>
-      <span>${esc(t('size'))}</span><button class="btn" data-p="smaller">−</button><button class="btn" data-p="bigger">＋</button>
-      <span class="spacer"></span><button class="btn" data-p="close">${esc(t('close'))}</button></div>
-    <div class="scroll" style="font-size:${prompter.size}px">${
-      clauses.length ? clauses.map((c) => `<p>${esc(c)}</p>`).join('') : `<p>${esc(t('prompter_empty'))}</p>`}</div>`;
-  $prompter.hidden = false;
-  const $scroll = $prompter.querySelector('.scroll');
-  prompter.pos = 0; $scroll.scrollTop = 0;
-  const step = () => {
-    const now = performance.now();
-    prompter.pos += prompter.speed * (now - prompter.last) / 1000;
-    prompter.last = now;
-    $scroll.scrollTop = prompter.pos;
-  };
-  const setRunning = (on) => {
-    prompter.running = on;
-    $prompter.querySelector('[data-p="toggle"]').textContent = t(on ? 'pause' : 'start');
-    clearInterval(prompter.raf);
-    if (on) { prompter.pos = $scroll.scrollTop; prompter.last = performance.now(); prompter.raf = setInterval(step, 16); }
-  };
-  const close = () => { setRunning(false); $prompter.hidden = true; document.removeEventListener('keydown', onKey); };
-  const onKey = (e) => {
-    if (e.key === 'Escape') close();
-    if (e.key === ' ') { e.preventDefault(); setRunning(!prompter.running); }
-  };
-  document.addEventListener('keydown', onKey);
-  $prompter.onclick = (e) => {
-    const p = e.target.dataset.p;
-    if (p === 'toggle') setRunning(!prompter.running);
-    else if (p === 'slower') prompter.speed = Math.max(10, prompter.speed - 10);
-    else if (p === 'faster') prompter.speed = Math.min(200, prompter.speed + 10);
-    else if (p === 'smaller' || p === 'bigger') {
-      prompter.size = Math.max(24, Math.min(96, prompter.size + (p === 'bigger' ? 6 : -6)));
-      $scroll.style.fontSize = prompter.size + 'px';
-    } else if (p === 'close') close();
-  };
 }
 
 /* ---------- voice ---------- */
