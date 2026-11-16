@@ -1,5 +1,7 @@
 # Local data: scripts database, API keys, voice profile. Never commit.
 data/
+# On-device Whisper: its own Python environment, packages and model. Never commit.
+local_tools/
 __pycache__/
 *.pyc
 .DS_Store
