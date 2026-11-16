@@ -24,12 +24,26 @@ when the tag is made, and "State of this release" has to be read again then.
   and then goes into later draft prompts.
 - **What a draft was based on.** Each AI draft lists which of the creator's scripts its prompt contained.
 - **Phrases never to be used.** Typed in during setup and enforced by rule in every check.
+- **One line to ideas.** On 选题建议, and on the home page once an AI is connected, the creator types one line
+  about what they want to film, or leaves it empty, and clicks 找选题. With a Gemini or OpenAI key the app first
+  asks that service to search the web for current keywords in the creator's niches, keeps those that come with
+  a source link (marked as unverified), and then asks for ideas that answer the line. The page shows the ideas,
+  the keywords found with their sources, and the pages the lookup cited. With a local model or in copy & paste
+  mode the same two steps are offered by hand. When one step fails the other's result is still shown, and ideas
+  saved earlier stay.
+- **Saying the line.** On a Mac with the on-device transcriber the line can be spoken. The recording goes to
+  the app on this computer, is turned into text there and deleted; the browser's own speech recognition is not
+  used. The text lands in the box and can be corrected before anything is sent.
 
 **Changed**
 
 - Through MCP, `save_voice_profile` stores a proposal only, and `update_script` only revises an AI draft the
   creator has not edited.
 - A save based on an older version of a script is refused instead of replacing the newer one.
+- With a Gemini or OpenAI key, 找选题 now sends a web lookup to that service unless the tick for it is removed.
+  Before, the app never started a web lookup itself. The lookup prompt is the one already used by copy and
+  paste: niches, up to 20 titles, tracked keywords and the line typed, and nothing else about the creator.
+- Through MCP, `get_topic_ideas_brief` and `save_topic_ideas` take an optional `focus`.
 
 **Fixed**
 
@@ -38,6 +52,8 @@ when the tag is made, and "State of this release" has to be read again then.
 - On Windows the pages' scripts could be sent as plain text, which leaves the page empty. Also found by
   reading the code.
 - A `.docx` of 437 bytes held the server for 10 seconds, and one pasted trend line of 32,000 spaces for 7.5.
+- A pasted trend lookup in which one source link had a stray bracket (`http://[...`) failed with "internal
+  error". Such a keyword now counts as one without a source.
 - Answers and stored files never contain `NaN` or `Infinity`, which used to make a page show nothing.
 - Files are written whole and flushed to disk before they replace the old one. On macOS and Linux the data
   folder is closed to the other accounts on the computer.
@@ -47,8 +63,15 @@ when the tag is made, and "State of this release" has to be read again then.
 
 **State of this release**
 
-- 429 automated tests pass on macOS with Python 3.9.6. One of them transcribes real audio and only runs where
+- 460 automated tests pass on macOS with Python 3.9.6. One of them transcribes real audio and only runs where
   the transcriber is installed.
+- One line to ideas: the pages were run together with the server in headless Chrome, against stand-in AI
+  replies. The web lookup through a Gemini or OpenAI key is written from those services' documentation as it
+  read on 16 November 2026 and has not been run against either. Google's terms for showing search-grounded
+  results have not been read.
+- Saying the line: tested with the Whisper on one Mac and a sound stream in place of the microphone. It wrote
+  an English sentence correctly and got one word of a Chinese sentence wrong (秋冬 as 邱中, synthetic voice). A
+  real microphone has not been tried.
 - On-device transcription has been set up and used on one Mac. Whisper gets some sentence-final particles
   wrong.
 - A workflow runs the tests on macOS, Windows and Linux on every push. At the time of writing it has not run.
