@@ -1,0 +1,53 @@
+# Runs the test suite on every push and pull request, on the three systems the app is meant for.
+#
+# macOS is what the app was built and tested on, so a failure there fails the run.
+# Windows and Linux have never run this code. Their jobs are allowed to fail for now: a red job
+# there is the list of what to fix, and it does not mark the whole run as failed. Remove
+# `experimental` from a system once its jobs pass, so that a later failure there counts.
+#
+# The suite needs nothing installed besides Python. The one test that transcribes real audio only
+# runs where on-device transcription has been set up, which is never the case here.
+name: Tests
+
+on:
+  push:
+  pull_request:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: tests-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  tests:
+    name: ${{ matrix.os }} / Python ${{ matrix.python }}
+    runs-on: ${{ matrix.os }}
+    continue-on-error: ${{ matrix.experimental }}
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        # ubuntu-24.04 by name: Python 3.9 is not built for newer Ubuntu images.
+        os: [macos-latest, windows-latest, ubuntu-24.04]
+        # 3.9 is the lowest version supported and the one macOS ships. 3.13 is the first where
+        # Windows has os.fchmod, so 3.9 and 3.13 take different paths there. 3.15 is the newest.
+        python: ["3.9", "3.13", "3.15"]
+        include:
+          - os: macos-latest
+            experimental: false
+          - os: windows-latest
+            experimental: true
+          - os: ubuntu-24.04
+            experimental: true
+    steps:
+      # Actions are pinned to a commit, not a tag: a tag can be moved to different code later.
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1         # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0     # v7.1.0
+        with:
+          python-version: ${{ matrix.python }}
+      - name: Run the tests
+        run: python -m unittest discover -t . -s tests
