@@ -639,6 +639,15 @@ class Store:
             rows = db.execute("SELECT * FROM samples ORDER BY created_at DESC, rowid DESC").fetchall()
         return [self._sample_row(r) for r in rows]
 
+    def samples_version(self) -> Tuple[Any, ...]:
+        """A value that changes whenever the library changes: an item added, removed, edited, confirmed or
+        marked sponsored. Reading it costs four numbers, so something measured from the whole library
+        (``voicematch.reference_for``) can be kept until this value moves."""
+        with self._db() as db:
+            row = db.execute("SELECT COUNT(*), COALESCE(MAX(updated_at), 0), COALESCE(SUM(needs_review), 0),"
+                             " COALESCE(SUM(is_sponsored), 0) FROM samples").fetchone()
+        return tuple(row)
+
     def get_sample(self, sample_id: str) -> Optional[Dict[str, Any]]:
         with self._db() as db:
             row = db.execute("SELECT * FROM samples WHERE id = ?", (sample_id,)).fetchone()

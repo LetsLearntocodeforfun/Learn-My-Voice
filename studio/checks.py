@@ -4,7 +4,7 @@ from __future__ import annotations
 import unicodedata
 from typing import Any, Dict, Optional
 
-from . import creator, guardrails, textstats, trends
+from . import creator, guardrails, textstats, trends, voicematch
 from .store import Store, normalize_keywords
 
 # English messages name the creator: {name} is their name, or "the creator" before setup. Chinese speaks to them as 你.
@@ -64,6 +64,9 @@ def lint_payload(store: Store, lines: Any, target_sec: Optional[float], keywords
     Phrases the creator refuses to say are checked as part of that profile, also
     while it is still the bundled example. They are merged in here, per check,
     and never stored in the voice profile.
+
+    ``voice_match`` compares the lines with the creator's own material, not with the voice profile: four
+    habits counted in code on both sides (``voicematch.score``). It needs none of the AI steps.
     """
     stored, is_example = store.load_dna()
     who = store.load_creator()
@@ -75,4 +78,5 @@ def lint_payload(store: Store, lines: Any, target_sec: Optional[float], keywords
     described = [describe(f, stats, who, f.category == guardrails.GENERIC_XHS_SLOP and (f.line_no, f.matched) in own)
                  for f in findings]
     return {"stats": stats, "findings": described, "dna_is_example": is_example,
-            "keyword_coverage": trends.coverage(normalize_keywords(keywords), script["script_lines"], post)}
+            "keyword_coverage": trends.coverage(normalize_keywords(keywords), script["script_lines"], post),
+            "voice_match": voicematch.score(script["script_lines"], voicematch.reference_for(store))}

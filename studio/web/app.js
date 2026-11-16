@@ -269,7 +269,7 @@ function renderNew() {
 }
 
 /* ---------- script workspace ---------- */
-let cur = null;          // { script, findings, stats }
+let cur = null;          // { script, findings, stats, coverage, voice }
 let saveTimer = null;
 let dirty = false;
 let lintSeq = 0;
@@ -300,6 +300,7 @@ async function saveNow() {
     cur.findings = lint.findings;
     cur.stats = lint.stats;
     cur.coverage = lint.keyword_coverage;
+    cur.voice = lint.voice_match;
     paintChecks();
     if (!dirty) setSaved('saved');
   } catch (e) { dirty = true; setSaved('save_failed'); }
@@ -355,6 +356,7 @@ function paintChecks() {
       <span>${lineIssues ? `${lineIssues} ${esc(t('issues_n'))}` : esc(t('all_good'))}</span></div>
     <div class="meter"><i class="${cls}" style="width:${Math.min(100, Math.round(ratio * 100))}%"></i></div>
     <div class="issues" style="margin-top:8px">${whole.map(chip).join('')}</div>`;
+  paintVoiceMatch(document.getElementById('vm-box'), cur.voice);   // craft.js
   paintCounts();
 }
 
@@ -379,6 +381,7 @@ function paintScript() {
       `<button type="button" class="chip ${v === s.target_sec ? 'on' : ''}" data-sec="${v}">${v}${esc(t('sec'))}</button>`).join('')}</div>
     <div id="kw-box"></div>
     <div class="summary" id="summary"></div>
+    <div id="vm-box"></div>
     <div id="lines">${s.lines.map(lineHtml).join('')}</div>
     <button class="btn" id="add-line">${esc(t('add_line'))}</button>
     <div id="post-box"></div><div id="basis-box"></div><div id="edits-box"></div></div>`;
@@ -438,7 +441,7 @@ function paintScript() {
 async function renderScript(id) {
   const script = await api('GET', '/api/scripts/' + id);
   const lint = await api('POST', '/api/lint', lintBody(script));
-  cur = { script, findings: lint.findings, stats: lint.stats, coverage: lint.keyword_coverage };
+  cur = { script, findings: lint.findings, stats: lint.stats, coverage: lint.keyword_coverage, voice: lint.voice_match };
   paintScript();
 }
 
