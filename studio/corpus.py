@@ -8,7 +8,9 @@ from __future__ import annotations
 import html
 import io
 import re
+import struct
 import zipfile
+import zlib
 from collections import Counter
 from typing import Any, Callable, Dict, Iterable, List, Optional
 
@@ -23,21 +25,67 @@ class ImportError_(Exception):
     """File could not be read as a script."""
 
 
-def extract_docx_text(data: bytes) -> str:
-    """Plain text of a .docx, one paragraph per line (stdlib only, no XML parser)."""
+_PARAGRAPH_START = re.compile(r"<w:p[ >]")
+_RUN_TEXT_START = re.compile(r"<w:t(?:\s[^<>]*)?>")
+_LINE_BREAK = re.compile(r"<w:(?:br|cr)\b[^<>]*/>")
+_TAB = re.compile(r"<w:tab\b[^<>]*/>")
+
+
+def _read_document_xml(data: bytes) -> str:
+    """The text of ``word/document.xml`` inside a .docx, or ``ImportError_``.
+
+    A .docx is a zip archive, and an archive says of itself how large its contents are. That claim is not
+    trusted: at most MAX_DOCX_XML_BYTES are ever expanded, so a file of a few hundred bytes cannot fill the
+    memory. Only the two ways Word itself packs a document are read (stored and deflated); the other
+    methods a zip may name expand without any ceiling. Whatever else is wrong with the archive (an
+    unknown method, a password, a damaged stream) makes it a file that cannot be read, not a server error.
+    """
     try:
         with zipfile.ZipFile(io.BytesIO(data)) as archive:
             info = archive.getinfo("word/document.xml")
             if info.file_size > MAX_DOCX_XML_BYTES:
                 raise ImportError_("document too large")
-            xml = archive.read(info).decode("utf-8", "replace")
-    except (zipfile.BadZipFile, KeyError):
+            if info.compress_type not in (zipfile.ZIP_STORED, zipfile.ZIP_DEFLATED):
+                raise ImportError_("not packed the way a .docx is")
+            with archive.open(info) as entry:
+                raw = entry.read(MAX_DOCX_XML_BYTES + 1)      # never more than this, whatever the archive claims
+    except (zipfile.BadZipFile, KeyError, NotImplementedError, RuntimeError, zlib.error, EOFError, OSError,
+            ValueError, struct.error, OverflowError):
         raise ImportError_("not a .docx file")
+    if len(raw) > MAX_DOCX_XML_BYTES:
+        raise ImportError_("document too large")
+    return raw.decode("utf-8", "replace")
+
+
+def extract_docx_text(data: bytes) -> str:
+    """Plain text of a .docx, one paragraph per line (stdlib only, no XML parser).
+
+    Raises ``ImportError_`` for anything that cannot be read as a .docx (see ``_read_document_xml``).
+    """
+    xml = _read_document_xml(data)
+    # Paragraphs and the text runs in them are found by walking forward once: the next opening tag, then the
+    # next closing tag after it. Patterns of the form "<w:p ... </w:p>" did this before. On a document of
+    # opening tags that are never closed they searched to the end of the file again from every opening tag:
+    # a .docx of 437 bytes held the server for 10 seconds, and one of 31 KB would have held it for a day.
     paragraphs: List[str] = []
-    for para in re.findall(r"<w:p[ >].*?</w:p>", xml, re.S):
-        para = re.sub(r"<w:(?:br|cr)\b[^>]*/>", "\n", para)
-        para = re.sub(r"<w:tab\b[^>]*/>", "\t", para)
-        runs = re.findall(r"<w:t(?:\s[^>]*)?>(.*?)</w:t>", para, re.S)
+    position = 0
+    while True:
+        start = _PARAGRAPH_START.search(xml, position)
+        end = xml.find("</w:p>", start.end()) if start else -1
+        if end < 0:
+            break                               # no closing tag is left, so no later paragraph can be complete either
+        para, position = xml[start.start():end + len("</w:p>")], end + len("</w:p>")
+        para = _LINE_BREAK.sub("\n", para)
+        para = _TAB.sub("\t", para)
+        runs: List[str] = []
+        at = 0
+        while True:
+            opening = _RUN_TEXT_START.search(para, at)
+            close = para.find("</w:t>", opening.end()) if opening else -1
+            if close < 0:
+                break
+            runs.append(para[opening.end():close])
+            at = close + len("</w:t>")
         paragraphs.append(html.unescape("".join(runs)))
     return "\n".join(paragraphs).strip()
 
