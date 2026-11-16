@@ -50,6 +50,7 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
 from . import checks, corpus, creator, exports, llm, pipeline, textstats, timing, transcribe, trends
+from . import hooks, suggest
 from . import setup as setup_status
 from .jobs import JobError, Jobs, Progress
 from .store import HISTORY_ID, MANUAL_PROVIDER, PROVIDERS, ROOT, StaleScript, Store, TextTooLong, clean_file_name
@@ -58,7 +59,7 @@ WEB_DIR = Path(__file__).with_name("web")
 MAX_BODY = 12 * 1024 * 1024  # room for a base64 .docx
 DEFAULT_PORT = 8765
 UNTITLED = {"zh": "未命名脚本", "en": "Untitled script"}
-MANUAL_TASKS = ("draft", "voice", "ideas", "trends")
+MANUAL_TASKS = ("draft", "voice", "ideas", "trends", "suggest")
 IDLE_TIMEOUT_SEC = 30                   # a connection that sends nothing for this long while it is being read is closed
 
 # Sent with every answer. The pages load their scripts and their style sheet from this server, style some
@@ -582,7 +583,10 @@ class Handler(BaseHTTPRequestHandler):
             brief = pipeline.draft_brief(store, notes=notes, target_sec=_target_sec(body),
                                          video_format=_video_format(body), keywords=body.get("keywords"))
             return {"prompt": pipeline.single_prompt(brief["system"], brief["user"]), "brief_id": brief["brief_id"]}
-        if task == "voice":
+        if task == "suggest":
+            system, user = _suggesting(lambda: suggest.suggest_prompt(
+                store, body.get("script_id"), body.get("kind"), body.get("line_index"), body.get("instruction")))
+        elif task == "voice":
             system, user = pipeline.voice_prompt(store)
         elif task == "trends":
             system, user = pipeline.trends_prompt(store, focus=str(body.get("focus") or ""))
@@ -602,6 +606,9 @@ class Handler(BaseHTTPRequestHandler):
                 video_format=_video_format(body), default_title=UNTITLED[self._lang(body)],
                 keywords=body.get("keywords"), brief_id=brief_id if isinstance(brief_id, str) else None)
             return self._json(script, 201)
+        if task == "suggest":     # proposals for a line, checked and shown; the script itself is not touched
+            return self._json(_suggesting(lambda: suggest.apply_suggest(
+                store, result, body.get("script_id"), body.get("kind"), body.get("line_index"))))
         if task == "voice":       # a proposal, as on every other route: the active profile is not touched
             return self._json({"pending": pipeline.propose_voice(store, result)})
         if task == "trends":
@@ -931,6 +938,22 @@ class Handler(BaseHTTPRequestHandler):
                 store.delete_sample(m.group(1))
                 return self._json({"ok": True})
 
+        if route == ("GET", "/api/hooks"):
+            # The creator's own openings with their videos' results. Counted in code; no model is asked.
+            return self._json(hooks.library(store.list_samples()))
+
+        m = re.fullmatch(r"/api/scripts/([0-9a-f]{12})/suggest", path)
+        if m and method == "POST":
+            # Proposals for one line (or a critic's read of all of them), each checked before it is shown.
+            # Nothing is changed in the script: the page applies what the creator picks, through a normal save.
+            body = self._read_json()
+            if store.get_script(m.group(1)) is None:
+                raise ApiError(404, "not_found")
+            self._require_ai()
+            return self._json(_suggesting(lambda: suggest.suggest(
+                store, m.group(1), body.get("kind"), body.get("line_index"), body.get("instruction"),
+                transport=self.app.transport)))
+
         m = re.fullmatch(r"/api/scripts/([0-9a-f]{12})/changes", path)
         if m and method == "GET":
             changes = pipeline.script_changes(store, m.group(1))
@@ -975,6 +998,25 @@ class Handler(BaseHTTPRequestHandler):
                 store.delete_script(script_id)
                 return self._json({"ok": True})
         raise ApiError(404, "not_found")
+
+
+_SUGGEST_REFUSALS = {
+    "not_found": (404, "There is no such script.", "没有这份脚本。"),
+    "bad_kind": (400, "kind has to be one of: hooks, rewrite, shorten, critic.", "kind 只能是 hooks、rewrite、shorten 或 critic。"),
+    "bad_line": (400, "There is no such line in this script.", "这份脚本里没有这一句。"),
+    "live_clip": (400, "This line is a live clip: somebody's recorded words, which are not rewritten.",
+                  "这一句是现场原声，是别人当时说的话，不改写。"),
+    "empty_line": (400, "There is nothing written here yet.", "这里还没有写内容。"),
+}
+
+
+def _suggesting(work: Any) -> Any:
+    """Run a step of the line editor, turning its refusals (``suggest.SuggestError``) into answers a page can show."""
+    try:
+        return work()
+    except suggest.SuggestError as exc:
+        status, message, message_zh = _SUGGEST_REFUSALS[exc.code]
+        raise ApiError(status, exc.code, message, message_zh)
 
 
 def _target_sec(body: Dict[str, Any]) -> int:

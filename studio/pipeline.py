@@ -37,9 +37,9 @@ import threading
 import time
 import urllib.parse
 from pathlib import Path
-from typing import Any, Callable, Dict, List, Optional, Tuple
+from typing import Any, Callable, Dict, List, Optional, Set, Tuple
 
-from . import corpus, creator, evidence, guardrails, learning, llm, timing, trends
+from . import corpus, creator, evidence, guardrails, hooks, learning, llm, timing, trends
 from .store import (MANUAL_PROVIDER, MAX_KEYWORD_CHARS, Store, clean_keyword, keyword_key, normalize_keywords,
                     normalize_lines)
 
@@ -185,8 +185,10 @@ def _build_draft(store: Store, *, notes: str, target_sec: int, video_format: str
     """``(system, user, basis)``: the draft prompt, and what it was built from.
 
     ``basis`` is what the script will later be said to be based on, so every part of it is read off the
-    values that go into this prompt: the titles of the creator's items used as examples, how many
-    remembered lessons are in it, and whether the voice profile is the creator's own or the bundled example.
+    values that go into this prompt: the titles of the creator's items used as examples, the titles of the
+    videos whose openings are in it (``hooks.best``: the creator's own, with results at or above their
+    usual), how many remembered lessons are in it, and whether the voice profile is the creator's own or
+    the bundled example.
     """
     dna, is_example = store.load_dna()
     who = store.load_creator()
@@ -196,10 +198,12 @@ def _build_draft(store: Store, *, notes: str, target_sec: int, video_format: str
                for a in corpus.exemplars(confirmed_samples(store.list_samples()), on_topic=on_topic)]
     exemplars_text = _dump(anchors) if anchors else "[]  (no past scripts have been imported yet; rely on the Voice DNA)"
     rules = learning.prompt_rules(store.list_lessons())      # newest first; the prompt takes the first ten
+    openings = hooks.best(store.list_samples())
     system, user = _blueprint(STAGE4, {
         "creator_profile_json": _dump(creator.prompt_block(who)),
         "voice_dna_json": _dump(creator.apply_never(dna, who)),
         "retrieved_beat_exemplars_json": exemplars_text,
+        "own_best_openings_json": _dump(openings),
         "top_10_wife_edit_diff_rules_json": _dump(rules),
         "mode": "NORMAL_ORGANIC",
         # One of the known names, never text from a request: this value is not encoded.
@@ -213,6 +217,7 @@ def _build_draft(store: Store, *, notes: str, target_sec: int, video_format: str
     learned_at = profile_summary(dna).get("learned_at")
     basis = {
         "exemplar_titles": [a["title"] for a in anchors],
+        "opening_titles": [o["title"] for o in openings],
         "lessons_used": len(rules),
         "profile": "example" if is_example else "learned",
         "learned_at": learned_at if (not is_example and isinstance(learned_at, str)) else None,
@@ -1059,6 +1064,10 @@ def script_changes(store: Store, script_id: str) -> Optional[Dict[str, Any]]:
     ``changes`` is ``learning.line_changes`` between the lines as the AI wrote them and the lines as they
     stand now. Each carries ``lesson_id``: the id of the remembered lesson with the same ``ai`` and
     ``final``, or None. A script that was not drafted by AI has nothing to compare with.
+
+    ``by_ai`` is true for a change whose final line says the words of a proposal an AI made for this
+    script (``suggest.apply_suggest`` writes each one down). The creator chose it, but did not write it:
+    it is shown as such and cannot be remembered as a lesson about how the creator words things.
     """
     script = store.get_script(script_id)
     if script is None:
@@ -1067,10 +1076,22 @@ def script_changes(store: Store, script_id: str) -> Optional[Dict[str, Any]]:
     if ai_lines is None:
         return {"has_ai_draft": False, "changes": []}
     remembered = {(lesson["ai"], lesson["final"]): lesson["id"] for lesson in store.list_lessons()}
+    proposed = _proposed_words(store, script_id)
     changes = learning.line_changes(ai_lines, script["lines"])
     for change in changes:
         change["lesson_id"] = remembered.get((change["ai"], change["final"]))
+        change["by_ai"] = _is_proposed(change["final"], proposed)
     return {"has_ai_draft": True, "changes": changes}
+
+
+def _proposed_words(store: Store, script_id: Optional[str] = None) -> Set[str]:
+    """The words of every text an AI proposed for a line: of one script, or of all scripts when no id is given."""
+    return {key for key in (learning.spoken_key(text) for text in store.list_ai_suggestions(script_id)) if key}
+
+
+def _is_proposed(final: Any, proposed: Set[str]) -> bool:
+    """Whether a line as it stands now says the words of a proposal an AI made, punctuation and spacing aside."""
+    return bool(proposed) and learning.spoken_key(final) in proposed
 
 
 def remember_lesson(store: Store, *, script_id: Any, ai: Any, final: Any, note: Any = "") -> Tuple[Dict[str, Any], bool]:
@@ -1078,8 +1099,10 @@ def remember_lesson(store: Store, *, script_id: Any, ai: Any, final: Any, note: 
 
     The same ``ai`` and ``final`` again returns the lesson already remembered. Raises ``ValueError`` whose
     message is a code: ``not_found`` (no such script), ``no_ai_draft`` (the script was not drafted by AI,
-    so there is no "what the AI wrote"), ``bad_lesson`` (wrong types or over-long text) or ``no_change``
-    (the two versions differ in nothing but spacing or punctuation, which a later draft could not use).
+    so there is no "what the AI wrote"), ``bad_lesson`` (wrong types or over-long text), ``no_change``
+    (the two versions differ in nothing but spacing or punctuation, which a later draft could not use) or
+    ``ai_text`` (the final wording is a proposal an AI made for this script: the creator chose it but did
+    not write it, so it says nothing about how the creator words things).
     """
     if not isinstance(script_id, str) or store.get_script(script_id) is None:
         raise ValueError("not_found")
@@ -1093,6 +1116,8 @@ def remember_lesson(store: Store, *, script_id: Any, ai: Any, final: Any, note: 
         raise ValueError("bad_lesson")
     if not learning.prompt_rules([{"ai": ai, "final": final}]):
         raise ValueError("no_change")
+    if _is_proposed(final, _proposed_words(store, script_id)):
+        raise ValueError("ai_text")
     return store.add_lesson(script_id=script_id, ai=ai, final=final, note=" ".join(note.split())[:MAX_LESSON_NOTE_CHARS])
 
 
@@ -1110,9 +1135,12 @@ def lessons_payload(store: Store) -> Dict[str, Any]:
 
     ``suggestions`` are ``learning.recurring_removals`` over every AI-drafted script: phrases the creator
     took out of AI drafts in at least two scripts. Phrases their refused list already catches are left out.
+    A line that now holds an AI's proposal is not counted: what went missing there was the proposal's doing.
     """
     who = store.load_creator()
-    changes_by_script = {draft["id"]: learning.line_changes(draft["ai_lines"], draft["lines"])
+    proposed = _proposed_words(store)
+    changes_by_script = {draft["id"]: [change for change in learning.line_changes(draft["ai_lines"], draft["lines"])
+                                       if not _is_proposed(change["final"], proposed)]
                          for draft in store.list_ai_drafts()}
     suggestions = [s for s in learning.recurring_removals(changes_by_script) if not _already_refused(s["phrase"], who)]
     return {"lessons": store.list_lessons(), "suggestions": suggestions}

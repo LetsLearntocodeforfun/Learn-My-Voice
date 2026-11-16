@@ -5,6 +5,12 @@ Even top frontier models occasionally slip 2–3 subtle "AI-smelling" phrases (`
 - **5A. Pre-Delivery Adversarial Critic (`去AI味审稿官`)**: Audits and fixes every draft line-by-line *before* showing it in the UI.
 - **5B. Post-Edit Diff Learner (`改稿进化引擎`)**: Learns permanently from every single word your wife changes in the editor before filming.
 
+> **Status.** This file is a design document; the application does not load it. The critic it describes runs as the
+> `CRITIC` task of `08_line_editor.md`, changed in two ways: the model is not asked for a voice score (that number is
+> counted in code, `studio/voicematch.py`), and it does not return a rewritten script (it proposes single lines, each
+> checked by the application's rules and applied only if the creator picks it). Learning from edits (5B) is done in
+> code without a model (`studio/learning.py`).
+
 ---
 
 ## 5A. Adversarial "De-AI & Voice Fidelity" Critic Prompt

@@ -167,6 +167,25 @@ details.card > summary { color: var(--ink); font-size: 15px; }
 .vm-none { margin: 0 0 10px; }
 @media (max-width: 720px) { .vm-row { grid-template-columns: 1fr 90px; } .vm-text { grid-column: 1 / -1; } }
 
+/* line tools in the editor: proposals for a line, checked before they are shown */
+#craft-bar { margin-bottom: 12px; }
+.craft-tools { display: inline-flex; gap: 2px; }
+.craft-tools .btn.ghost { font-size: 13px; padding: 4px 8px; }
+.craft-box { display: none; }
+.craft-box.open { display: block; margin-top: 10px; padding: 12px 14px; background: var(--bg); border-radius: 12px; }
+.craft-box h4 { margin: 4px 0 6px; font-size: 13px; font-weight: 600; color: var(--muted); }
+.craft-box input[type=text] { margin: 8px 0; }
+.craft-own { padding: 6px 0; border-top: 1px solid var(--line); font-size: 15px; }
+.craft-own .tag, .craft-checks .tag { font-size: 12px; margin: 0 0 0 6px; }
+.craft-checks { display: flex; flex-wrap: wrap; gap: 6px; margin: 8px 0; }
+.craft-checks .tag { margin: 0; background: var(--card); }
+.craft-checks .tag.ok { background: #e8f5ee; }
+.craft-checks .tag.warn { background: var(--warn-soft); }
+.craft-item { background: var(--card); border: 1px solid var(--line); border-radius: 12px; padding: 12px 14px; margin-top: 10px; }
+.craft-item.used { display: flex; align-items: center; gap: 8px; padding: 6px 14px; }
+.craft-item del { color: var(--muted); }
+.craft-text { font-size: 17px; line-height: 1.6; overflow-wrap: anywhere; }
+
 /* post copy drafted with a script */
 #post-box { margin-top: 24px; }
 .post h4 { margin: 14px 0 4px; font-size: 13px; font-weight: 600; color: var(--muted); }

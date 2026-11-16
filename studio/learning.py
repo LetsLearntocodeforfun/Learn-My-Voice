@@ -100,6 +100,12 @@ def _key(text: Any) -> str:
     return _read(text).key if isinstance(text, str) else ""
 
 
+def spoken_key(text: Any) -> str:
+    """The spoken characters of a text alone. Two texts with the same key say the same words: they differ
+    at most in spacing, punctuation, breath marks, bracketed cues or full-width forms. "" for no words."""
+    return _key(text)
+
+
 # ---- phrases inside a line ----------------------------------------------------
 def _phrases(line: _Line, start: int, end: int) -> List[Tuple[str, str]]:
     """``(key, text as written)`` for each run of tokens in ``line.tokens[start:end]`` that stays in one breath."""

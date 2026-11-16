@@ -35,6 +35,7 @@ MAX_KEYWORDS_PER_SCRIPT = 8
 SAMPLE_KINDS = ("script", "subtitle", "video")   # typed or pasted text; a subtitle file; a video transcribed here
 MAX_SOURCE_NAME_CHARS = 200
 MAX_BRIEFS = 200            # records of what a prompt contained; the oldest are dropped
+MAX_AI_SUGGESTIONS = 300    # texts an AI suggested for the lines of one script that are remembered; the oldest are dropped
 # The text of one library item, in characters. No real script or transcript comes near it: at a fast 300
 # characters a minute this is more than 27 hours of speech in Chinese, and about 9 hours in English. It is
 # there so that one file somebody handed the creator cannot make every page slow or fill the database.
@@ -144,6 +145,12 @@ CREATE TABLE IF NOT EXISTS briefs (
     payload_json TEXT NOT NULL,
     created_at REAL NOT NULL
 );
+CREATE TABLE IF NOT EXISTS ai_suggestions (
+    script_id TEXT NOT NULL,
+    text TEXT NOT NULL,
+    created_at REAL NOT NULL
+);
+CREATE INDEX IF NOT EXISTS ai_suggestions_by_script ON ai_suggestions (script_id);
 """
 
 # Columns added after a table first shipped: (table, column, definition). A database created by an
@@ -962,7 +969,40 @@ class Store:
 
     def delete_script(self, script_id: str) -> bool:
         with self._db() as db:
+            db.execute("DELETE FROM ai_suggestions WHERE script_id = ?", (script_id,))
             return db.execute("DELETE FROM scripts WHERE id = ?", (script_id,)).rowcount > 0
+
+    # ---- what an AI suggested for a script's lines ----------------------
+    def add_ai_suggestions(self, script_id: str, texts: Any) -> int:
+        """Remember texts an AI suggested for lines of this script: a new opening, a rewording, a repair.
+
+        They are kept so that a line the creator took over from a suggestion is never presented as the
+        creator's own edit (``pipeline.script_changes``). It is written down here, when the suggestion is
+        made, and not reported by the page when one is accepted: a line copied by hand counts the same.
+        Returns how many were stored. Only the newest MAX_AI_SUGGESTIONS of a script are kept.
+        """
+        wanted = [text.strip() for text in (texts if isinstance(texts, (list, tuple)) else []) if isinstance(text, str) and text.strip()]
+        if not wanted:
+            return 0
+        now = time.time()
+        with self._db() as db:
+            if db.execute("SELECT 1 FROM scripts WHERE id = ?", (script_id,)).fetchone() is None:
+                return 0
+            db.executemany("INSERT INTO ai_suggestions (script_id, text, created_at) VALUES (?,?,?)",
+                           [(script_id, text, now) for text in wanted])
+            db.execute("DELETE FROM ai_suggestions WHERE script_id = ? AND rowid NOT IN"
+                       " (SELECT rowid FROM ai_suggestions WHERE script_id = ? ORDER BY rowid DESC LIMIT ?)",
+                       (script_id, script_id, MAX_AI_SUGGESTIONS))
+        return len(wanted)
+
+    def list_ai_suggestions(self, script_id: Optional[str] = None) -> List[str]:
+        """Texts an AI suggested for one script's lines, or for every script when no id is given; oldest first."""
+        with self._db() as db:
+            if script_id is None:
+                rows = db.execute("SELECT text FROM ai_suggestions ORDER BY rowid").fetchall()
+            else:
+                rows = db.execute("SELECT text FROM ai_suggestions WHERE script_id = ? ORDER BY rowid", (script_id,)).fetchall()
+        return [row["text"] for row in rows]
 
     # ---- lessons from the creator's edits -------------------------------
     @staticmethod

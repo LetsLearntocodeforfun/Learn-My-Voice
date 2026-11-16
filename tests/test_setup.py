@@ -1515,7 +1515,7 @@ class BasisTest(SetupCase):
 
     def test_a_direct_draft_records_what_its_prompt_held(self):
         script = self.draft()
-        self.assertEqual(script["basis"], {"exemplar_titles": ["超市那天", "早餐日常"], "lessons_used": 0, "profile": "example", "learned_at": None})
+        self.assertEqual(script["basis"], {"exemplar_titles": ["超市那天", "早餐日常"], "opening_titles": ["超市那天"], "lessons_used": 0, "profile": "example", "learned_at": None})
         prompt = self.fake.prompt_for("ghostwriting")
         self.assertEqual([e["title"] for e in block(prompt, EXEMPLARS_TAG)], script["basis"]["exemplar_titles"])
         self.assertEqual(block(prompt, LESSONS_TAG), [])
@@ -1549,7 +1549,7 @@ class BasisTest(SetupCase):
         self.call("PUT", "/api/scripts/" + made["id"], {"lines": lines("今天去超市买菜", "这个真的蛮好吃嘛", "最后买了两盒草莓")})
         self.call("POST", "/api/lessons", {"script_id": made["id"], "ai": AI_LINES[1], "final": "这个真的蛮好吃嘛"})
 
-        copied = {"exemplar_titles": ["超市那天", "早餐日常"], "lessons_used": 0, "profile": "example", "learned_at": None}
+        copied = {"exemplar_titles": ["超市那天", "早餐日常"], "opening_titles": ["超市那天"], "lessons_used": 0, "profile": "example", "learned_at": None}
         status, script = self.call("POST", "/api/manual/reply", dict(self.request_body, reply=self.reply))
         self.assertEqual((status, script["basis"]), (201, copied))         # what was in the prompt, not what is true now
         status, script = self.call("POST", "/api/manual/reply", dict(self.request_body, reply=self.reply, brief_id=out["brief_id"]))
@@ -1571,7 +1571,7 @@ class BasisTest(SetupCase):
         self.assertEqual([e["title"] for e in block(brief, EXEMPLARS_TAG)], ["超市那天", "早餐日常"])
         self.add("新素材", HIKE, likes=999)
 
-        seen = {"exemplar_titles": ["超市那天", "早餐日常"], "lessons_used": 0, "profile": "example", "learned_at": None}
+        seen = {"exemplar_titles": ["超市那天", "早餐日常"], "opening_titles": ["超市那天"], "lessons_used": 0, "profile": "example", "learned_at": None}
         _, saved = self.mcp("save_script", script=AI_SCRIPT, notes="再去一次超市", target_duration_sec=30, brief_id=brief_id)
         self.assertEqual((saved["based_on"], self.store.get_script(saved["script_id"])["basis"]), (seen, seen))
         _, saved = self.mcp("save_script", script=AI_SCRIPT, notes="  再去一次超市 \n", target_duration_sec=30)   # no id, same request
@@ -1606,9 +1606,9 @@ class BasisTest(SetupCase):
 class LessonsTest(SetupCase):
     EDITED = ("今天去超市买菜", "这个真的蛮好吃嘛")                          # line 2 reworded, line 3 deleted
     REWORDED = {"kind": "rewritten", "ai": "这个真的绝绝子嘛", "final": "这个真的蛮好吃嘛", "removed": ["绝绝子"], "added": ["蛮好吃"],
-                "ai_line_no": 2, "final_line_no": 2, "lesson_id": None}
+                "ai_line_no": 2, "final_line_no": 2, "lesson_id": None, "by_ai": False}
     DELETED = {"kind": "deleted", "ai": "最后买了两盒草莓", "final": "", "removed": ["最后买了两盒草莓"], "added": [],
-               "ai_line_no": 3, "final_line_no": None, "lesson_id": None}
+               "ai_line_no": 3, "final_line_no": None, "lesson_id": None, "by_ai": False}
 
     def setUp(self):
         super().setUp()

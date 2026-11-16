@@ -79,9 +79,10 @@ Object.assign(I18N.zh, {
   gr_forget: '忘掉', gr_ai_wrote: 'AI 写的', gr_you_wrote: '你改成',
   bs_title: '这篇初稿参照了什么', bs_exemplars: '参照的你的素材：', bs_none: '没有可参照的素材，只用了声音档案。',
   bs_profile_example: '声音档案：示例档案（不是你的）', bs_profile_yours: '声音档案：你确认过的那份（{d}）',
-  bs_lessons: '用上了 {n} 条你记住的改法', bs_keywords: '目标关键词：',
+  bs_lessons: '用上了 {n} 条你记住的改法', bs_keywords: '目标关键词：', bs_openings: '开场参照了这几条的开头：',
   ed_title: '我改了什么', ed_intro: '左边是 AI 的初稿，右边是你现在的版本。只列出真正改了字的地方。',
   ed_none: '你还没有改动 AI 的初稿。', ed_remember: '记住这个改法', ed_remembered: '已记住', ed_deleted: '（整句删掉了）', ed_added: '（你新加的）',
+  ed_ai_text: '你采用的 AI 建议', ed_ai_note: '这句是 AI 写的，不算你的改法',
   job_queued: '排队中', job_starting: '开始', job_environment: '准备运行环境', job_packages: '下载组件', job_model: '下载语音识别模型',
   job_check: '试转一段，确认能用', job_audio: '取出声音', job_transcribe: '正在这台电脑上转写', job_done: '完成',
 });
@@ -163,9 +164,10 @@ Object.assign(I18N.en, {
   gr_forget: 'Forget', gr_ai_wrote: 'AI wrote', gr_you_wrote: 'Changed to',
   bs_title: 'What this draft was based on', bs_exemplars: 'Material used as examples: ', bs_none: 'There was no material to use as examples, only the voice profile.',
   bs_profile_example: 'Voice profile: the bundled example (not {@names} own)', bs_profile_yours: 'Voice profile: the accepted one ({d})',
-  bs_lessons: '{n} remembered changes were used', bs_keywords: 'Target keywords: ',
+  bs_lessons: '{n} remembered changes were used', bs_keywords: 'Target keywords: ', bs_openings: 'Openings taken as examples, from: ',
   ed_title: 'What changed', ed_intro: 'The AI\'s draft is on the left and the current version on the right. Only lines whose wording changed are listed.',
   ed_none: 'The AI\'s draft has not been changed yet.', ed_remember: 'Remember this change', ed_remembered: 'Remembered', ed_deleted: '(line deleted)', ed_added: '(a line added by hand)',
+  ed_ai_text: 'An AI proposal that was taken', ed_ai_note: 'Written by an AI, so not remembered as {@names} wording',
   job_queued: 'waiting', job_starting: 'starting', job_environment: 'preparing the environment', job_packages: 'downloading components', job_model: 'downloading the speech model',
   job_check: 'running a test transcription', job_audio: 'extracting the audio', job_transcribe: 'transcribing on this computer', job_done: 'done',
 });
@@ -625,9 +627,11 @@ function paintBasis(el, script) {
   const b = script.basis;
   if (!b) { el.innerHTML = ''; return; }
   const titles = (b.exemplar_titles || []).map((x) => `<span class="tag">${esc(x)}</span>`).join('');
+  const openings = (Array.isArray(b.opening_titles) ? b.opening_titles : []).map((x) => `<span class="tag">${esc(x)}</span>`).join('');
   const keywords = (script.keywords || []).map((x) => `<span class="tag ok">${esc(x)}</span>`).join('');
   el.innerHTML = `<details class="card soft"><summary>${esc(t('bs_title'))}</summary>
     <p>${titles ? esc(t('bs_exemplars')) + titles : esc(t('bs_none'))}</p>
+    ${openings ? `<p id="bs-openings">${esc(t('bs_openings'))}${openings}</p>` : ''}
     <p class="hint">${esc(b.profile === 'learned' ? tf('bs_profile_yours', { d: b.learned_at || '' }) : t('bs_profile_example'))}
       ${b.lessons_used ? ' · ' + esc(tf('bs_lessons', { n: b.lessons_used })) : ''}</p>
     ${keywords ? `<p class="hint">${esc(t('bs_keywords'))}${keywords}</p>` : ''}</details>`;
@@ -644,8 +648,9 @@ function paintEdits(el, script) {
     const { changes } = await api('GET', '/api/scripts/' + script.id + '/changes');
     $body.innerHTML = `<p class="hint">${esc(t(changes.length ? 'ed_intro' : 'ed_none'))}</p>` + changes.map((c, i) =>
       `<div class="lesson" data-i="${i}"><div><small>${esc(t('gr_ai_wrote'))}</small><del>${esc(c.ai || t('ed_added'))}</del></div>
-        <div><small>${esc(t('gr_you_wrote'))}</small><ins>${esc(c.final || t('ed_deleted'))}</ins></div>
-        ${c.kind === 'added' ? '<span></span>' : `<button class="btn ${c.lesson_id ? 'ghost' : ''}" data-remember ${c.lesson_id ? 'disabled' : ''}>${esc(t(c.lesson_id ? 'ed_remembered' : 'ed_remember'))}</button>`}</div>`).join('');
+        <div><small>${esc(t(c.by_ai ? 'ed_ai_text' : 'gr_you_wrote'))}</small><ins>${esc(c.final || t('ed_deleted'))}</ins></div>
+        ${c.by_ai ? `<span class="meta" data-ai-text>${esc(t('ed_ai_note'))}</span>`
+    : (c.kind === 'added' ? '<span></span>' : `<button class="btn ${c.lesson_id ? 'ghost' : ''}" data-remember ${c.lesson_id ? 'disabled' : ''}>${esc(t(c.lesson_id ? 'ed_remembered' : 'ed_remember'))}</button>`)}</div>`).join('');
     $body.onclick = async (e) => {
       const btn = e.target.closest('[data-remember]');
       if (!btn) return;

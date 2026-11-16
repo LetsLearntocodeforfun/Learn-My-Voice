@@ -382,6 +382,7 @@ function paintScript() {
     <div id="kw-box"></div>
     <div class="summary" id="summary"></div>
     <div id="vm-box"></div>
+    <div id="craft-bar"></div>
     <div id="lines">${s.lines.map(lineHtml).join('')}</div>
     <button class="btn" id="add-line">${esc(t('add_line'))}</button>
     <div id="post-box"></div><div id="basis-box"></div><div id="edits-box"></div></div>`;
@@ -436,6 +437,7 @@ function paintScript() {
     cur = null; location.hash = '#/';
   };
   document.getElementById('prompter-btn').onclick = openPrompter;
+  craftAttach();    // craft.js: the per-line writing tools and whichever of them is open
 }
 
 async function renderScript(id) {
