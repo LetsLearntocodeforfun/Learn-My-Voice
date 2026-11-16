@@ -49,7 +49,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
-from . import checks, corpus, creator, exports, llm, pipeline, textstats, timing, transcribe, trends
+from . import checks, corpus, creator, exports, keyword_import, llm, pipeline, textstats, timing, transcribe, trends
 from . import buildinfo, hooks, suggest
 from . import setup as setup_status
 from .jobs import JobError, Jobs, Progress
@@ -905,6 +905,19 @@ class Handler(BaseHTTPRequestHandler):
                 raise ApiError(400, "no_keywords")
             added = store.upsert_trends(items, source="manual")
             return self._json(dict(trends.payload(store), added=added, skipped=skipped), 201)
+        if route in (("POST", "/api/trends/import/preview"), ("POST", "/api/trends/import")):
+            # A keyword export from an analytics tool: {"name", "text" or "file_base64"} and, once the creator has
+            # picked them, "keyword_column" and "heat_column". The preview stores nothing. What is imported is the
+            # creator's own entry ("manual"): she brought the file, no AI did.
+            body = self._read_json()
+            try:
+                if path.endswith("/preview"):
+                    return self._json(keyword_import.preview(body))
+                items, counts = keyword_import.collect(body)
+            except keyword_import.ImportRefused as exc:
+                raise ApiError(exc.status, exc.code, exc.message, exc.message_zh)
+            added = store.upsert_trends(items, source="manual")
+            return self._json(dict(trends.payload(store), added=added, **counts), 201)
         if route == ("PUT", "/api/trends/weight"):
             weight = self._read_json().get("weight")
             if weight not in trends.WEIGHTS:

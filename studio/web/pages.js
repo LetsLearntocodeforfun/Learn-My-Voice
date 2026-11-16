@@ -679,7 +679,7 @@ async function renderTrends(data) {
     <div class="card">
       <label class="field" style="margin-top:0" for="tr-text">${esc(t('tr_paste'))}</label>
       <textarea id="tr-text" rows="4" placeholder="${esc(t('tr_paste_ph'))}">${esc(trendForm.text)}</textarea>
-      <div class="row" style="margin-top:10px"><button class="btn primary" id="tr-add">${esc(t('tr_add'))}</button></div>
+      <div class="row" style="margin-top:10px"><button class="btn primary" id="tr-add">${esc(t('tr_add'))}</button>${kiControlHtml()}</div>
       <p class="hint">${esc(t('tr_no_fetch'))}</p>
     </div>
     <details class="card"><summary>${esc(t('tr_ai_title'))}</summary>
@@ -695,6 +695,7 @@ async function renderTrends(data) {
 
   const $text = document.getElementById('tr-text');
   autoGrow($text);
+  kiBind();     /* importing a spreadsheet of keywords, beside the paste box: kwimport.js */
   $text.oninput = () => { trendForm.text = $text.value; autoGrow($text); };
   document.getElementById('tr-add').onclick = (e) => busy(e.currentTarget, e.currentTarget.textContent, async () => {
     const out = await api('POST', '/api/trends', { text: $text.value });

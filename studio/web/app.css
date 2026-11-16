@@ -292,3 +292,18 @@ details.card > summary { color: var(--ink); font-size: 15px; }
 h2.dv-h { font-size: 18px; margin: 28px 0 6px; }
 .dv-pages { margin: 2px 0 14px; }
 .dv-pages ul { margin: 6px 0 0; padding-left: 20px; font-size: 13px; overflow-wrap: anywhere; }
+
+/* importing a spreadsheet of keywords on the trends page: the preview before anything is stored */
+.ki-hint { flex: 1 1 260px; }
+.ki-card h3 { overflow-wrap: anywhere; }
+.ki-card p.meta { margin: 10px 0 0; }
+.ki-card .banner { margin: 10px 0 12px; }
+.ki-pickers { display: grid; grid-template-columns: 1fr 1fr; gap: 10px 16px; margin-top: 12px; }
+.ki-pickers label { font-size: 13px; color: var(--muted); }
+.ki-pickers select { display: block; margin-top: 4px; font-size: 15px; color: var(--ink); }
+.ki-table { margin: 4px 0 0; table-layout: fixed; }
+.ki-table td { overflow-wrap: anywhere; }
+.ki-table th:last-child, .ki-table td:last-child { width: 140px; }
+.ki-table tr.ki-off td { color: var(--muted); }
+.ki-table .tag { margin: 0 0 0 4px; font-size: 12px; }
+@media (max-width: 720px) { .ki-pickers { grid-template-columns: 1fr; } }

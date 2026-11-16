@@ -57,6 +57,12 @@ be read again then.
   keys for everything. It says whose rate it uses, and calls it the creator's only when it was measured or
   typed in. It can be exported as one self-contained `.html` file. Nothing listens: there is no microphone
   and no speech recognition in it.
+- **Importing a keyword spreadsheet.** On 热点, a keyword list saved from an analytics tool as `.csv`, `.tsv`,
+  `.txt` or `.xlsx` can be imported. The app reads the file on this computer, shows which columns it took for
+  the keywords and for the number, how the first rows read and how many rows are left out and why, and stores
+  nothing until Import is clicked. What is imported counts as the creator's own entry, like a paste. A file is
+  treated as hostile input: sizes, rows, columns and unpacking are capped, a workbook is never written to
+  disk, formulas are never worked out, and a workbook that declares entities is refused.
 - **Launchers for Windows and Linux.** `Start Learn My Voice.bat` and `start-learn-my-voice.sh` start the app
   with the Python the system has, and say what to install when there is none.
 - **A package to download, and the app says which build it is.** A release candidate comes with one zip that
@@ -109,6 +115,9 @@ be read again then.
   real server with stand-in AI replies and invented material. None has been tried on the creator's real
   material, and no real model has written a proposal. The teleprompter file has not been opened on a phone;
   on an iPhone it may only show its text.
+- Importing a keyword spreadsheet: tested with made-up files, and the page was run in headless Chrome against
+  the real server. No real export from 新红, 千瓜 or 灰豚 and no workbook saved by Excel, WPS or Numbers was
+  available, so the header names it looks for are guesses.
 - One line to ideas: the pages were run together with the server in headless Chrome, against stand-in AI
   replies. The web lookup through a Gemini or OpenAI key is written from those services' documentation as it
   read on 16 November 2026 and has not been run against either. Google's terms for showing search-grounded
