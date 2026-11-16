@@ -16,8 +16,7 @@ Object.assign(I18N.zh, {
   rate_hint: '语速没法从文字里量出来。念一段一分钟的口播，数一下字数，填在这里。',
   rate_unconfirmed: '现在是默认值，还没确认', rate_saved: '语速已更新',
   ideas_title: '选题建议', ideas_sub: '根据你以前视频的内容和数据，建议接下来拍什么。',
-  ideas_btn: '✨ 帮我想选题', ideas_again: '重新生成', thinking: '正在分析，可能要一两分钟…',
-  ideas_need_samples: '先到「素材库」放几篇脚本，并填上播放、点赞等数据。', go_library: '去素材库',
+  go_library: '去素材库',
   ideas_few_metrics: '只有 {n} 篇填了数据，建议会比较粗略。数据越多越准。',
   top_title: '表现最好的视频', interactions: '互动', rate: '互动率', use_idea: '用这个写脚本', evidence: '依据',
   kind_BUILD_ON_WINNER: '延续表现好的', kind_ADJACENT_EXPERIMENT: '新尝试',
@@ -41,8 +40,7 @@ Object.assign(I18N.en, {
   rate_hint: 'Rate cannot be measured from text. Read one minute of voiceover aloud, count the characters, and enter it here.',
   rate_unconfirmed: 'Currently a default, not confirmed', rate_saved: 'Rate updated',
   ideas_title: 'Ideas', ideas_sub: 'What to film next, based on the content and numbers of {@names} past videos.',
-  ideas_btn: '✨ Suggest topics', ideas_again: 'Regenerate', thinking: 'Analysing, this can take a minute or two…',
-  ideas_need_samples: 'Add scripts to the Library first, with views and likes filled in.', go_library: 'Open library',
+  go_library: 'Open library',
   ideas_few_metrics: 'Only {n} videos have numbers, so suggestions will be rough. More data gives better results.',
   top_title: 'Best-performing videos', interactions: 'Interactions', rate: 'Rate', use_idea: 'Write this script', evidence: 'Based on',
   kind_BUILD_ON_WINNER: 'Builds on a winner', kind_ADJACENT_EXPERIMENT: 'Experiment',
@@ -194,7 +192,7 @@ async function busy(btn, label, fn) {
 }
 
 /* ---------- AI: direct call, or copy-and-paste with a chat subscription ---------- */
-const AI_ENDPOINTS = { draft: '/api/generate', voice: '/api/voice/learn', ideas: '/api/recommendations' };
+const AI_ENDPOINTS = { draft: '/api/generate', voice: '/api/voice/learn' };
 
 /* Resolves with the server result, or undefined if she cancelled the copy-and-paste dialog. */
 async function aiRun(task, payload) {
@@ -208,13 +206,16 @@ async function copyText(text, fallbackEl) {
   try { return document.execCommand('copy'); } catch (e) { return false; }
 }
 
-async function manualBridge(task, payload) {
+/* `options` (all optional): `title` and `intro` replace the dialog's own; `skip` is the label of a third button,
+   which resolves with { skipped: true } for a step the creator may leave out. */
+async function manualBridge(task, payload, options) {
+  const o = options || {};
   const { prompt, brief_id: briefId } = await api('POST', '/api/manual/prompt', Object.assign({ task }, payload));
   const $modal = document.getElementById('modal');
   return new Promise((resolve) => {
     $modal.innerHTML = `<div class="sheet" role="dialog" aria-modal="true">
-      <h2>${esc(t('mb_title'))}</h2>
-      <p class="hint">${esc(t(task === 'trends' ? 'mb_intro_trends' : 'mb_intro'))}</p>
+      <h2>${esc(o.title || t('mb_title'))}</h2>
+      <p class="hint">${esc(o.intro || t(task === 'trends' ? 'mb_intro_trends' : 'mb_intro'))}</p>
       <label class="field" for="mb-prompt">${esc(t('mb_step1'))}</label>
       <textarea id="mb-prompt" class="mono" rows="5" readonly></textarea>
       <div class="row" style="margin-top:8px">
@@ -225,6 +226,7 @@ async function manualBridge(task, payload) {
       <textarea id="mb-reply" class="mono" rows="6" placeholder="${esc(t('mb_reply_ph'))}"></textarea>
       <div class="row" style="margin-top:14px">
         <button class="btn primary big" id="mb-done">${esc(t('mb_done'))}</button>
+        ${o.skip ? `<button class="btn" id="mb-skip">${esc(o.skip)}</button>` : ''}
         <button class="btn" id="mb-cancel">${esc(t('mb_cancel'))}</button></div>
     </div>`;
     $modal.hidden = false;
@@ -235,6 +237,7 @@ async function manualBridge(task, payload) {
       toast(t((await copyText(prompt, $prompt)) ? 'mb_copied' : 'mb_copy_failed'));
     };
     document.getElementById('mb-cancel').onclick = () => close(undefined);
+    if (o.skip) document.getElementById('mb-skip').onclick = () => close({ skipped: true });
     document.getElementById('mb-done').onclick = async (e) => {
       const btn = e.currentTarget;
       btn.disabled = true;
@@ -498,44 +501,7 @@ function ideaHtml(idea, i) {
   </div>`;
 }
 
-async function renderIdeas() {
-  const { performance, result } = await api('GET', '/api/recommendations');
-  const top = performance.rows.slice(0, 5);
-  const table = top.length ? `<div class="card"><h3>${esc(t('top_title'))}</h3><table class="perf">
-      <tr><th></th><th>${esc(t('m_views'))}</th><th>${esc(t('interactions'))}</th><th>${esc(t('rate'))}</th></tr>
-      ${top.map((r) => `<tr><td>${esc(r.title)}${r.is_sponsored ? ` <span class="tag">${esc(t('sponsored'))}</span>` : ''}</td>
-        <td>${num(r.views)}</td><td>${num(r.interactions)}</td>
-        <td>${r.interaction_rate_pct === null ? '–' : r.interaction_rate_pct + '%'}</td></tr>`).join('')}</table></div>` : '';
-  const hasSamples = appState.sample_count > 0;
-  const ready = appState.settings.configured && hasSamples;
-  let hint = '';
-  if (!hasSamples) hint = `${esc(t('ideas_need_samples'))} <a href="#/library">${esc(t('go_library'))}</a>`;
-  else if (!appState.settings.configured) hint = `${esc(t('no_ai'))} <a href="#/settings">${esc(t('go_settings'))}</a>`;
-  else if (performance.with_metrics < 8) hint = esc(tf('ideas_few_metrics', { n: performance.with_metrics }));
-  const ideas = result ? result.ideas : [];
-  const note = result ? (lang === 'zh' ? result.data_note_zh : (result.data_note_en || result.data_note_zh)) : '';
-  $view.innerHTML = `<div class="wrap"><h1>${esc(t('ideas_title'))}</h1><p class="sub">${esc(t('ideas_sub'))}</p>
-    ${hint ? `<div class="banner">${hint}</div>` : ''}
-    ${table}
-    <div class="row" style="margin:18px 0"><button class="btn primary big" id="ideas-btn" ${ready ? '' : 'disabled'}>${esc(t(result ? 'ideas_again' : 'ideas_btn'))}</button>
-      ${result ? `<span class="meta">${esc(t('generated_at'))} ${esc(fmtDate(result.generated_at))}</span>` : ''}</div>
-    ${note ? `<p class="meta">${esc(note)}</p>` : ''}
-    <div id="ideas">${ideas.map(ideaHtml).join('')}</div></div>`;
-  document.getElementById('ideas-btn').onclick = (e) => busy(e.currentTarget, appState.settings.manual ? e.currentTarget.textContent : t('thinking'), async () => {
-    if (!(await aiRun('ideas', {}))) return;
-    await renderIdeas();
-  });
-  document.getElementById('ideas').onclick = (e) => {
-    const btn = e.target.closest('[data-idea]');
-    if (!btn) return;
-    const idea = ideas[Number(btn.dataset.idea)];
-    draft.notes = idea.title_zh + '\n' + idea.script_notes_zh;
-    draft.target_sec = idea.target_duration_sec;
-    draft.video_format = idea.video_format;
-    draft.keywords = (idea.trend_keywords || []).slice(0, MAX_KEYWORDS);
-    location.hash = '#/new';
-  };
-}
+/* The ideas page itself (renderIdeas) is in discover.js: one request, a web lookup, then these cards. */
 
 /* ---------- target keywords (new-script page and script editor) ---------- */
 const MAX_KEYWORDS = 8;          // must match MAX_KEYWORDS_PER_SCRIPT in studio/store.py

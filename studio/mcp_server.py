@@ -262,13 +262,15 @@ def t_save_voice_profile(store: Store, args: Dict[str, Any]) -> Dict[str, Any]:
 
 
 def t_get_topic_ideas_brief(store: Store, args: Dict[str, Any]) -> str:
-    system, user = pipeline.ideas_prompt(store, _int(args, "idea_count", 6, 1, 12))
-    return ("%s\n\n%s\n\nNEXT STEP: call save_topic_ideas with `ideas` set to the JSON object, then present the "
-            "ideas and offer to draft one with get_script_brief.") % (system.strip(), user.strip())
+    focus = pipeline.clean_focus(_text(args, "focus"))
+    system, user = pipeline.ideas_prompt(store, _int(args, "idea_count", 6, 1, 12), focus)
+    again = " and `focus` set to the same focus" if focus else ""
+    return ("%s\n\n%s\n\nNEXT STEP: call save_topic_ideas with `ideas` set to the JSON object%s, then present the "
+            "ideas and offer to draft one with get_script_brief.") % (system.strip(), user.strip(), again)
 
 
 def t_save_topic_ideas(store: Store, args: Dict[str, Any]) -> Dict[str, Any]:
-    return pipeline.apply_ideas(store, _obj(args, "ideas"))
+    return pipeline.apply_ideas(store, _obj(args, "ideas"), focus=_text(args, "focus"))
 
 
 def t_export_jianying_kit(store: Store, args: Dict[str, Any]) -> Dict[str, Any]:
@@ -325,6 +327,10 @@ _FORMAT_PROP = {"type": "string", "enum": list(pipeline.VIDEO_FORMATS), "default
                                "products; SINGLE_PRODUCT_SHARE one product."}
 _DURATION_PROP = {"type": "integer", "default": 60, "description": "Target video length in seconds, usually 30, 60 or 90."}
 _ID_PROP = {"type": "string", "description": "Script id from save_script or list_scripts."}
+_FOCUS_PROP = {"type": "string", "default": "",
+               "description": "Optional. What the creator asked for this time, in their own words, for example a "
+                              "topic or an occasion. At most %d characters are used. Give the same value to "
+                              "get_topic_ideas_brief and save_topic_ideas." % pipeline.MAX_FOCUS_CHARS}
 _LINES_PROP = {"type": "array", "items": {"type": "object"},
                "description": "Full list of line objects in the script_lines shape from get_script_brief. "
                               "Each needs at least spoken_script_zh."}
@@ -399,11 +405,13 @@ TOOLS: Dict[str, Dict[str, Any]] = {t["public"]["name"]: t for t in [
           "Use this when the question is what to film next. Returns the creator profile, the creator's past videos "
           "with their numbers and the JSON shape for recommendations. Base ideas only on this data. A video "
           "transcript the creator has not confirmed yet comes with its title and numbers only, without its wording.",
-          {"idea_count": {"type": "integer", "default": 6, "description": "How many ideas to suggest."}}, [], read_only=True),
+          {"idea_count": {"type": "integer", "default": 6, "description": "How many ideas to suggest."},
+           "focus": _FOCUS_PROP}, [], read_only=True),
     _tool("save_topic_ideas", t_save_topic_ideas,
           "Use this right after producing ideas from get_topic_ideas_brief. Saves them to the 选题建议 page; cited "
           "titles that are not the creator's videos are removed.",
-          {"ideas": {"type": "object", "description": "The recommendations JSON object (with an ideas array)."}},
+          {"ideas": {"type": "object", "description": "The recommendations JSON object (with an ideas array)."},
+           "focus": _FOCUS_PROP},
           ["ideas"], read_only=False),
     _tool("export_jianying_kit", t_export_jianying_kit,
           "Use this when a script's video is ready to be edited in 剪映 / CapCut. Writes a zip with subtitle files, "

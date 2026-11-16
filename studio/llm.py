@@ -16,12 +16,14 @@ import re
 import urllib.error
 import urllib.parse
 import urllib.request
-from typing import Any, Callable, Dict, List, Optional
+from typing import Any, Callable, Dict, List, Optional, Tuple
 
 Transport = Callable[[str, str, Dict[str, str], Optional[Dict[str, Any]]], Dict[str, Any]]
 
 OPENAI_BASE = "https://api.openai.com/v1"
 GEMINI_BASE = "https://generativelanguage.googleapis.com/v1beta"
+SEARCH_PROVIDERS = ("gemini", "openai")     # the providers whose API can search the web while answering
+GEMINI_API_REVISION = "2026-05-20"          # the revision of Gemini's Interactions API that ``search_json`` is written for
 DEFAULT_LOCAL_BASE = "http://127.0.0.1:11434/v1"  # Ollama's OpenAI-compatible endpoint
 _LOOPBACK_HOSTS = ("127.0.0.1", "localhost", "::1")
 _NON_CHAT_HINTS = ("embedding", "whisper", "tts", "dall-e", "moderation", "image", "audio",
@@ -154,6 +156,76 @@ def list_models(provider: str, api_key: str = "", transport: Optional[Transport]
     if provider == "local":
         return sorted(i for i in ids if i)
     return sorted(i for i in ids if i and not any(h in i for h in _NON_CHAT_HINTS))
+
+
+def can_search(provider: str) -> bool:
+    """Whether this provider's API can search the web while it answers (see ``search_json``)."""
+    return provider in SEARCH_PROVIDERS
+
+
+def _cited_pages(blocks: List[Dict[str, Any]]) -> List[Dict[str, str]]:
+    """The pages a reply cites, in order and without repeats: ``[{"url", "title"}]``.
+
+    Both providers mark them the same way: ``annotations`` on a block of text, each of type ``url_citation``.
+    """
+    pages: List[Dict[str, str]] = []
+    seen = set()
+    for block in blocks:
+        notes = block.get("annotations")
+        for note in notes if isinstance(notes, list) else []:
+            if not isinstance(note, dict) or note.get("type") != "url_citation":
+                continue
+            url = note.get("url")
+            if isinstance(url, str) and url and url not in seen:
+                seen.add(url)
+                pages.append({"url": url, "title": str(note.get("title") or "")})
+    return pages
+
+
+def search_json(provider: str, api_key: str, model: str, prompt: str,
+                transport: Optional[Transport] = None) -> Tuple[Dict[str, Any], List[Dict[str, str]]]:
+    """One exchange with the provider's own web search switched on.
+
+    Returns ``(the reply parsed as a JSON object, the pages the reply cites)``. ``prompt`` is one text: the
+    instructions and the material together, as ``pipeline.single_prompt`` builds it.
+
+    The requests and the reply shapes are taken from the providers' documentation as it read on
+    16 November 2026, and have NOT been run against either service:
+
+    - ``gemini``: the Interactions API with the ``google_search`` tool
+      (ai.google.dev/gemini-api/docs/google-search). The text is in ``steps[]`` of type ``model_output``.
+    - ``openai``: the Responses API with the ``web_search`` tool
+      (developers.openai.com/api/docs/guides/tools-web-search). The text is in ``output[]`` of type ``message``.
+
+    A model that does not offer web search answers with an HTTP error, which is raised as ``LLMError("http")``
+    with the service's own message. A provider with no web search at all raises ``LLMError("cannot_browse")``.
+    """
+    call = transport or _http
+    if provider == "gemini":
+        data = call("POST", GEMINI_BASE + "/interactions",
+                    {"x-goog-api-key": api_key, "Api-Revision": GEMINI_API_REVISION},
+                    {"model": model, "input": prompt, "tools": [{"type": "google_search"}]})
+        steps = data.get("steps") if isinstance(data, dict) else None
+        holders = [s for s in (steps if isinstance(steps, list) else [])
+                   if isinstance(s, dict) and s.get("type") == "model_output"]
+        kind = "text"
+    elif provider == "openai":
+        data = call("POST", OPENAI_BASE + "/responses", {"Authorization": "Bearer " + api_key},
+                    {"model": model, "input": prompt, "tools": [{"type": "web_search"}]})
+        output = data.get("output") if isinstance(data, dict) else None
+        holders = [o for o in (output if isinstance(output, list) else [])
+                   if isinstance(o, dict) and o.get("type") == "message"]
+        kind = "output_text"
+    else:
+        raise LLMError("This AI service cannot search the web", "cannot_browse",
+                       "这个 AI 服务不能联网搜索")
+    blocks = [block for holder in holders
+              for block in (holder.get("content") if isinstance(holder.get("content"), list) else [])
+              if isinstance(block, dict) and block.get("type") == kind]
+    text = "".join(block["text"] for block in blocks if isinstance(block.get("text"), str))
+    if not text.strip():
+        raise LLMError("Unexpected response shape from %s: the reply holds no text" % provider, "bad_response")
+    return parse_json_text(text), _cited_pages(blocks)
 
 
 def parse_json_text(text: str) -> Dict[str, Any]:

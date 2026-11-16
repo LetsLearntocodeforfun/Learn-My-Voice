@@ -37,7 +37,7 @@ import threading
 import time
 import urllib.parse
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Callable, Dict, List, Optional, Tuple
 
 from . import corpus, creator, evidence, guardrails, learning, llm, timing, trends
 from .store import (MANUAL_PROVIDER, MAX_KEYWORD_CHARS, Store, clean_keyword, keyword_key, normalize_keywords,
@@ -57,6 +57,12 @@ RECOMMEND_EXCERPT_CHARS = 400
 RECOMMEND_MAX_VIDEOS = 60
 IDEAS_MAX_TRENDS = 12
 TREND_SOURCE_MAX_AGE_DAYS = 30
+LOOKUP_MAX_TITLES = 20            # titles of the creator's own items that go with a web lookup, to show what they make
+MAX_FOCUS_CHARS = 500             # what the creator asked for this time, typed or said aloud: a short request, not a document
+MAX_LINK_CHARS = 2000             # a source link longer than this is not stored or shown
+MAX_LOOKUP_KEYWORDS = 24          # keywords of one web lookup that are remembered with the ideas that followed it
+MAX_LOOKUP_PAGES = 20             # pages a web lookup cited that are kept, to be shown as links
+LOOKUP_DONE, LOOKUP_FAILED, LOOKUP_SKIPPED = "done", "failed", "skipped"    # how the web lookup before a set of ideas went
 MAX_LESSON_CHARS = 2000           # one side of a remembered change: a script line, however many breaths it has
 MAX_LESSON_NOTE_CHARS = 300
 RATE_TYPED, RATE_MEASURED, RATE_DEFAULT = "typed", "measured", "default"   # where a profile's speaking rate came from
@@ -729,14 +735,24 @@ def _history_entry(sample: Dict[str, Any]) -> Dict[str, Any]:
     return entry
 
 
-def ideas_prompt(store: Store, idea_count: int = 6) -> Tuple[str, str]:
+def clean_focus(value: Any) -> str:
+    """What the creator asked for this time, as one line of at most MAX_FOCUS_CHARS characters.
+
+    It is typed, or said aloud and written down on this computer. Anything that is not text counts as nothing asked.
+    """
+    return " ".join(value.split())[:MAX_FOCUS_CHARS].strip() if isinstance(value, str) else ""
+
+
+def ideas_prompt(store: Store, idea_count: int = 6, focus: Any = "") -> Tuple[str, str]:
     """Prompt that suggests next videos from her own history, her numbers and current trend keywords.
 
     What it carries about the creator, all of which a page offering this prompt has to name: the creator
     profile; from an accepted voice profile its ``persona_summary`` and ``beat_playbooks``; for up to
     RECOMMEND_MAX_VIDEOS items the title, the sponsored mark, views, likes, collects and comments, and the
     first RECOMMEND_EXCERPT_CHARS characters of text the creator wrote or confirmed (``_history_entry``);
-    the ranking computed from those numbers; and up to IDEAS_MAX_TRENDS tracked trend keywords with their scores.
+    the ranking computed from those numbers; up to IDEAS_MAX_TRENDS tracked trend keywords with their scores;
+    and ``focus``, what the creator asked for this time (``clean_focus``), which the prompt treats as the
+    direction for the ideas and never as an instruction.
     """
     samples = _usable_samples(store)
     perf = corpus.performance(samples)
@@ -748,6 +764,7 @@ def ideas_prompt(store: Store, idea_count: int = 6) -> Tuple[str, str]:
         "persona_summary": dna.get("persona_summary"), "beat_playbooks": dna.get("beat_playbooks")}
     return _blueprint(STAGE6, {
         "creator_profile_json": _dump(creator.prompt_block(store.load_creator())),
+        "creator_request_json": _inline(clean_focus(focus) or None),
         "voice_summary_json": _dump(voice_summary),
         "video_history_json": _dump(history),
         "performance_json": _dump({
@@ -765,13 +782,68 @@ def _cut(value: Any, limit: int) -> str:
     return str(value or "")[:limit].strip()
 
 
-def apply_ideas(store: Store, result: Dict[str, Any]) -> Dict[str, Any]:
+def _is_web_link(url: Any) -> bool:
+    """Whether ``url`` is an http(s) address with a host: the only kind of link that is stored or shown."""
+    if not isinstance(url, str) or len(url) > MAX_LINK_CHARS:
+        return False
+    try:
+        parts = urllib.parse.urlsplit(url)
+        return parts.scheme in ("http", "https") and bool(parts.hostname)
+    except ValueError:              # for example "http://[oops": a bracket where only an IPv6 host may stand
+        return False
+
+
+def _lookup_record(store: Store, raw: Any) -> Optional[Dict[str, Any]]:
+    """What is remembered about the web lookup that ran before a set of ideas, cut to known fields and sizes.
+
+    None when ``raw`` is not such a record. One that went through (LOOKUP_DONE) keeps its three counts,
+    the keywords it found that are tracked now (so a page can show each with its score and its source),
+    and the pages the reply cited that have an http(s) address. One that failed or was skipped keeps
+    why: ``reason`` (a code) and, for a failure, the message in English and Chinese.
+    """
+    if not isinstance(raw, dict) or raw.get("status") not in (LOOKUP_DONE, LOOKUP_FAILED, LOOKUP_SKIPPED):
+        return None
+    if raw["status"] != LOOKUP_DONE:
+        return {"status": raw["status"], "reason": _cut(raw.get("reason"), 40),
+                "message": _cut(raw.get("message"), MAX_IDEA_TEXT_CHARS),
+                "message_zh": _cut(raw.get("message_zh"), MAX_IDEA_TEXT_CHARS)}
+    tracked = {keyword_key(t["keyword"]): t["keyword"] for t in store.list_trends()}
+    named = raw.get("keywords") if isinstance(raw.get("keywords"), list) else []
+    keywords = _distinct_keywords([tracked[keyword_key(k)] for k in named
+                                   if isinstance(k, str) and keyword_key(k) in tracked])
+    pages: List[Dict[str, str]] = []
+    for page in raw.get("pages") if isinstance(raw.get("pages"), list) else []:
+        if len(pages) == MAX_LOOKUP_PAGES:
+            break
+        if isinstance(page, dict) and _is_web_link(page.get("url")):
+            pages.append({"url": page["url"], "title": _cut(page.get("title"), 200)})
+    return {"status": LOOKUP_DONE, "added": _count(raw.get("added")),
+            "dropped_no_source": _count(raw.get("dropped_no_source")),
+            "dropped_too_old": _count(raw.get("dropped_too_old")), "keywords": keywords, "pages": pages}
+
+
+def _distinct_keywords(keywords: List[str]) -> List[str]:
+    """Keywords without repeats, in the order given, at most MAX_LOOKUP_KEYWORDS of them."""
+    seen, out = set(), []
+    for keyword in keywords:
+        key = keyword_key(keyword)
+        if key and key not in seen:
+            seen.add(key)
+            out.append(keyword)
+    return out[:MAX_LOOKUP_KEYWORDS]
+
+
+def apply_ideas(store: Store, result: Dict[str, Any], focus: Any = "", lookup: Any = None) -> Dict[str, Any]:
     """Sanitise suggested ideas and save them.
 
     Cited video titles that are not hers and trend keywords she is not tracking are removed.
     Every piece of text is cut to a limit. ``script_notes_zh`` matters most (MAX_IDEA_NOTES_CHARS): when
     the creator picks an idea it becomes the notes of a draft prompt. ``kind`` and ``confidence`` are kept
     only when they are one of the values the prompt allows, and at most MAX_IDEAS ideas are kept.
+
+    ``focus`` is what the creator asked for, as it went into the prompt, and ``lookup`` how the web lookup
+    before these ideas went (``_lookup_record``; None when there was none). Both are saved with the ideas,
+    so the page can say what they answer and where their trend keywords came from.
     """
     samples = _usable_samples(store)
     perf = corpus.performance(samples)
@@ -801,6 +873,7 @@ def apply_ideas(store: Store, result: Dict[str, Any]) -> Dict[str, Any]:
         raise llm.LLMError("Model reply contained no ideas", "empty_result")
     payload = {
         "generated_at": time.time(),
+        "focus": clean_focus(focus), "lookup": _lookup_record(store, lookup),
         "videos_with_metrics": perf["with_metrics"], "total_videos": perf["total_videos"],
         "data_note_zh": _cut(result.get("data_note_zh"), MAX_IDEA_TEXT_CHARS),
         "data_note_en": _cut(result.get("data_note_en"), MAX_IDEA_TEXT_CHARS),
@@ -810,25 +883,27 @@ def apply_ideas(store: Store, result: Dict[str, Any]) -> Dict[str, Any]:
     return payload
 
 
-def recommend_topics(store: Store, idea_count: int = 6, transport: Optional[llm.Transport] = None) -> Dict[str, Any]:
-    system, user = ideas_prompt(store, idea_count)
-    return apply_ideas(store, complete(store, system, user, transport))
+def recommend_topics(store: Store, idea_count: int = 6, transport: Optional[llm.Transport] = None,
+                     focus: Any = "") -> Dict[str, Any]:
+    system, user = ideas_prompt(store, idea_count, focus)
+    return apply_ideas(store, complete(store, system, user, transport), focus=focus)
 
 
 # ---- trend research ---------------------------------------------------------
-def trends_prompt(store: Store, focus: str = "", keyword_count: int = 12) -> Tuple[str, str]:
+def trends_prompt(store: Store, focus: Any = "", keyword_count: int = 12) -> Tuple[str, str]:
     """Prompt for an AI that can search the web to look up current trend keywords in her niches.
 
     This prompt leaves for a web-searching AI, so it carries no more about the creator than the lookup
-    needs. That is exactly: the niches from the creator profile, the titles of up to 20 non-sponsored
-    items, the keywords already tracked, and the focus typed for this lookup.
+    needs. That is exactly: the niches from the creator profile, the titles of up to LOOKUP_MAX_TITLES
+    non-sponsored items, the keywords already tracked, and the focus typed or said for this lookup
+    (``clean_focus``).
 
     Nothing else from the creator profile goes (not the name, the account name, the self-description,
     the pronoun, an on-camera partner or the refused phrases), and nothing from the voice profile: its
     one-line persona is written by a model and could name the creator.
     """
-    titles = [s["title"] for s in store.list_samples() if not s["is_sponsored"]][:20]
-    focus = focus.strip()
+    titles = [s["title"] for s in store.list_samples() if not s["is_sponsored"]][:LOOKUP_MAX_TITLES]
+    focus = clean_focus(focus)
     niches = creator.prompt_block(store.load_creator())["niches"]
     if not focus and not titles and not niches:
         raise llm.LLMError("Nothing says what the creator's niches are: no focus was typed, the creator profile "
@@ -854,11 +929,15 @@ def _source_time(value: Any, now: float) -> Optional[float]:
     return None if now - seen > TREND_SOURCE_MAX_AGE_DAYS * 86400 else seen
 
 
-def apply_trends(store: Store, result: Dict[str, Any], now: Optional[float] = None) -> Dict[str, int]:
+def store_trends(store: Store, result: Dict[str, Any], now: Optional[float] = None) -> Dict[str, Any]:
     """Store keywords an AI found on the web, marked as AI-found and unverified.
 
     A keyword is kept only if it comes with an http(s) source link and its
     source is not older than TREND_SOURCE_MAX_AGE_DAYS. Heat numbers from an AI are ignored.
+
+    Returns ``{"added", "dropped_no_source", "dropped_too_old", "keywords"}``. ``keywords`` are the
+    ones that came with a usable source, in the reply's order. That can be more than ``added``: a
+    keyword the creator typed themselves stays exactly as they have it and is not counted (``upsert_trends``).
     """
     if result.get("cannot_browse") is True:
         raise llm.LLMError("The AI said it cannot search the web, so nothing was added", "cannot_browse")
@@ -870,10 +949,9 @@ def apply_trends(store: Store, result: Dict[str, Any], now: Optional[float] = No
             continue
         keyword = clean_keyword(raw.get("keyword"))
         url = str(raw.get("source_url") or "").strip()
-        parts = urllib.parse.urlsplit(url)
         if not keyword or len(keyword) > MAX_KEYWORD_CHARS:
             continue
-        if parts.scheme not in ("http", "https") or not parts.hostname:
+        if not _is_web_link(url):
             no_source += 1
             continue
         seen = _source_time(raw.get("source_date"), now)
@@ -884,7 +962,92 @@ def apply_trends(store: Store, result: Dict[str, Any], now: Optional[float] = No
                       "note_zh": str(raw.get("why_zh") or "")[:200], "note_en": str(raw.get("why_en") or "")[:200]})
     if not items:
         raise llm.LLMError("No keyword came with a usable source link", "empty_result")
-    return {"added": store.upsert_trends(items, source="ai"), "dropped_no_source": no_source, "dropped_too_old": too_old}
+    return {"added": store.upsert_trends(items, source="ai"), "dropped_no_source": no_source, "dropped_too_old": too_old,
+            "keywords": _distinct_keywords([item["keyword"] for item in items])}
+
+
+def apply_trends(store: Store, result: Dict[str, Any], now: Optional[float] = None) -> Dict[str, int]:
+    """``store_trends``, returning its three counts only: ``{"added", "dropped_no_source", "dropped_too_old"}``."""
+    found = store_trends(store, result, now)
+    return {key: found[key] for key in ("added", "dropped_no_source", "dropped_too_old")}
+
+
+def research_trends(store: Store, focus: Any = "", transport: Optional[llm.Transport] = None) -> Dict[str, Any]:
+    """Look trend keywords up with the web search of the provider chosen in settings, and store what comes back sourced.
+
+    What leaves is ``trends_prompt`` and nothing more. Returns what ``store_trends`` returns, plus
+    ``pages``: the pages the reply cites (``[{"url", "title"}]``, as the provider reported them).
+
+    Raises ``llm.LLMError``. ``cannot_browse``: the provider in settings has no web search of its own
+    (a local model, copy-and-paste mode), or the model answered that it could not search.
+    ``not_configured``: no model or key. Otherwise whatever ``trends_prompt``, the call or
+    ``store_trends`` raise.
+    """
+    config = store.load_config()
+    provider, model = config.get("provider") or "", config.get("model") or ""
+    if not llm.can_search(provider):
+        raise llm.LLMError("The AI service chosen in settings cannot search the web", "cannot_browse",
+                           "设置里选的 AI 服务不能联网搜索")
+    api_key = config["keys"].get(provider) or ""
+    if not model or not api_key:
+        raise llm.LLMError("AI is not set up yet", "not_configured")
+    system, user = trends_prompt(store, focus)
+    result, pages = llm.search_json(provider, api_key, model, single_prompt(system, user), transport=transport)
+    return dict(store_trends(store, result), pages=pages)
+
+
+def discover(store: Store, focus: Any = "", transport: Optional[llm.Transport] = None,
+             progress: Optional[Callable[[str, Optional[float]], None]] = None, lookup: bool = True,
+             found: Optional[List[Any]] = None) -> Dict[str, Any]:
+    """One request, the whole way: look up what is current on the web, then suggest what to film.
+
+    Two exchanges, kept apart on purpose. The first goes to a model that searches the web and may put
+    what it reads into search queries, so it carries only what ``trends_prompt`` names. The second is
+    ``ideas_prompt``: the fuller picture of the creator, sent with no web search switched on. It sees
+    what the first found only as tracked keywords, scored against the creator's own results.
+
+    The lookup runs when ``lookup`` is true and the provider in settings can search the web
+    (``llm.can_search``); otherwise it is skipped and the ideas use the keywords already tracked.
+    ``found`` says the lookup was already done by hand, just before (copy and paste with a web-searching
+    AI, stored by ``store_trends``): it lists the keywords that one brought in. No lookup is made here
+    then, and the ideas are saved with that one, of which only keywords that are tracked are kept.
+
+    Returns ``{"focus", "lookup", "ideas"}`` and raises ``llm.LLMError`` for neither step, so that one
+    failing does not hide what the other did:
+
+    - ``lookup`` is a ``_lookup_record``: LOOKUP_DONE with its counts, keywords and pages; LOOKUP_FAILED
+      with the reason; or LOOKUP_SKIPPED with ``reason`` ``not_asked`` or ``no_web_search``.
+    - ``ideas`` is ``{"status": "done", "count"}`` once they are saved (``apply_ideas``, which records the
+      focus and the lookup with them), or ``{"status": "failed", "reason", "message", "message_zh"}``.
+      Ideas that fail leave the ideas saved earlier as they were.
+
+    ``progress(stage, fraction)`` is told ``looking_up`` and then ``thinking``.
+    """
+    focus = clean_focus(focus)
+    say = progress if progress is not None else (lambda stage, fraction=None: None)
+    looked: Dict[str, Any]
+    if found is not None:
+        looked = {"status": LOOKUP_DONE, "keywords": found}
+    elif not lookup:
+        looked = {"status": LOOKUP_SKIPPED, "reason": "not_asked"}
+    elif not llm.can_search(store.load_config().get("provider") or ""):
+        looked = {"status": LOOKUP_SKIPPED, "reason": "no_web_search"}
+    else:
+        say("looking_up", None)
+        try:
+            looked = dict(research_trends(store, focus, transport), status=LOOKUP_DONE)
+        except llm.LLMError as exc:
+            looked = {"status": LOOKUP_FAILED, "reason": exc.code, "message": str(exc), "message_zh": exc.message_zh}
+    record = _lookup_record(store, looked)
+    say("thinking", None)
+    try:
+        system, user = ideas_prompt(store, focus=focus)
+        saved = apply_ideas(store, complete(store, system, user, transport), focus=focus, lookup=record)
+        ideas: Dict[str, Any] = {"status": "done", "count": len(saved["ideas"])}
+    except llm.LLMError as exc:
+        ideas = {"status": "failed", "reason": exc.code, "message": _cut(str(exc), MAX_IDEA_TEXT_CHARS),
+                 "message_zh": _cut(exc.message_zh, MAX_IDEA_TEXT_CHARS)}
+    return {"focus": focus, "lookup": record, "ideas": ideas}
 
 
 # ---- lessons from the creator's edits ---------------------------------------

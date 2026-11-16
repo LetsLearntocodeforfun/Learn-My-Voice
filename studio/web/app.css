@@ -211,3 +211,15 @@ details.card > summary { color: var(--ink); font-size: 15px; }
   .adders { grid-template-columns: 1fr; }
   .lesson { grid-template-columns: 1fr; }
 }
+
+/* one line to ideas: the request box, the run, what the lookup found */
+.dv-box textarea { font-size: 17px; }
+.dv-box .row { margin-top: 12px; }
+.dv-mic.on { background: var(--accent-soft); border-color: var(--accent); color: var(--accent); font-weight: 600; }
+.dv-progress { display: flex; align-items: center; gap: 14px; }
+.dv-spin { flex: none; width: 20px; height: 20px; border-radius: 50%; border: 3px solid var(--line); border-top-color: var(--accent); animation: dv-spin 1s linear infinite; }
+@keyframes dv-spin { to { transform: rotate(360deg); } }
+@media (prefers-reduced-motion: reduce) { .dv-spin { animation: none; } }
+h2.dv-h { font-size: 18px; margin: 28px 0 6px; }
+.dv-pages { margin: 2px 0 14px; }
+.dv-pages ul { margin: 6px 0 0; padding-left: 20px; font-size: 13px; overflow-wrap: anywhere; }

@@ -108,6 +108,9 @@ _UPLOAD_ID = re.compile(r"[0-9a-f]{12}")
 _UPLOAD_FILE = re.compile(r"[0-9a-f]{12}\.[a-z0-9]{2,5}(?:\.part)?")     # the only names this server writes there
 
 TRANSCRIBE_JOB, INSTALL_JOB = "transcribe", "install"
+DISCOVER_JOB = "discover"               # one request the whole way: a web lookup, then topic ideas (pipeline.discover)
+DICTATION_JOB = "dictation"             # a spoken request written down on this computer; nothing is added to the library
+MAX_DICTATION_BYTES = 30 * 1024 * 1024  # a spoken request is a minute at most: about 6 MB as the page records it
 
 
 class ApiError(Exception):
@@ -166,7 +169,7 @@ class Uploads:
     (``<12 hex digits>.<extension>``). The name the browser sent is a label
     and never part of a path. A file is deleted:
 
-    - when its transcription ends, whatever the outcome (``_transcribe_upload``);
+    - when its transcription ends, whatever the outcome (``_transcribe_upload``, and ``_dictate`` for a spoken request);
     - UPLOAD_TTL_SEC after it arrived, if nobody asked for it to be transcribed.
       A timer does this, so it needs no further request;
     - when the server closes, if it was still waiting (``close``);
@@ -266,6 +269,7 @@ class App:
         self.jobs = Jobs()
         self.max_upload_bytes = MAX_UPLOAD_BYTES
         self.install_lock = threading.Lock()
+        self.discover_lock = threading.Lock()
         self.uploads = Uploads(store.uploads_dir)
         self.uploads.clear_leftovers()
 
@@ -524,6 +528,32 @@ class Handler(BaseHTTPRequestHandler):
             raise
         self._json({"job": job}, 202)
 
+    def _start_dictation(self, body: Dict[str, Any]) -> None:
+        """``POST /api/dictation``: write down a short spoken request on this computer, as a job.
+
+        The recording is an upload like any other (``PUT /api/uploads``), at most MAX_DICTATION_BYTES. It
+        takes its turn with videos being transcribed, since one transcription runs at a time. The job's
+        result is ``{"text"}``; nothing is added to the library, and the recording is deleted whatever happens.
+        """
+        app = self.app
+        upload_id = body.get("upload_id")
+        if not isinstance(upload_id, str) or not _UPLOAD_ID.fullmatch(upload_id):
+            raise ApiError(400, "bad_upload_id")
+        app.uploads.drop_stale()
+        upload = app.uploads.claim(upload_id)
+        if upload is None:
+            raise ApiError(404, "upload_not_found")
+        try:
+            if upload["size"] > MAX_DICTATION_BYTES:
+                limit = "%d MB" % (MAX_DICTATION_BYTES // (1024 * 1024))
+                raise ApiError(413, "too_large", "A spoken request can be at most %s. Say it in a sentence or two." % limit,
+                               "说的这段最多 %s。一两句话就够了。" % limit)
+            job = app.jobs.start(DICTATION_JOB, lambda progress: _dictate(app, upload, progress), lane=TRANSCRIBE_JOB)
+        except BaseException:
+            _remove(upload["path"])                 # claimed but never started: still no copy may be left
+            raise
+        self._json({"job": job}, 202)
+
     def _transcriber_payload(self) -> Dict[str, Any]:
         app = self.app
         return dict(app.transcriber.status(), job=app.jobs.latest(INSTALL_JOB),
@@ -557,11 +587,13 @@ class Handler(BaseHTTPRequestHandler):
         elif task == "trends":
             system, user = pipeline.trends_prompt(store, focus=str(body.get("focus") or ""))
         else:
-            system, user = pipeline.ideas_prompt(store)
+            system, user = pipeline.ideas_prompt(store, focus=_focus(body))
         return {"prompt": pipeline.single_prompt(system, user)}
 
     def _manual_reply(self, body: Dict[str, Any]) -> None:
         store, task = self.app.store, _task(body)
+        # For ideas: what was asked, and the lookup that came before. Malformed ones are refused before the reply is read.
+        focus, lookup = (_focus(body), _pasted_lookup(body)) if task == "ideas" else ("", None)
         result = llm.parse_json_text(str(body.get("reply") or ""))
         if task == "draft":
             brief_id = body.get("brief_id")
@@ -573,9 +605,12 @@ class Handler(BaseHTTPRequestHandler):
         if task == "voice":       # a proposal, as on every other route: the active profile is not touched
             return self._json({"pending": pipeline.propose_voice(store, result)})
         if task == "trends":
-            counts = pipeline.apply_trends(store, result)
-            return self._json(dict(trends.payload(store), **counts))
-        ideas = pipeline.apply_ideas(store, result)
+            # ``found``: the keywords that came with a usable source. The page hands them back with the ideas
+            # reply that follows (``_pasted_lookup``), so the ideas are saved with the lookup they came after.
+            found = pipeline.store_trends(store, result)
+            keywords = found.pop("keywords")
+            return self._json(dict(trends.payload(store), found=keywords, **found))
+        ideas = pipeline.apply_ideas(store, result, focus=focus, lookup=lookup)
         return self._json({"performance": corpus.performance(store.list_samples()), "result": ideas})
 
     # ---- api ----------------------------------------------------------------
@@ -593,6 +628,9 @@ class Handler(BaseHTTPRequestHandler):
                 "creator": creator.for_page(store.load_creator()),
                 "video_formats": list(pipeline.VIDEO_FORMATS), "sample_count": len(store.list_samples()),
                 "trend_count": len(store.list_trends()),
+                # Whether the AI service in settings can search the web itself (``llm.can_search``): the one-prompt
+                # flow then looks current keywords up before suggesting ideas.
+                "lookup_available": llm.can_search(store.load_config().get("provider") or ""),
                 "setup_next": setup_status.status(store)["next"],
                 "mcp": {"python": sys.executable or "python3", "script": str(ROOT / "run_mcp.py")},
             }
@@ -773,15 +811,34 @@ class Handler(BaseHTTPRequestHandler):
                                "那一份之前的声音档案已经不在了")
             return self._json({"dna": dna, "is_example": False})
         if route == ("GET", "/api/recommendations"):
+            # ``discover``: the latest one-prompt run, running or finished, so the page can follow it or show how it ended.
             return self._json({"performance": corpus.performance(store.list_samples()),
-                               "result": store.load_recommendations()})
+                               "result": store.load_recommendations(),
+                               "discover": app.jobs.latest(DISCOVER_JOB)})
         if route == ("POST", "/api/recommendations"):
-            self._read_json()
+            focus = _focus(self._read_json())
             self._require_ai()
             if not any(s["text"].strip() for s in store.list_samples()):
                 raise ApiError(400, "no_samples")
             return self._json({"performance": corpus.performance(store.list_samples()),
-                               "result": pipeline.recommend_topics(store, transport=self.app.transport)})
+                               "result": pipeline.recommend_topics(store, transport=self.app.transport, focus=focus)})
+        if route == ("POST", "/api/discover"):
+            # {"focus": what the creator typed or said, "lookup": false to leave out the web lookup,
+            #  "found": the keywords a lookup by copy and paste brought in just before, which then stands in for it}
+            # Answers at once with a job (kind DISCOVER_JOB); its result is what pipeline.discover returns.
+            body = self._read_json()
+            focus, lookup, pasted = _focus(body), body.get("lookup", True), _pasted_lookup(body)
+            if not isinstance(lookup, bool):
+                raise ApiError(400, "bad_lookup")
+            found = pasted["keywords"] if pasted else None
+            self._require_ai()
+            with app.discover_lock:                 # two clicks must not start two runs
+                running = app.jobs.running(DISCOVER_JOB)
+                job = running[0] if running else app.jobs.start(
+                    DISCOVER_JOB, lambda progress: pipeline.discover(store, focus, app.transport, progress,
+                                                                     lookup=lookup, found=found),
+                    label=focus)
+            return self._json({"job": job}, 202)
 
         # ---- videos, transcribed on this computer ----
         if route == ("GET", "/api/transcriber"):
@@ -793,7 +850,7 @@ class Handler(BaseHTTPRequestHandler):
                     INSTALL_JOB, lambda progress: _install_transcriber(app, progress))
             return self._json({"job": job}, 202)
         if route == ("DELETE", "/api/transcriber"):
-            if app.jobs.running(INSTALL_JOB) or app.jobs.running(TRANSCRIBE_JOB):
+            if any(app.jobs.running(kind) for kind in (INSTALL_JOB, TRANSCRIBE_JOB, DICTATION_JOB)):
                 raise ApiError(409, "transcriber_busy", "An install or a transcription is still running",
                                "安装或转写还在进行中")
             try:
@@ -805,6 +862,8 @@ class Handler(BaseHTTPRequestHandler):
             return self._upload()
         if route == ("POST", "/api/videos"):
             return self._start_video(self._read_json())
+        if route == ("POST", "/api/dictation"):
+            return self._start_dictation(self._read_json())
         m = re.fullmatch(r"/api/jobs/([0-9a-f]{12})", path)
         if m and method == "GET":
             job = app.jobs.get(m.group(1))
@@ -946,6 +1005,31 @@ def _task(body: Dict[str, Any]) -> str:
     return value
 
 
+def _focus(body: Dict[str, Any]) -> str:
+    """What the creator asked for this time (``focus``), as one short line. Absent means nothing in particular."""
+    value = body.get("focus")
+    if value is None:
+        return ""
+    if not isinstance(value, str):
+        raise ApiError(400, "bad_focus")
+    return pipeline.clean_focus(value)
+
+
+def _pasted_lookup(body: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+    """The lookup done by copy and paste just before the ideas being asked for, or None when there was none.
+
+    The page sends ``found``, the keywords that lookup's reply brought in (the ``found`` of the ``trends``
+    reply). Only keywords that are tracked are kept from it (``pipeline.apply_ideas``), so nothing the page
+    sends here can add a keyword or a link.
+    """
+    found = body.get("found")
+    if found is None:
+        return None
+    if not isinstance(found, list) or not all(isinstance(keyword, str) for keyword in found):
+        raise ApiError(400, "bad_found")
+    return {"status": pipeline.LOOKUP_DONE, "keywords": found}
+
+
 def _job_error(exc: Exception) -> JobError:
     """A transcriber failure as a job failure: its code and its messages, which are written to be shown (English and Chinese)."""
     return JobError(str(getattr(exc, "code", "") or "failed"), str(exc), str(getattr(exc, "message_zh", "") or ""))
@@ -986,6 +1070,30 @@ def _transcribe_upload(app: App, upload: Dict[str, Any], title: str, is_sponsore
         except TextTooLong as exc:                  # the library's length limit: say so, in both languages
             raise JobError(exc.code, exc.message, exc.message_zh)
         return {"sample_id": sample["id"], "title": sample["title"]}
+    finally:
+        _remove(path)
+
+
+def _dictate(app: App, upload: Dict[str, Any], progress: Progress) -> Dict[str, Any]:
+    """One dictation job: a short spoken request becomes ``{"text"}``, one line of at most ``pipeline.MAX_FOCUS_CHARS``.
+
+    It is written down by the same transcriber as a video, on this computer. Nothing is added to the
+    library, and the text goes nowhere until the creator has seen it in the box and asked for ideas.
+    The recording is deleted on the way out whatever happened, as every upload is.
+    """
+    path = upload["path"]
+    try:
+        try:
+            result = app.transcriber.transcribe_file(str(path), progress)
+        except transcribe.TranscribeError as exc:
+            raise _job_error(exc)
+        result = result if isinstance(result, dict) else {}
+        segments = result.get("segments") if isinstance(result.get("segments"), list) else []
+        text = pipeline.clean_focus(textstats.strip_cues(timing.transcript_text(segments)))
+        if not textstats.spoken_units(text):
+            raise JobError("no_speech", "No speech could be made out. Try again a little closer to the microphone, or type it.",
+                           "没有听清说的话。请靠近麦克风再说一次，或者直接打字。")
+        return {"text": text}
     finally:
         _remove(path)
 

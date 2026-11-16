@@ -983,11 +983,12 @@ class PageProtectionTest(StudioCase):
         web = Path(server.WEB_DIR)
         index = (web / "index.html").read_text(encoding="utf-8")
         scripts = re.findall(r"<script\b([^>]*)>(.*?)</script>", index, re.S)
-        self.assertEqual(sorted(re.search(r'src="([^"]+)"', attrs).group(1) for attrs, _ in scripts), ["/app.js", "/pages.js", "/setup.js"])
-        self.assertEqual([body.strip() for _, body in scripts], ["", "", ""])   # none is written into the page
+        self.assertEqual(sorted(re.search(r'src="([^"]+)"', attrs).group(1) for attrs, _ in scripts),
+                         ["/app.js", "/discover.js", "/pages.js", "/setup.js"])
+        self.assertEqual([body.strip() for _, body in scripts], ["", "", "", ""])   # none is written into the page
         self.assertEqual(re.findall(r'<link\b[^>]*href="([^"]+)"', index), ["/app.css"])
         sources = {path.name: path.read_text(encoding="utf-8") for path in web.iterdir() if path.suffix in (".html", ".js", ".css")}
-        self.assertEqual(sorted(sources), ["app.css", "app.js", "index.html", "pages.js", "setup.js"])
+        self.assertEqual(sorted(sources), ["app.css", "app.js", "discover.js", "index.html", "pages.js", "setup.js"])
         forbidden = {
             "a <style> element": r"<style\b",
             "an event handler written into markup": r"<[A-Za-z][^<>]*\son[a-z]+\s*=",

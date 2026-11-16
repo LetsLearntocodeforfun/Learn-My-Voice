@@ -4,7 +4,7 @@
 Finds topics and search keywords that are popular on Xiaohongshu right now in this creator's niches, so the studio can weigh them against the creator's own results. The studio never fetches platform data itself. This step only works with an AI that can search the web during the conversation, and everything it returns is stored as unverified, with its source link, for the creator to check. The creator's niches come from the creator profile filled in during setup (`{{creator_profile_json}}`), from a focus typed for this lookup, and from the titles of the creator's own videos.
 
 ## Recommended Model
-- A chat product with live web search. A model without web access must decline (rule 1).
+- A chat product with live web search, by copy and paste. Or, from the app's 选题建议 page, a Gemini or OpenAI model called with that provider's own web search tool. A model without web access must decline (rule 1).
 
 ---
 

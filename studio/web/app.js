@@ -69,7 +69,7 @@ const I18N = {
 };
 
 let lang = localStorage.getItem('lang') === 'en' ? 'en' : 'zh';
-let appState = { settings: { configured: false, keys: {} }, dna_is_example: true, creator: null, video_formats: [], sample_count: 0, trend_count: 0 };
+let appState = { settings: { configured: false, keys: {} }, dna_is_example: true, creator: null, video_formats: [], sample_count: 0, trend_count: 0, lookup_available: false };
 const $view = document.getElementById('view');
 const $nav = document.getElementById('nav');
 const $toast = document.getElementById('toast');
@@ -124,7 +124,7 @@ async function api(method, path, body) {
   if (body !== undefined) { opts.headers['Content-Type'] = 'application/json'; opts.body = JSON.stringify(body); }
   const res = await fetch(path, opts);
   const data = await res.json().catch(() => ({}));
-  if (!res.ok) { const e = new Error(data.message || data.error || 'error'); e.code = data.error; e.reason = data.reason; e.detail = data.message; throw e; }
+  if (!res.ok) { const e = new Error(data.message || data.error || 'error'); e.code = data.error; e.reason = data.reason; e.detail = data.message; e.message_zh = data.message_zh; throw e; }
   return data;
 }
 
@@ -219,7 +219,9 @@ async function renderHome() {
   $view.innerHTML = `<div class="wrap">
     <div class="row"><div><h1>${esc(t('home_title'))}</h1><p class="sub">${esc(t('home_sub'))}</p></div>
       <div class="spacer"></div><a class="btn primary big" href="#/new">${esc(t('new_script'))}</a></div>
-    ${banner}${cards || `<div class="empty">${esc(t('empty'))}</div>`}</div>`;
+    ${banner}<div id="dv-box"></div>${cards || `<div class="empty">${esc(t('empty'))}</div>`}</div>`;
+  /* One line, typed or spoken, to topic ideas (discover.js). Offered here once an AI is connected. */
+  if (appState.settings.configured) dvPaintBox(document.getElementById('dv-box'), true);
 }
 
 /* ---------- new script ---------- */
