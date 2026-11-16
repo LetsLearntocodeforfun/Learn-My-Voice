@@ -369,7 +369,10 @@ class Store:
 
         - It is written to a temporary file of its own in the same folder. Two saves at the same moment get
           two different ones, so neither can rename or remove the other's.
-        - The file is owner-only (``mode``) before any content goes into it.
+        - The file is owner-only (``mode``) before any content goes into it. A system that cannot set a mode
+          on an open file (Windows before Python 3.13 has no ``os.fchmod``) leaves the file as it was
+          created, which is owner-only already wherever modes say who may read a file. On Windows they do
+          not: there the folder the file is in decides that.
         - The content is handed to the disk before the file takes the place of the old one, so a crash or a
           power cut does not leave an empty or half-written file under the real name.
         - If anything fails, the temporary file is removed and the old file is as it was.
@@ -377,7 +380,9 @@ class Store:
         fd, tmp = tempfile.mkstemp(dir=str(path.parent), prefix=path.name + ".", suffix=".tmp")
         try:
             with os.fdopen(fd, "wb") as fh:
-                os.fchmod(fh.fileno(), mode)
+                set_mode = getattr(os, "fchmod", None)      # looked up now, not at import: absent on some systems
+                if set_mode is not None:
+                    set_mode(fh.fileno(), mode)
                 fh.write(data)
                 fh.flush()
                 os.fsync(fh.fileno())

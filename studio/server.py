@@ -81,6 +81,21 @@ CONTENT_SECURITY_POLICY = "; ".join((
     "frame-ancestors 'none'",
 ))
 
+# The type sent with each kind of file the pages are made of. They are named here and not looked up in the
+# system's table (``mimetypes``): on Windows that table is read from the registry, where ".js" is sometimes
+# "text/plain". Every answer tells the browser not to guess a type (nosniff, in ``_send``), so a script sent
+# as plain text is not run and the page stays empty. A kind of file not named here still gets the system's answer.
+STATIC_TYPES = {
+    ".html": "text/html; charset=utf-8",
+    ".js": "text/javascript; charset=utf-8",
+    ".css": "text/css; charset=utf-8",
+    ".json": "application/json; charset=utf-8",
+    ".svg": "image/svg+xml",
+    ".png": "image/png",
+    ".ico": "image/x-icon",
+    ".woff2": "font/woff2",
+}
+
 MAX_UPLOAD_BYTES = 8 * 1024 ** 3        # one video or recording; streamed to disk, never held in memory
 UPLOAD_CHUNK = 1024 * 1024
 UPLOAD_IDLE_SEC = 120                   # an upload that sends nothing for this long is abandoned
@@ -519,9 +534,11 @@ class Handler(BaseHTTPRequestHandler):
         target = (WEB_DIR / name).resolve()
         if WEB_DIR.resolve() not in target.parents or not target.is_file():
             raise ApiError(404, "not_found")
-        ctype = mimetypes.guess_type(target.name)[0] or "application/octet-stream"
-        if ctype.startswith("text/") or ctype.endswith("javascript"):
-            ctype += "; charset=utf-8"
+        ctype = STATIC_TYPES.get(target.suffix.lower())
+        if ctype is None:                       # a kind of file not named there: what the system says, as before
+            ctype = mimetypes.guess_type(target.name)[0] or "application/octet-stream"
+            if ctype.startswith("text/") or ctype.endswith("javascript"):
+                ctype += "; charset=utf-8"
         self._send(200, target.read_bytes(), ctype)
 
     # ---- copy-and-paste mode ------------------------------------------------
