@@ -50,7 +50,7 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
 from . import checks, corpus, creator, exports, llm, pipeline, textstats, timing, transcribe, trends
-from . import hooks, suggest
+from . import buildinfo, hooks, suggest
 from . import setup as setup_status
 from .jobs import JobError, Jobs, Progress
 from .store import HISTORY_ID, MANUAL_PROVIDER, PROVIDERS, ROOT, StaleScript, Store, TextTooLong, clean_file_name
@@ -639,6 +639,8 @@ class Handler(BaseHTTPRequestHandler):
                 # flow then looks current keywords up before suggesting ideas.
                 "lookup_available": llm.can_search(store.load_config().get("provider") or ""),
                 "setup_next": setup_status.status(store)["next"],
+                # Which build this is: a version from a release package, or "from source". Shown on the settings page.
+                "build": buildinfo.current(),
                 "mcp": {"python": sys.executable or "python3", "script": str(ROOT / "run_mcp.py")},
             }
             if store.dna_unreadable():
@@ -1175,6 +1177,15 @@ def main(argv: Optional[List[str]] = None) -> int:
     parser.add_argument("--no-browser", action="store_true")
     args = parser.parse_args(argv)
 
+    # What is printed below is Chinese and English. Where the output cannot show Chinese (it is sent to a file or
+    # another program on a Windows that uses an older text encoding), a character is replaced and the app still
+    # starts; without this, printing the first line ended the app before it served a page.
+    for stream in (sys.stdout, sys.stderr):
+        try:
+            stream.reconfigure(errors="replace")
+        except (AttributeError, ValueError):
+            pass
+
     store = Store()
     server = None
     for port in range(args.port, args.port + 10):
@@ -1185,10 +1196,11 @@ def main(argv: Optional[List[str]] = None) -> int:
             continue
     if server is None:
         print("无法启动：端口 %d–%d 都被占用。/ Could not start: ports %d-%d are all in use."
-              % (args.port, args.port + 9, args.port, args.port + 9), file=sys.stderr)
+              % (args.port, args.port + 9, args.port, args.port + 9), file=sys.stderr, flush=True)
         return 1
     url = "http://127.0.0.1:%d/" % server.server_address[1]
-    print("工作台已启动 / Studio running: %s\n关闭这个窗口即可退出。/ Close this window to quit." % url)
+    # Sent at once also when the output is not a window: whoever started the app is waiting for this address.
+    print("工作台已启动 / Studio running: %s\n关闭这个窗口即可退出。/ Close this window to quit." % url, flush=True)
     if not args.no_browser:
         webbrowser.open(url)
     try:

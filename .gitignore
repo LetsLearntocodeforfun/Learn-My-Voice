@@ -5,3 +5,7 @@ local_tools/
 __pycache__/
 *.pyc
 .DS_Store
+# Written into a release package when it is built (tools/build_release.py). Never part of the source.
+studio/build.json
+# Where release packages are built locally.
+dist/

@@ -65,6 +65,7 @@ Object.assign(I18N.zh, {
   exp_srt: '字幕文件（.srt）', exp_srt_d: '时间按语速估算，导入剪映后需要微调',
   exp_voice_d: '一口气一行，可用于提词，或剪映的「文稿匹配」',
   err_manual_mode: '现在是复制粘贴模式，请用页面上的按钮操作。', err_bad_task: '出错了，请再试一次。',
+  build_version: '版本 {v}（{c}，{d}）', build_source: '正在从源代码运行，没有版本号。',
   ai_not_configured: '还没连接 AI，请先到「设置」。', ai_manual_mode: '现在是复制粘贴模式。',
   ai_local_address: '本地模型地址必须在这台电脑上（127.0.0.1 或 localhost）。',
   ai_http: 'AI 服务返回了错误：', ai_network: '连不上 AI 服务。请检查网络，或确认本地模型已经启动。',
@@ -87,6 +88,7 @@ Object.assign(I18N.en, {
   exp_srt: 'Subtitle file (.srt)', exp_srt_d: 'Timing is estimated from speaking rate; adjust after importing',
   exp_voice_d: 'One breath per line, for prompting or Jianying script matching (文稿匹配)',
   err_manual_mode: 'Copy-and-paste mode is on; use the buttons on the page.', err_bad_task: 'Something went wrong. Please try again.',
+  build_version: 'Version {v} ({c}, {d})', build_source: 'Running from the source code; there is no version number.',
   ai_not_configured: 'AI is not connected. Open Settings first.', ai_manual_mode: 'Copy-and-paste mode is on.',
   ai_local_address: 'The local model address must be on this computer (127.0.0.1 or localhost).',
   ai_http: 'The AI service returned an error: ', ai_network: 'Could not reach the AI service. Check the network, or that the local model is running.',
@@ -253,6 +255,13 @@ async function manualBridge(task, payload, options) {
 const LOCAL_PRESETS = { Ollama: 'http://127.0.0.1:11434/v1', 'LM Studio': 'http://127.0.0.1:1234/v1' };
 const settingsForm = { provider: '', models: [], model: '', localUrl: '' };
 
+/* Which build this is, for someone reporting a problem: the version of a release package, or "from source". */
+function buildLine() {
+  const b = appState.build;
+  if (!b || b.from_source || !b.version) return t('build_source');
+  return tf('build_version', { v: b.version, c: String(b.commit || '').slice(0, 7), d: b.built_on || '' });
+}
+
 function renderSettings() {
   const st = appState.settings;
   if (!settingsForm.provider) { settingsForm.provider = st.provider || 'manual'; settingsForm.model = st.model || ''; }
@@ -297,7 +306,8 @@ function renderSettings() {
        <span class="hint">· ${esc(status(k))}</span></button>`).join('')}</div>
     ${access}${modelPart}
     <div class="row" style="margin-top:24px"><button class="btn primary big" id="save">${esc(t('save'))}</button></div>
-    ${mcpCard}</div>`;
+    ${mcpCard}
+    <p class="hint" id="build-line" style="margin-top:28px">${esc(buildLine())}</p></div>`;
 
   if (mcp) {
     document.getElementById('mcp-snippet').value =

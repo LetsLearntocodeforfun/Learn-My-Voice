@@ -25,11 +25,26 @@
 | 一句话找选题 | 新功能。在「选题建议」里写一句或说一句，先查最近的热词，再给选题。有自动化测试，页面和服务也一起在无界面 Chrome 里跑过，用的是模拟的 AI 回复。用 Gemini 或 OpenAI 密钥联网查热词这一步，是照着这两家的文档写的，**还没有**真的连过任何一家。说话输入是用一台 Mac 上的 Whisper 测的，用一段声音代替了麦克风；真实的麦克风**还没有**试过。 |
 | 剪映 / CapCut | 导出的是可以导入的标准文件。维护者**还没有**在剪映或 CapCut 里实际验证过导入。目前不会直接生成剪映草稿。 |
 | MCP 服务 | 在协议层面测试过（标准输入输出上的 JSON-RPC）。**还没有**和 ChatGPT、Codex 或 Claude Desktop 实际连通验证。 |
-| 系统 | 在 macOS、Python 3.9 上开发。还没有人在 Windows 或 Linux 上实际用过。每次推送都会在三个系统上跑自动化测试，在那两个系统上能不能通过，见仓库的 Actions 页面。 |
+| 系统 | 在 macOS、Python 3.9 上开发。还没有人在 Windows 或 Linux 上实际用过。自动化测试在 GitHub 的机器上跑三个系统：macOS 和 Linux 通过；截至 2026 年 11 月 16 日，Windows 上没有通过。每个候选版本的发布说明里，会写这个版本在每个系统上测出来的结果。 |
 
 ## 快速开始
 
 需要 Python 3.9 或更新版本，不用安装任何依赖。
+
+**下载安装包。** 候选版本在仓库的
+[Releases 页面](https://github.com/LetsLearntocodeforfun/Learn-My-Voice/releases)。下载
+`learn-my-voice-<版本号>.zip`，解压后这样启动：
+
+| 系统 | 启动方法 |
+| :--- | :--- |
+| macOS | 双击 `启动工作台.command`（或 `Start Learn My Voice.command`）。如果第一次打不开，请右键点这个文件，选择「打开」。 |
+| Windows | 双击 `Start Learn My Voice.bat` |
+| Linux | 在终端里运行 `sh start-learn-my-voice.sh` |
+
+Windows 和 Linux 的启动文件是新加的，还没有人实际用过。每个候选版本的发布说明里，会写这个版本在 GitHub
+的机器上、在每个系统上能不能启动，并附上压缩包的 SHA-256。
+
+**从源代码运行。**
 
 ```bash
 git clone https://github.com/LetsLearntocodeforfun/Learn-My-Voice.git
@@ -37,10 +52,7 @@ cd Learn-My-Voice
 python3 -m studio.server
 ```
 
-工作台会在浏览器里打开，地址是 `http://127.0.0.1:8765`。
-
-在 macOS 上也可以直接双击 `启动工作台.command`（或 `Start Learn My Voice.command`）。
-如果第一次打不开，请右键点这个文件，选择「打开」。
+两种方式都会在浏览器里打开工作台，地址是 `http://127.0.0.1:8765`。「设置」页的最下面会显示正在运行的是哪个版本。
 
 界面默认是中文。点左下角的 **English** 可以切换成英文。
 
@@ -189,8 +201,11 @@ tunnel-client run --profile learn-my-voice
 | `studio/trends.py` | 读取粘贴的热词、结合你自己的数据打分、检查关键词有没有用上 |
 | `studio/exports.py` | 文本导出、`.srt`、剪映素材包 |
 | `studio/mcp_server.py`、`run_mcp.py` | MCP 服务 |
+| `studio/buildinfo.py` | 正在运行的是哪个版本：安装包里的版本号，或者「从源代码运行」 |
 | `prompts/` | 提示词原文。程序直接读取其中的 02、04、06、07，修改这些文件就会改变行为。 |
 | `.github/workflows/tests.yml` | 每次推送都在 macOS、Windows 和 Linux 上跑测试 |
+| `.github/workflows/release-candidate.yml` | 推送到 `beta/...` 分支时：跑测试、打包、在三个系统上试用、发布成预发布版本 |
+| `tools/build_release.py`、`tools/try_release.py`、`tools/run_tests.py` | 上面两个流程运行的脚本，在自己的电脑上也一样能跑。不在安装包里。 |
 | `SYSTEM_DESIGN.md` | 最初的、更大的设计方案，其中一部分还没有实现。 |
 
 提示词会收到你在「开始」里填的资料（称呼、内容方向、常一起出镜的人、坚决不说的话），不再假定是某一位具体的博主。它们是为中文的小红书视频脚本写的。
@@ -199,6 +214,8 @@ tunnel-client run --profile learn-my-voice
 
 ```bash
 python3 -m unittest discover -t . -s tests        # 全部测试，无依赖
+python3 tools/build_release.py build              # 按最近一次提交打出安装包，放在 dist/
+python3 tools/try_release.py dist/learn-my-voice-*.zip    # 解压、用启动文件启动、试用、关闭
 python3 -m studio.guardrails tests/fixtures/worked_example_script.json --dna schemas/voice_dna.example.json
 ```
 

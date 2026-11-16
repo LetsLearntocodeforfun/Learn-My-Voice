@@ -1,0 +1,179 @@
+# Builds a release candidate from every push to a beta branch (beta/<anything>), and publishes it as a
+# pre-release on GitHub with the package attached, so that people can download and try it.
+#
+#   tests    the whole test suite on macOS, Windows and Linux (tests.yml)
+#   build    one zip, built twice and compared: the same commit always gives the same bytes
+#   try      on each system: unpack that zip, start it with the launcher a person would double-click,
+#            use the running app, stop it
+#   publish  a pre-release named v<version>.rc.<run number>, with the zip, its SHA-256, and notes that
+#            say per system what the jobs above found
+#
+# Nothing is published unless the tests pass on macOS and Linux and the trial passes on macOS, the one system
+# the app has been used on by a person. The tests on Windows, and the trial on Windows and Linux, are allowed
+# to fail for now; the notes then say so in words, with what those jobs reported.
+#
+# A job that fails says why in an annotation at the top of the run's page, which can be read without signing in.
+#
+# Only the publish job may write to the repository. No job uses a secret other than the token GitHub
+# gives every run. Actions are pinned to a commit. Text that comes from the push (the branch name) is
+# handed to scripts through the environment and never written into a command line.
+name: Release candidate
+
+on:
+  push:
+    branches: ["beta/**"]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release-candidate-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  tests:
+    uses: ./.github/workflows/tests.yml
+
+  build:
+    name: Build the package
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    outputs:
+      version: ${{ steps.build.outputs.version }}
+      tag: ${{ steps.build.outputs.tag }}
+      file: ${{ steps.build.outputs.file }}
+      sha256: ${{ steps.build.outputs.sha256 }}
+    env:
+      RC_NUMBER: ${{ github.run_number }}
+      RC_ATTEMPT: ${{ github.run_attempt }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1         # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0     # v7.1.0
+        with:
+          python-version: "3.13"
+      - name: Build
+        id: build
+        shell: bash
+        run: python tools/build_release.py build --rc "$RC_NUMBER" --attempt "$RC_ATTEMPT" --out dist
+      - name: Build it again and compare
+        shell: bash
+        run: |
+          python tools/build_release.py build --rc "$RC_NUMBER" --attempt "$RC_ATTEMPT" --out again
+          cmp dist/*.zip again/*.zip
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9   # v7.0.2
+        with:
+          name: package
+          path: dist/
+          if-no-files-found: error
+          overwrite: true           # a run started again builds its own package, numbered as that attempt
+          retention-days: 14
+
+  try:
+    name: Try it / ${{ matrix.os }} / Python ${{ matrix.python }}
+    needs: build
+    runs-on: ${{ matrix.os }}
+    continue-on-error: ${{ matrix.experimental }}
+    timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [macos-latest, windows-latest, ubuntu-24.04]
+        # The oldest Python supported and the newest. The launcher uses whichever Python the system
+        # has; the second start in the trial uses this one.
+        python: ["3.9", "3.15"]
+        include:
+          - os: macos-latest
+            experimental: false
+          - os: windows-latest
+            experimental: true
+          - os: ubuntu-24.04
+            experimental: true
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1         # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0     # v7.1.0
+        with:
+          python-version: ${{ matrix.python }}
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: package
+          path: dist
+      # These steps run in each system's own shell (PowerShell on Windows, as nothing here needs another).
+      # The scripts take what they need from the environment, so the command lines hold no variable.
+      - name: Unpack it, start it with its launcher, use it
+        id: trial
+        env:
+          TRY_PACKAGE: dist/${{ needs.build.outputs.file }}
+          TRY_SHA256: ${{ needs.build.outputs.sha256 }}
+          TRY_LABEL: ${{ matrix.os }} / Python ${{ matrix.python }}
+          TRY_RESULT: results/try-${{ matrix.os }}-py${{ matrix.python }}.json
+        run: python tools/try_release.py
+      # If the step above never got as far as writing its result, this writes down that it did not.
+      - name: Write down a job that left no result
+        if: ${{ always() }}
+        env:
+          RESULT_LABEL: ${{ matrix.os }} / Python ${{ matrix.python }}
+          RESULT_OUTCOME: ${{ steps.trial.outcome }}
+          RESULT_FILE: results/try-${{ matrix.os }}-py${{ matrix.python }}.json
+        run: python tools/build_release.py result --kind try --if-missing
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9   # v7.0.2
+        if: ${{ always() }}
+        with:
+          name: result-try-${{ matrix.os }}-py${{ matrix.python }}
+          path: results/
+          if-no-files-found: error
+          overwrite: true           # a job started again replaces what its earlier attempt left
+          retention-days: 14
+
+  publish:
+    name: Publish the release candidate
+    needs: [tests, build, try]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    permissions:
+      contents: write           # to create the pre-release and its tag; no other job can write
+    env:
+      PACKAGE: ${{ needs.build.outputs.file }}
+      SHA256: ${{ needs.build.outputs.sha256 }}
+      TAG: ${{ needs.build.outputs.tag }}
+      VERSION: ${{ needs.build.outputs.version }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1         # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0     # v7.1.0
+        with:
+          python-version: "3.13"
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: package
+          path: dist
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          pattern: result-*
+          path: results
+          merge-multiple: true
+      # The notes are written from what each job wrote down. This step fails, and nothing is published,
+      # if the tests or the trial did not pass on macOS, or the tests on Linux, whatever the jobs' own colours say.
+      - name: Check the package and write the notes
+        shell: bash
+        env:
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+          BRANCH: ${{ github.ref_name }}
+        run: |
+          python tools/build_release.py verify "dist/$PACKAGE" --sha256 "$SHA256"
+          python tools/build_release.py notes --package "dist/$PACKAGE" --results results \
+            --require macos --require linux:tests \
+            --legs tests=3 --legs try=2 --run-url "$RUN_URL" --branch "$BRANCH" --out notes.md
+          cat notes.md >> "$GITHUB_STEP_SUMMARY"
+      - name: Publish it as a pre-release
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create "$TAG" "dist/$PACKAGE" "dist/$PACKAGE.sha256" \
+            --repo "$GITHUB_REPOSITORY" --target "$GITHUB_SHA" --prerelease \
+            --title "$VERSION (release candidate)" --notes-file notes.md

@@ -26,11 +26,26 @@ This is an early version. Read this before relying on it.
 | One line to ideas | New. Typing or saying one line on 选题建议 looks current keywords up and then suggests ideas. Covered by automated tests, and the pages were run with the server in headless Chrome against stand-in AI replies. The web lookup through a Gemini or OpenAI key is written from those services' documentation and has **not** been run against either. Speaking was tested with the Whisper on one Mac and a sound stream in place of the microphone; a real microphone has **not** been tried. |
 | 剪映 / CapCut | Exports standard files to import. Importing them has **not** been verified inside 剪映 or CapCut by the maintainers. It does not write 剪映 project drafts. |
 | MCP server | Tested at protocol level (JSON-RPC over stdio). **Not** yet verified with ChatGPT, Codex or Claude Desktop. |
-| Platforms | Developed on macOS with Python 3.9. Nobody has used it on Windows or Linux yet. The automated tests run on all three systems on every push; the repository's Actions page shows whether they pass there. |
+| Platforms | Developed on macOS with Python 3.9. Nobody has used it on Windows or Linux yet. The automated tests run on all three systems on GitHub's machines: they pass on macOS and Linux and, as of 16 November 2026, fail on Windows. Each release candidate's notes say what was found for that build, per system. |
 
 ## Quick start
 
 Requirements: Python 3.9 or newer. No packages to install.
+
+**From a download.** Release candidates are on the repository's
+[Releases page](https://github.com/LetsLearntocodeforfun/Learn-My-Voice/releases). Download
+`learn-my-voice-<version>.zip`, unpack it, and start it:
+
+| System | Start it with |
+| :--- | :--- |
+| macOS | double-click `启动工作台.command` or `Start Learn My Voice.command`. If macOS refuses to open it the first time, right-click the file and choose Open. |
+| Windows | double-click `Start Learn My Voice.bat` |
+| Linux | `sh start-learn-my-voice.sh` in a terminal |
+
+The Windows and Linux launchers are new, and no person has used them yet. The notes of each release candidate
+say whether that build started on each system on GitHub's machines, and give the SHA-256 of the zip.
+
+**From the source.**
 
 ```bash
 git clone https://github.com/LetsLearntocodeforfun/Learn-My-Voice.git
@@ -38,10 +53,7 @@ cd Learn-My-Voice
 python3 -m studio.server
 ```
 
-The studio opens in your browser at `http://127.0.0.1:8765`.
-
-On macOS you can instead double-click `启动工作台.command` or `Start Learn My Voice.command`.
-If macOS refuses to open it the first time, right-click the file and choose Open.
+Either way the studio opens in your browser at `http://127.0.0.1:8765`. Settings shows which build is running.
 
 The interface starts in Chinese. Use the **English** button at the bottom of the sidebar to switch.
 
@@ -193,8 +205,11 @@ generator reports limits for drafts produced on macOS, so this needs testing aga
 | `studio/trends.py` | Reading pasted trend keywords, scoring them against her own results, keyword coverage |
 | `studio/exports.py` | Text exports, `.srt`, 剪映 kit |
 | `studio/mcp_server.py`, `run_mcp.py` | MCP server |
+| `studio/buildinfo.py` | Which build is running: the version from a release package, or "from source" |
 | `prompts/` | The prompt text. The app reads prompts 02, 04, 06 and 07 directly from these files, so editing them changes behaviour. |
 | `.github/workflows/tests.yml` | Runs the tests on macOS, Windows and Linux on every push |
+| `.github/workflows/release-candidate.yml` | On a push to a `beta/...` branch: tests, builds the zip, tries it on the three systems, publishes a pre-release |
+| `tools/build_release.py`, `tools/try_release.py`, `tools/run_tests.py` | What those workflows run; they run the same on a desk. Not part of the download. |
 | `SYSTEM_DESIGN.md` | The original, larger design. Parts of it are not built. |
 
 The prompts receive the creator profile from setup (name, niches, an on-camera partner, phrases never
@@ -204,6 +219,8 @@ to be used) and no longer assume one particular creator. They are written for Xi
 
 ```bash
 python3 -m unittest discover -t . -s tests        # all tests, no dependencies
+python3 tools/build_release.py build              # the zip a release would hold, from the last commit, into dist/
+python3 tools/try_release.py dist/learn-my-voice-*.zip    # unpack it, start it with its launcher, use it, stop it
 python3 -m studio.guardrails tests/fixtures/worked_example_script.json --dna schemas/voice_dna.example.json
 ```
 

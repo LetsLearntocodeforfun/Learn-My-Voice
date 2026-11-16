@@ -1,17 +1,29 @@
 # Runs the test suite on every push and pull request, on the three systems the app is meant for.
 #
-# macOS is what the app was built and tested on, so a failure there fails the run.
-# Windows and Linux have never run this code. Their jobs are allowed to fail for now: a red job
-# there is the list of what to fix, and it does not mark the whole run as failed. Remove
-# `experimental` from a system once its jobs pass, so that a later failure there counts.
+# What GitHub's machines have found so far (first run: 16 November 2026, commit 5abfaaf):
+#   macOS    passes. It is what the app was built and tested on, so a failure there fails the run.
+#   Linux    passes, so a failure there fails the run too.
+#   Windows  fails. Its jobs are allowed to fail for now: a red job there is the list of what to fix, and it
+#            does not mark the whole run as failed. Remove `experimental` from Windows once its jobs pass, so
+#            that a later failure there counts.
 #
 # The suite needs nothing installed besides Python. The one test that transcribes real audio only
 # runs where on-device transcription has been set up, which is never the case here.
+#
+# The tests are run through tools/run_tests.py. It runs what `python -m unittest discover` runs, and then says
+# which tests did not pass and why as annotations at the top of the run's page. Those can be read without
+# signing in to GitHub; a job's log cannot.
+#
+# A push to a beta branch does not start this file by itself: release-candidate.yml calls it, so the
+# tests run once and the release candidate waits for them.
 name: Tests
 
 on:
   push:
+    branches-ignore: ["beta/**"]
+    tags: ["**"]
   pull_request:
+  workflow_call:
 
 permissions:
   contents: read
@@ -40,7 +52,7 @@ jobs:
           - os: windows-latest
             experimental: true
           - os: ubuntu-24.04
-            experimental: true
+            experimental: false
     steps:
       # Actions are pinned to a commit, not a tag: a tag can be moved to different code later.
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1         # v7.0.1
@@ -49,5 +61,29 @@ jobs:
       - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0     # v7.1.0
         with:
           python-version: ${{ matrix.python }}
+      # What this job found goes into a small file. A release candidate's notes are written from these
+      # files, so they say per system what passed, also for a system that is allowed to fail.
+      # The scripts take the label and the file name from the environment: the command lines hold no
+      # variable, so they are the same in the shell of every system.
       - name: Run the tests
-        run: python -m unittest discover -t . -s tests
+        id: tests
+        env:
+          TESTS_LABEL: ${{ matrix.os }} / Python ${{ matrix.python }}
+          TESTS_RESULT: results/tests-${{ matrix.os }}-py${{ matrix.python }}.json
+        run: python tools/run_tests.py
+      # If the step above never got as far as writing that file, this writes down that it did not.
+      - name: Write down a job that left no result
+        if: ${{ always() }}
+        env:
+          RESULT_LABEL: ${{ matrix.os }} / Python ${{ matrix.python }}
+          RESULT_OUTCOME: ${{ steps.tests.outcome }}
+          RESULT_FILE: results/tests-${{ matrix.os }}-py${{ matrix.python }}.json
+        run: python tools/build_release.py result --kind tests --if-missing
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9   # v7.0.2
+        if: ${{ always() }}
+        with:
+          name: result-tests-${{ matrix.os }}-py${{ matrix.python }}
+          path: results/
+          if-no-files-found: error
+          overwrite: true           # a job started again replaces what its earlier attempt left
+          retention-days: 14

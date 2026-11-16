@@ -1,12 +1,15 @@
 # Changelog
 
 Each beta release is a tag on `main` and a pre-release on GitHub. Versions are `v0.<iteration>.0-beta`.
+Before a beta is tagged, release candidates of it are built from a `beta/...` branch: every push there is
+tested, packaged and published by GitHub Actions as a pre-release named `v<version>.rc.<number>`.
 The README's Status section says what has and has not been verified; this file says what changed.
 
 ## v0.2.0-beta (not released yet)
 
-A draft, written from the code on 16 November 2026. Nothing has been tagged or published. The date goes in
-when the tag is made, and "State of this release" has to be read again then.
+In progress, written from the code on 16 November 2026. Release candidates are built from the branch
+`beta/0.2.0`. The final tag has not been made; the date goes in when it is, and "State of this release" has to
+be read again then.
 
 **New**
 
@@ -35,11 +38,39 @@ when the tag is made, and "State of this release" has to be read again then.
   the app on this computer, is turned into text there and deleted; the browser's own speech recognition is not
   used. The text lands in the box and can be corrected before anything is sent.
 
+- **Voice match.** The editor shows how close a script is to the creator's own speech habits, as a number
+  counted in code, not judged by a model: how long a breath is, how it ends, how it begins, and English mixed
+  in. The number stands next to the range the creator's own scripts score in, and a section that opens on
+  request shows what was counted on both sides. It says nothing about whether a script is good.
+- **The creator's own openings.** The first breaths of each confirmed, non-sponsored item are shown next to
+  that video's interactions as a multiple of the creator's usual, with labels given by plain rules. Openings
+  from videos at or above the usual also go into the draft prompt, and a script records which ones its draft
+  saw.
+- **Proposals for a line.** Every spoken line offers "reword" and "shorten", the first also "openings", and
+  the script an "AI read-through". A model writes the proposals; the app checks each with the same rules as
+  any line and with the counted speech habits before showing it, orders them by those checks, and applies
+  nothing until "use this" is pressed, which can be undone. A line taken from a proposal is shown as an AI
+  proposal that was taken, not as the creator's edit, and is not learned from. Works with a connected AI
+  service and in copy & paste mode.
+- **A teleprompter paced by the speaking rate.** One breath at a time, each lasting its length over the
+  speaking rate in the voice profile, with a pace control, a countdown, a mirror for a teleprompter glass and
+  keys for everything. It says whose rate it uses, and calls it the creator's only when it was measured or
+  typed in. It can be exported as one self-contained `.html` file. Nothing listens: there is no microphone
+  and no speech recognition in it.
+- **Launchers for Windows and Linux.** `Start Learn My Voice.bat` and `start-learn-my-voice.sh` start the app
+  with the Python the system has, and say what to install when there is none.
+- **A package to download, and the app says which build it is.** A release candidate comes with one zip that
+  holds what is needed to run the app and nothing else, built so that the same commit always gives the same
+  bytes, with its SHA-256 published next to it. Settings shows the version and commit of the build in use.
+
 **Changed**
 
 - Through MCP, `save_voice_profile` stores a proposal only, and `update_script` only revises an AI draft the
   creator has not edited.
 - A save based on an older version of a script is refused instead of replacing the newer one.
+- A draft prompt now also holds the openings of the creator's best-performing videos (see above).
+- The message the app prints when it starts is sent at once also when its output goes to a file, and no
+  longer ends the app where that output cannot show Chinese.
 - With a Gemini or OpenAI key, 找选题 now sends a web lookup to that service unless the tick for it is removed.
   Before, the app never started a web lookup itself. The lookup prompt is the one already used by copy and
   paste: niches, up to 20 titles, tracked keywords and the line typed, and nothing else about the creator.
@@ -63,8 +94,21 @@ when the tag is made, and "State of this release" has to be read again then.
 
 **State of this release**
 
-- 460 automated tests pass on macOS with Python 3.9.6. One of them transcribes real audio and only runs where
-  the transcriber is installed.
+- The automated tests pass on macOS with Python 3.9.6. One of them transcribes real audio and only runs where
+  the transcriber is installed. Each release candidate's own notes say what GitHub's machines found for it on
+  macOS, Windows and Linux.
+- Windows and Linux: no person has used the app there. On GitHub's machines (first run on 16 November 2026) the
+  tests pass on macOS and on Linux with Python 3.9, 3.13 and 3.15, and fail on Windows with all three; the
+  reasons were not yet known when this was written. Take Windows as not working until a release candidate's
+  notes say otherwise.
+- A release candidate is published only when the tests pass on macOS and Linux and the package, started with
+  its launcher, works on macOS. The tests on Windows and a trial of the package on Windows and Linux (unpack,
+  start with the launcher, use, stop) run as well; when they fail the release candidate is still published,
+  and its notes say so with what those jobs reported.
+- Voice match, openings, proposals for a line and the teleprompter were run in headless Chrome against the
+  real server with stand-in AI replies and invented material. None has been tried on the creator's real
+  material, and no real model has written a proposal. The teleprompter file has not been opened on a phone;
+  on an iPhone it may only show its text.
 - One line to ideas: the pages were run together with the server in headless Chrome, against stand-in AI
   replies. The web lookup through a Gemini or OpenAI key is written from those services' documentation as it
   read on 16 November 2026 and has not been run against either. Google's terms for showing search-grounded
@@ -74,7 +118,6 @@ when the tag is made, and "State of this release" has to be read again then.
   real microphone has not been tried.
 - On-device transcription has been set up and used on one Mac. Whisper gets some sentence-final particles
   wrong.
-- A workflow runs the tests on macOS, Windows and Linux on every push. At the time of writing it has not run.
 - AI steps were tested against stand-in model replies only. Output quality with real models has not been
   evaluated.
 - Importing the exported files into 剪映 or CapCut has not been verified.
