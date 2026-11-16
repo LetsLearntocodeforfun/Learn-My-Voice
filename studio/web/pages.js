@@ -29,18 +29,18 @@ Object.assign(I18N.zh, {
 });
 Object.assign(I18N.en, {
   nav_ideas: 'Ideas', nav_library: 'Library',
-  lib_title: 'Library', lib_sub: 'Add scripts she wrote by hand so AI writes in her habits. Add numbers to get topic analysis.',
+  lib_title: 'Library', lib_sub: 'Add scripts {@name} wrote by hand so AI writes in {@their} habits. Add numbers to get topic analysis.',
   upload: 'Upload script files', upload_hint: '.txt, .md, .docx; several at once is fine',
   paste_title: 'Or paste one', paste_ph: 'Paste the script here', add_to_lib: 'Add to library',
   lib_empty: 'The library is empty.', imported_n: 'Added {n}', import_failed: 'Could not read "{name}"',
   m_views: 'Views', m_likes: 'Likes', m_collects: 'Collects', m_comments: 'Comments', sponsored: 'Sponsored',
   show_text: 'View / edit text', lib_stats: '{n} scripts', confirm_delete_sample: 'Remove this script from the library?', title_ph: 'Video title',
-  learn_btn: '✨ Learn her voice from the library', learn_again: 'Learn again', learning: 'Learning, this can take a minute or two…', learned: 'Done!',
-  learn_need_samples: 'Add a few of her scripts to the Library first (5 or more is better).',
+  learn_btn: '✨ Learn {@names} voice from the library', learn_again: 'Learn again', learning: 'Learning, this can take a minute or two…', learned: 'Done!',
+  learn_need_samples: 'Add a few of {@names} scripts to the Library first (5 or more is better).',
   learn_source: 'Learned from {n} scripts', rate_label: 'Speaking rate (units/min)',
   rate_hint: 'Rate cannot be measured from text. Read one minute of voiceover aloud, count the characters, and enter it here.',
   rate_unconfirmed: 'Currently a default, not confirmed', rate_saved: 'Rate updated',
-  ideas_title: 'Ideas', ideas_sub: 'What to film next, based on the content and numbers of her past videos.',
+  ideas_title: 'Ideas', ideas_sub: 'What to film next, based on the content and numbers of {@names} past videos.',
   ideas_btn: '✨ Suggest topics', ideas_again: 'Regenerate', thinking: 'Analysing, this can take a minute or two…',
   ideas_need_samples: 'Add scripts to the Library first, with views and likes filled in.', go_library: 'Open library',
   ideas_few_metrics: 'Only {n} videos have numbers, so suggestions will be rough. More data gives better results.',
@@ -50,19 +50,19 @@ Object.assign(I18N.en, {
   local_models: 'Local model', local_url: 'Local server address',
   local_hint: 'Ollama or LM Studio must be running on this computer with a model downloaded. Nothing leaves the computer.',
   err_no_samples: 'There are no usable scripts in the library yet.', err_bad_file: 'This file could not be read. Use .txt or .docx.',
-  err_empty_text: 'The text is empty.', err_bad_rate: 'Enter a rate between 100 and 500.', err_no_profile: 'Learn her voice first.',
+  err_empty_text: 'The text is empty.', err_bad_rate: 'Enter a rate between 100 and 500.', err_no_profile: 'Learn {@names} voice first.',
 });
 
 Object.assign(I18N.zh, {
   manual_name: 'ChatGPT 订阅（复制粘贴）', no_key_needed: '不需要密钥',
   manual_explain: '没有 API 密钥也能用。每次需要 AI 时，工作台会准备好一段提示词：把它粘贴给 ChatGPT，再把 ChatGPT 的回复粘贴回来就行。',
   ai_write_manual: '✨ 用 ChatGPT 写初稿',
-  mb_title: '用 ChatGPT 完成这一步', mb_intro: '提示词里已经包含你的声音档案和相关的脚本内容，会随提示词一起发给 ChatGPT。',
+  mb_title: '用 ChatGPT 完成这一步', mb_intro: '提示词里包含你填的个人资料（名字、账号名、内容方向、自我介绍、一起出镜的人、不说的话）、你的声音档案和相关的脚本内容，都会随提示词一起发给 ChatGPT。',
   mb_step1: '第一步：复制提示词，发给 ChatGPT', mb_copy: '复制提示词', mb_open: '打开 ChatGPT ↗', mb_size: '共 {n} 个字符',
   mb_step2: '第二步：把 ChatGPT 的完整回复粘贴到这里', mb_reply_ph: '粘贴回复（一段 JSON）',
   mb_done: '完成', mb_cancel: '取消', mb_copied: '已复制', mb_copy_failed: '复制失败，请点一下提示词，全选后手动复制',
   mcp_title: '进阶：让 ChatGPT / Codex 直接使用工作台（MCP）',
-  mcp_explain: '把下面的配置加到支持 MCP 的 AI 应用里，它就能直接读取你的声音档案、写脚本、检查并保存到这里。具体步骤见项目的 README。',
+  mcp_explain: '把下面的配置加到支持 MCP 的 AI 应用里，它就能直接读取你的个人资料和声音档案、写脚本、检查并保存到这里。具体步骤见项目的 README。',
   exp_kit: '剪映素材包', exp_kit_d: '字幕、花字、口播文稿、拍摄清单，一次打包',
   exp_srt: '字幕文件（.srt）', exp_srt_d: '时间按语速估算，导入剪映后需要微调',
   exp_voice_d: '一口气一行，可用于提词，或剪映的「文稿匹配」',
@@ -79,12 +79,12 @@ Object.assign(I18N.en, {
   manual_name: 'ChatGPT subscription (copy & paste)', no_key_needed: 'no key needed',
   manual_explain: 'Works without an API key. Whenever AI is needed, the studio prepares a prompt: paste it into ChatGPT, then paste ChatGPT\'s reply back.',
   ai_write_manual: '✨ Draft with ChatGPT',
-  mb_title: 'Finish this step with ChatGPT', mb_intro: 'The prompt already contains her voice profile and the relevant script text, which is sent to ChatGPT with it.',
+  mb_title: 'Finish this step with ChatGPT', mb_intro: 'The prompt contains the creator profile from setup (name, account name, niches, self-description, on-camera partner, refused phrases), {@names} voice profile and the relevant script text. All of it is sent to ChatGPT with the prompt.',
   mb_step1: 'Step 1: copy the prompt and send it to ChatGPT', mb_copy: 'Copy prompt', mb_open: 'Open ChatGPT ↗', mb_size: '{n} characters',
   mb_step2: 'Step 2: paste ChatGPT\'s full reply here', mb_reply_ph: 'Paste the reply (a block of JSON)',
   mb_done: 'Done', mb_cancel: 'Cancel', mb_copied: 'Copied', mb_copy_failed: 'Copy failed. Click the prompt, select all and copy by hand.',
   mcp_title: 'Advanced: let ChatGPT / Codex use the studio directly (MCP)',
-  mcp_explain: 'Add this configuration to an AI app that supports MCP and it can read her voice profile, write scripts, check them and save them here. See the project README for steps.',
+  mcp_explain: 'Add this configuration to an AI app that supports MCP and it can read the creator profile and {@names} voice profile, write scripts, check them and save them here. See the project README for steps.',
   exp_kit: 'CapCut / Jianying kit', exp_kit_d: 'Subtitles, on-screen text, voiceover text and shot list in one zip',
   exp_srt: 'Subtitle file (.srt)', exp_srt_d: 'Timing is estimated from speaking rate; adjust after importing',
   exp_voice_d: 'One breath per line, for prompting or Jianying script matching (文稿匹配)',
@@ -102,11 +102,11 @@ Object.assign(I18N.zh, {
   nav_trends: '热点',
   tr_title: '热点关键词', tr_sub: '把你在小红书看到的热词放进来，工作台会结合你自己视频的数据排个先后。',
   tr_no_fetch: '工作台不会自己去平台抓数据：热词要么是你贴进来的，要么是能联网的 AI 查到的（会标明「未核实」）。',
-  tr_paste: '粘贴关键词', tr_paste_ph: '一行一个，后面可以带热度数字，例如：\n秋冬护肤, 125000\n早餐吃什么 12.5万\n夫妻日常',
+  tr_paste: '粘贴关键词', tr_paste_ph: '一行一个，后面可以带热度数字，例如：\n秋冬护肤, 125000\n早餐吃什么 12.5万\n周末去哪儿',
   tr_add: '加入', tr_added: '已加入 {n} 个', tr_skipped: '，有 {n} 行没法识别',
   tr_ai_title: '让能联网的 AI 帮我查热词',
   tr_ai_hint: '需要一个能联网搜索的 AI（例如打开了搜索功能的 ChatGPT）。查到的词会标成「AI 查到 · 未核实」并附上来源链接，请点开确认后再用。',
-  tr_focus: '想查哪个方向？（可不填）', tr_focus_ph: '例如：秋冬护肤、夫妻日常', tr_ai_btn: '准备提示词',
+  tr_focus: '想查哪个方向？（可不填）', tr_focus_ph: '例如：秋冬护肤、周末去哪儿', tr_ai_btn: '准备提示词',
   tr_dropped_source: '，{n} 个没有来源链接，没有加入', tr_dropped_old: '，{n} 个来源太旧，没有加入',
   tr_weight: '排序侧重', tr_w_trend: '更看热度', tr_w_balanced: '均衡', tr_w_mine: '更看我的数据',
   tr_empty: '还没有热词。把看到的热词贴到上面试试。',
@@ -127,35 +127,35 @@ Object.assign(I18N.zh, {
   post_titles: '备选标题', post_covers: '封面文字', post_caption: '正文', post_hashtags: '话题',
   post_copy: '复制', post_copy_failed: '复制失败，请选中文字后手动复制。',
   idea_trends: '相关热词',
-  mb_intro_trends: '提示词里有你素材库里的视频标题、一句人设描述（学过声音才有）和已经在跟踪的热词，不包含脚本正文。这些会随提示词一起发给 AI。',
+  mb_intro_trends: '提示词里有你在设置里填的内容方向、你这次填的方向、素材库里非商单素材的标题（最多 20 个）和已经在跟踪的热词。不包含你的名字、账号名、自我介绍、声音档案，也不包含脚本正文。这些会随提示词一起发给 AI。',
   err_no_keywords: '没有识别到关键词。一行写一个试试。', err_bad_weight: '出错了，请再试一次。',
   ai_no_focus: '还不知道你做哪方面的内容：请填一下想查的方向，或者先往素材库放几篇脚本。',
   ai_cannot_browse: '这个 AI 说它不能联网搜索，所以什么都没加。请换一个能联网的 AI。',
 });
 Object.assign(I18N.en, {
   nav_trends: 'Trends',
-  tr_title: 'Trend keywords', tr_sub: 'Add keywords you see trending on Xiaohongshu. The studio ranks them against how her own videos performed.',
+  tr_title: 'Trend keywords', tr_sub: 'Add keywords you see trending on Xiaohongshu. The studio ranks them against how {@names} own videos performed.',
   tr_no_fetch: 'The studio never fetches platform data itself. Keywords are either pasted in by you or found by a web-searching AI, and those are marked as unverified.',
-  tr_paste: 'Paste keywords', tr_paste_ph: 'One per line, optionally followed by a heat number, e.g.\n秋冬护肤, 125000\n早餐吃什么 12.5万\n夫妻日常',
+  tr_paste: 'Paste keywords', tr_paste_ph: 'One per line, optionally followed by a heat number, e.g.\n秋冬护肤, 125000\n早餐吃什么 12.5万\n周末去哪儿',
   tr_add: 'Add', tr_added: 'Added {n}', tr_skipped: '; lines that could not be read: {n}',
   tr_ai_title: 'Ask a web-searching AI to look up keywords',
   tr_ai_hint: 'This needs an AI that can search the web (for example ChatGPT with search turned on). What it finds is marked "AI-found · unverified" with a source link. Open the link to check before relying on it.',
-  tr_focus: 'Which area? (optional)', tr_focus_ph: 'e.g. autumn skincare, couple vlogs', tr_ai_btn: 'Prepare the prompt',
+  tr_focus: 'Which area? (optional)', tr_focus_ph: 'e.g. autumn skincare, weekend trips', tr_ai_btn: 'Prepare the prompt',
   tr_dropped_source: '; not added for lack of a source link: {n}', tr_dropped_old: '; not added because the source was too old: {n}',
-  tr_weight: 'Rank by', tr_w_trend: 'Mostly trend', tr_w_balanced: 'Balanced', tr_w_mine: 'Mostly her results',
+  tr_weight: 'Rank by', tr_w_trend: 'Mostly trend', tr_w_balanced: 'Balanced', tr_w_mine: 'Mostly {@names} results',
   tr_empty: 'No keywords yet. Paste some above to start.',
   tr_score: 'Score', tr_heat: 'Heat', tr_heat_ph: 'not set',
   tr_age_today: 'seen today', tr_age_days: 'seen {n} days ago', tr_age_days_one: 'seen 1 day ago', tr_stale: 'may be out of date',
   tr_src_ai: 'AI-found · unverified', tr_src_link: 'source ↗',
-  tr_flag_voice: 'not how she talks', tr_flag_compliance: 'risky ad wording',
-  tr_mine_none: 'she has no video on this yet',
+  tr_flag_voice: 'not how {@name} talks', tr_flag_compliance: 'risky ad wording',
+  tr_mine_none: '{@name} has no video on this yet',
   tr_mine_no_numbers: '{n} related videos, none with numbers', tr_mine_no_numbers_one: '1 related video, without numbers',
-  tr_mine_lift: '{n} related videos with numbers, about {x}× her usual interactions',
-  tr_mine_lift_one: '1 related video with numbers, about {x}× her usual interactions',
+  tr_mine_lift: '{n} related videos with numbers, about {x}× {@their} usual interactions',
+  tr_mine_lift_one: '1 related video with numbers, about {x}× {@their} usual interactions',
   tr_use: 'Write a script with it', tr_confirm_delete: 'Stop tracking "{k}"?',
-  tr_how: 'How the score works: trend strength (hotter and more recent scores higher; it halves every {d} days) plus how her own videos on the topic performed, weighted as chosen above. The weights are judgement calls that have not been tuned against real outcomes, so treat the score as a guide.',
-  tr_baseline: 'Her usual video gets {n} interactions (median of {v} non-sponsored videos with numbers).',
-  tr_baseline_one: 'Her usual video gets {n} interactions (from the only non-sponsored video with numbers).',
+  tr_how: 'How the score works: trend strength (hotter and more recent scores higher; it halves every {d} days) plus how {@names} own videos on the topic performed, weighted as chosen above. The weights are judgement calls that have not been tuned against real outcomes, so treat the score as a guide.',
+  tr_baseline: '{@Names} usual video gets {n} interactions (median of {v} non-sponsored videos with numbers).',
+  tr_baseline_one: '{@Names} usual video gets {n} interactions (from the only non-sponsored video with numbers).',
   tr_no_baseline: 'No non-sponsored video has numbers yet, so the ranking currently reflects trend strength only.',
   kw_label: 'Target keywords', kw_hint: 'trend or search terms to work into this script, up to 8',
   kw_ph: 'Type a keyword', kw_add: 'Add', kw_suggest: 'Tracked trends:', kw_none: 'No keywords chosen',
@@ -164,10 +164,21 @@ Object.assign(I18N.en, {
   post_titles: 'Title options', post_covers: 'Cover text', post_caption: 'Caption', post_hashtags: 'Hashtags',
   post_copy: 'Copy', post_copy_failed: 'Copy failed. Select the text and copy it by hand.',
   idea_trends: 'Trend keywords',
-  mb_intro_trends: 'The prompt contains her video titles from the library, a one-line description of her persona (only once her voice has been learned) and the keywords already tracked. It does not contain script text. All of it is sent to the AI with the prompt.',
+  mb_intro_trends: 'The prompt contains the niches entered in setup, the area typed here, the titles of up to 20 non-sponsored items from the library and the keywords already tracked. It does not contain the name, account name or self-description from setup, the voice profile, or any script text. All of it is sent to the AI with the prompt.',
   err_no_keywords: 'No keywords were recognised. Put one on each line.', err_bad_weight: 'Something went wrong. Please try again.',
-  ai_no_focus: 'Nothing says what her content is about yet. Type an area to look up, or add scripts to the Library first.',
+  ai_no_focus: 'Nothing says what {@names} content is about yet. Type an area to look up, or add scripts to the Library first.',
   ai_cannot_browse: 'That AI said it cannot search the web, so nothing was added. Use one that can.',
+});
+
+/* Errors from PUT /api/creator (codes raised by studio/creator.py). err_name_required is defined with the setup pages.
+   The number 50 must match MAX_NEVER in studio/creator.py. */
+Object.assign(I18N.zh, {
+  err_never_uncheckable: '有一条不说的话没法检查：只由括号或省略号这类符号组成的内容对不上任何台词，请写成具体的词句。',
+  err_too_many_never: '不说的话最多可以列 50 条。',
+});
+Object.assign(I18N.en, {
+  err_never_uncheckable: 'One of the refused phrases cannot be checked: text made only of brackets or an ellipsis can never match a line. Use actual words.',
+  err_too_many_never: 'The list of refused phrases can hold at most 50.',
 });
 
 const tf = (key, vars) => t(key).replace(/\{(\w+)\}/g, (_, k) => (vars[k] !== undefined ? vars[k] : ''));
@@ -198,7 +209,7 @@ async function copyText(text, fallbackEl) {
 }
 
 async function manualBridge(task, payload) {
-  const { prompt } = await api('POST', '/api/manual/prompt', Object.assign({ task }, payload));
+  const { prompt, brief_id: briefId } = await api('POST', '/api/manual/prompt', Object.assign({ task }, payload));
   const $modal = document.getElementById('modal');
   return new Promise((resolve) => {
     $modal.innerHTML = `<div class="sheet" role="dialog" aria-modal="true">
@@ -229,7 +240,7 @@ async function manualBridge(task, payload) {
       btn.disabled = true;
       try {
         const reply = document.getElementById('mb-reply').value;
-        close(await api('POST', '/api/manual/reply', Object.assign({ task, reply }, payload)));
+        close(await api('POST', '/api/manual/reply', Object.assign({ task, reply }, payload, briefId ? { brief_id: briefId } : {})));
       } catch (err) { showError(err); btn.disabled = false; }
     };
   });
@@ -354,6 +365,9 @@ async function importFiles(files) {
 
 function sampleHtml(s) {
   const metric = (f) => `<label>${esc(t('m_' + f))}<input type="number" min="0" inputmode="numeric" data-f="${f}" value="${s[f] === null ? '' : esc(s[f])}"></label>`;
+  const kind = ['script', 'subtitle', 'video'].includes(s.kind) ? s.kind : 'script';
+  const timed = s.timing && s.timing.speaking_rate_cpm
+    ? ` · ${tf('mt_timed', { d: fmtSpan(s.timing.spoken_sec), r: s.timing.speaking_rate_cpm })}` : '';
   return `<div class="card sample" data-id="${esc(s.id)}">
     <div class="row">
       <input type="text" class="sample-title" data-f="title" value="${esc(s.title)}" placeholder="${esc(t('title_ph'))}">
@@ -361,7 +375,9 @@ function sampleHtml(s) {
       <button class="btn ghost" data-del aria-label="${esc(t('delete'))}">✕</button>
     </div>
     <div class="metrics">${['views', 'likes', 'collects', 'comments'].map(metric).join('')}</div>
-    <details><summary>${esc(t('show_text'))} · ${spokenUnits(s.text)}${lang === 'zh' ? '' : ' '}${esc(t('chars'))}</summary>
+    ${s.needs_review ? reviewNoteHtml(s) : ''}
+    <details ${s.needs_review ? 'open' : ''}><summary><span class="tag ${kind === 'script' ? '' : 'ok'}">${esc(t('mt_kind_' + kind))}</span>
+      ${esc(t('show_text'))} · ${spokenUnits(s.text)}${lang === 'zh' ? '' : ' '}${esc(t('chars'))}${esc(timed)}</summary>
       <textarea data-f="text" rows="8">${esc(s.text)}</textarea></details>
   </div>`;
 }
@@ -373,6 +389,7 @@ async function renderLibrary() {
       <div class="row"><label class="btn primary" for="files">${esc(t('upload'))}</label>
         <input type="file" id="files" multiple accept=".txt,.md,.docx,text/plain" hidden>
         <span class="hint">${esc(t('upload_hint'))}</span></div>
+      <p class="hint">${esc(t('lib_more_kinds'))} <a href="#/start" id="lib-to-material">${esc(t('lib_more_kinds_go'))}</a></p>
       <label class="field" for="paste">${esc(t('paste_title'))}</label>
       <textarea id="paste" rows="4" placeholder="${esc(t('paste_ph'))}"></textarea>
       <div class="row" style="margin-top:10px"><button class="btn" id="paste-add">${esc(t('add_to_lib'))}</button></div>
@@ -380,6 +397,7 @@ async function renderLibrary() {
     <p class="meta">${samples.length ? esc(tf('lib_stats', { n: samples.length })) : ''}</p>
     <div id="samples">${samples.map(sampleHtml).join('') || `<div class="empty">${esc(t('lib_empty'))}</div>`}</div></div>`;
 
+  document.getElementById('lib-to-material').onclick = () => { setupUi.open = 'material'; };
   document.getElementById('files').onchange = async (e) => {
     const added = await importFiles(Array.from(e.target.files));
     if (added) toast(tf('imported_n', { n: added }));
@@ -404,9 +422,20 @@ async function renderLibrary() {
     catch (err) { showError(err); }
   };
   $list.onclick = async (e) => {
+    const card = e.target.closest('.sample');
+    if (!card) return;
+    if (e.target.closest('[data-confirm]')) {
+      try {
+        /* save what is in the box first, so what gets confirmed is what the creator is looking at */
+        await api('PUT', '/api/samples/' + card.dataset.id, { text: card.querySelector('[data-f="text"]').value, needs_review: false });
+        toast(t('rn_confirmed'));
+        renderLibrary();
+      } catch (err) { showError(err); }
+      return;
+    }
     if (!e.target.closest('[data-del]')) return;
     if (!confirm(t('confirm_delete_sample'))) return;
-    await api('DELETE', '/api/samples/' + e.target.closest('.sample').dataset.id);
+    await api('DELETE', '/api/samples/' + card.dataset.id);
     renderLibrary();
   };
 }
@@ -423,7 +452,8 @@ function paintVoiceActions(dna, isExample) {
   else if (!appState.settings.configured) hint = `${esc(t('no_ai'))} <a href="#/settings">${esc(t('go_settings'))}</a>`;
   const rateBox = isExample ? '' : `<div class="card">
       <label class="field" style="margin-top:0" for="rate">${esc(t('rate_label'))}
-        ${source.speaking_rate_confirmed ? '' : `<span class="hint">· ${esc(t('rate_unconfirmed'))}</span>`}</label>
+        ${source.speaking_rate_source === 'measured' ? `<span class="hint">· ${esc(t('rate_measured'))}</span>`
+          : (source.speaking_rate_confirmed ? '' : `<span class="hint">· ${esc(t('rate_unconfirmed'))}</span>`)}</label>
       <div class="row"><input type="number" id="rate" min="100" max="500" style="width:140px" value="${esc(rate)}">
         <button class="btn" id="rate-save">${esc(t('save'))}</button></div>
       <p class="hint">${esc(t('rate_hint'))}</p></div>`;
@@ -433,8 +463,8 @@ function paintVoiceActions(dna, isExample) {
     ${hint ? `<p class="hint">${hint}</p>` : ''}`;
   document.getElementById('learn').onclick = (e) => busy(e.currentTarget, appState.settings.manual ? e.currentTarget.textContent : t('learning'), async () => {
     if (!(await aiRun('voice', {}))) return;
-    toast(t('learned'));
-    await router();
+    setupUi.open = 'voice';        // the result is a proposal: review it item by item before it takes effect
+    location.hash = '#/start';
   });
   const $save = document.getElementById('rate-save');
   if ($save) $save.onclick = async () => {
@@ -464,7 +494,7 @@ function ideaHtml(idea, i) {
     ${why ? `<p>${esc(why)}</p>` : ''}
     ${evidence}${trendTags}
     <div class="row" style="margin-top:12px"><button class="btn primary" data-idea="${i}">${esc(t('use_idea'))}</button>
-      <span class="meta">${esc(t('fmt_' + idea.video_format))} · ${idea.target_duration_sec}${esc(t('sec'))}</span></div>
+      <span class="meta">${esc(formatLabel(idea.video_format))} · ${idea.target_duration_sec}${esc(t('sec'))}</span></div>
   </div>`;
 }
 

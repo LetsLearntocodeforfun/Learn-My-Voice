@@ -233,12 +233,12 @@ class TrendLookupTest(StoreCase):
             {"keyword": "没有来源"}, {"keyword": "坏链接", "source_url": "javascript:alert(1)"},
             "oops", {"keyword": "", "source_url": "https://example.com/e"},
         ]}, now=self.now)
-        self.assertEqual(counts, {"added": 2, "dropped_no_source": 2, "dropped_too_old": 1})
+        self.assertEqual(counts, {"added": 1, "dropped_no_source": 2, "dropped_too_old": 1})   # her own keyword is not counted
         rows = {r["keyword"]: r for r in self.store.list_trends()}
         self.assertEqual(sorted(rows), sorted(["秋冬护肤", "没日期"]))
-        hers = rows["秋冬护肤"]                                            # she entered it first, so it stays hers
+        hers = rows["秋冬护肤"]                                            # she entered it first: nothing from the AI lands on it
         self.assertEqual((hers["source"], hers["heat"], hers["source_url"], hers["note_zh"]),
-                         ("manual", 500, "https://example.com/a", "平台榜单"))
+                         ("manual", 500, "", ""))
         found = rows["没日期"]
         self.assertEqual((found["source"], found["heat"]), ("ai", None))  # a heat number from an AI is never stored
         self.assertEqual(found["updated_at"], self.now)                   # no date given: counted as seen now
@@ -269,11 +269,11 @@ class TrendLookupTest(StoreCase):
         self.store.create_sample(title="商单面霜", text="这款面霜", is_sponsored=True)
         system, user = pipeline.trends_prompt(self.store, focus=" 护肤 ")
         self.assertIn("cannot_browse", system)
-        self.assertIn('"focus_she_typed": "护肤"', user)
+        self.assertIn('"typed_focus": "护肤"', user)
         self.assertIn("超市那天", user)
         self.assertNotIn("商单面霜", user)
         self.assertIn("露营", user.split("<already_tracked>")[1])
-        self.assertIn('"persona": null', user)                            # the bundled example profile is not hers
+        self.assertNotIn('"persona"', user)                               # nothing from a voice profile goes with a lookup
         self.assertNotIn("{{", user)
         pipeline.trends_prompt(self.store)                                # her library is enough without a typed focus
 
@@ -401,8 +401,8 @@ class TrendServerTest(unittest.TestCase):
 
         def exemplars():
             prompt = self.fake.prompt_for("ghostwriting")
-            block = prompt.split("<retrieved_real_exemplars_from_her_past_videos>")[1]
-            return prompt, block.split("</retrieved_real_exemplars_from_her_past_videos>")[0]
+            block = prompt.split("<retrieved_real_exemplars_from_creator_past_videos>")[1]
+            return prompt, block.split("</retrieved_real_exemplars_from_creator_past_videos>")[0]
 
         status, script = self.call("POST", "/api/generate", {"notes": "聊聊护肤", "target_sec": 30, "keywords": ["#秋冬护肤"]})
         self.assertEqual((status, script["keywords"]), (201, ["秋冬护肤"]))
@@ -428,8 +428,8 @@ class TrendServerTest(unittest.TestCase):
         self.assertEqual((idea["trend_keywords"], idea["evidence_titles"]), (["秋冬护肤"], ["护肤那期"]))
         current = self.fake.prompt_for("content strategist").split("<current_trends>")[1].split("</current_trends>")[0]
         self.assertIn('"keyword": "秋冬护肤"', current)
-        self.assertIn('"source": "entered_by_her"', current)
-        self.assertIn('"her_lift": 1.5', current)                           # 300 against her median of 200
+        self.assertIn('"source": "entered_by_creator"', current)
+        self.assertIn('"creator_lift": 1.5', current)                       # 300 against her median of 200
         self.assertNotIn("绝绝子", current)                                  # clashes with the voice profile: not offered
 
     def test_trend_lookup_through_copy_and_paste(self):
@@ -439,7 +439,7 @@ class TrendServerTest(unittest.TestCase):
         status, out = self.call("POST", "/api/manual/prompt", {"task": "trends", "focus": "护肤"})
         days.add(time.strftime("%Y-%m-%d"))
         self.assertEqual(status, 200)
-        self.assertIn('"focus_she_typed": "护肤"', out["prompt"])
+        self.assertIn('"typed_focus": "护肤"', out["prompt"])
         self.assertTrue(any("<today>%s</today>" % day in out["prompt"] for day in days))
         self.assertNotIn("{{", out["prompt"])
 

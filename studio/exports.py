@@ -7,6 +7,7 @@ real audio, the kit also contains plain voiceover text for 剪映's 文稿匹配
 from __future__ import annotations
 
 import io
+import math
 import zipfile
 from typing import Any, Dict, List, Optional, Tuple
 
@@ -157,14 +158,19 @@ def export_file(script: Dict[str, Any], kind: str, dna: Optional[Dict[str, Any]]
     if kind == "flower":
         return filename, _numbered(script, "onscreen_flower_text_zh").encode("utf-8"), text_type
 
-    rate = ((dna or {}).get("cadence_and_syntax") or {}).get("target_speaking_rate_cpm")
+    # A stored profile may have the wrong shape (one saved by an early version from a wrong-shaped reply), and
+    # its rate may not be a number: then the default rate is used, as when there is no profile.
+    cadence = dna.get("cadence_and_syntax") if isinstance(dna, dict) else None
+    rate = cadence.get("target_speaking_rate_cpm") if isinstance(cadence, dict) else None
+    if isinstance(rate, bool) or not isinstance(rate, (int, float)) or not math.isfinite(rate) or rate <= 0:
+        rate = None
     subtitles, flowers, total = build_cues(script["lines"], rate)
     if kind == "srt":
         return filename, to_srt(subtitles).encode("utf-8"), "application/x-subrip; charset=utf-8"
     if kind == "flower_srt":
         return filename, to_srt(flowers).encode("utf-8"), "application/x-subrip; charset=utf-8"
 
-    shown_rate = int(rate) if isinstance(rate, (int, float)) and rate > 0 else int(DEFAULT_RATE)
+    shown_rate = int(rate) if rate is not None else int(DEFAULT_RATE)
     flower_part = _FLOWER_PART[lang][0 if flowers else 1].format(flower_srt=names["flower_srt"])
     howto = _HOWTO[lang].format(title=title, sec=int(round(total)), rate=shown_rate, voiceover=names["voiceover"],
                                 srt=names["srt"], shots=names["shots"], flower_part=flower_part)

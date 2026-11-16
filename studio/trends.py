@@ -26,7 +26,7 @@ import re
 import time
 from typing import Any, Dict, List, Optional, Sequence, Tuple
 
-from . import corpus, guardrails, textstats
+from . import corpus, creator, guardrails, textstats
 from .store import MAX_KEYWORD_CHARS, clean_keyword, keyword_key
 
 HALF_LIFE_DAYS = 14.0    # a trend counts half as much two weeks after it was last seen
@@ -39,8 +39,13 @@ WEIGHTS = {"trend": (0.7, 0.3), "balanced": (0.5, 0.5), "mine": (0.3, 0.7)}  # (
 
 _UNITS = {"万": 10_000, "w": 10_000, "k": 1_000, "亿": 100_000_000}
 _EXPLICIT_SEPARATORS = "\t,，;；|｜"
-_TRAILING_HEAT = re.compile(
-    r"^(.+?)(\s*[\t,，;；|｜]\s*|\s+)(\d[\d,]*(?:\.\d+)?)\s*(万|亿|[wWkK])?\+?\s*$")
+# A line that ends in a heat number, "<keyword><separator><number><unit>+", written for the line read backwards:
+# an optional "+", an optional unit, the number, the separator, then the keyword. Read forwards, the same pattern
+# has to begin with "any text, as little as possible", and it then tries the rest again from every position in
+# the line: one pasted line of 32,000 spaces between two words held the server for 7.5 seconds, and so did
+# "a,1,1,1,...,x". Read from the end there is one starting point, and the work grows with the length of the line.
+_TRAILING_HEAT_REVERSED = re.compile(
+    r"\s*\+?(万|亿|[wWkK])?\s*((?:\d+\.)?[\d,]*\d)(\s*[\t,，;；|｜]\s*|\s+)(.+)")
 _BULLET = re.compile(r"^\s*(?:\d{1,3}\s*[.、)）:：](?!\d)\s*|[-•·*]\s+)")
 _CJK_RUN = re.compile(r"[\u3400-\u4dbf\u4e00-\u9fff]+")
 _LATIN = re.compile(r"[A-Za-z][A-Za-z'\-]*|\d+")
@@ -50,6 +55,18 @@ _LATIN = re.compile(r"[A-Za-z][A-Za-z'\-]*|\d+")
 def _heat(number: str, unit: Optional[str]) -> Optional[int]:
     value = float(number.replace(",", "")) * _UNITS.get((unit or "").lower(), 1)
     return int(round(value)) if 0 < value < 1e13 else None
+
+
+def _trailing_heat(line: str) -> Optional[Tuple[str, str, str, Optional[str]]]:
+    """``(keyword part, separator, number, unit)`` for a line that ends in a number, else None.
+
+    The keyword part is the shortest start of the line that leaves a separator and a number behind it,
+    so ``护肤,1,234`` is the keyword ``护肤`` with the number ``1,234``.
+    """
+    match = _TRAILING_HEAT_REVERSED.fullmatch(line[::-1])
+    if not match:
+        return None
+    return match.group(4)[::-1], match.group(3)[::-1], match.group(2)[::-1], match.group(1)
 
 
 def parse_keywords(text: str) -> Tuple[List[Dict[str, Any]], int]:
@@ -67,12 +84,13 @@ def parse_keywords(text: str) -> Tuple[List[Dict[str, Any]], int]:
         if not line:
             continue
         heat = None
-        match = _TRAILING_HEAT.match(line)
-        if match:
-            value = _heat(match.group(3), match.group(4))
-            explicit = any(ch in match.group(2) for ch in _EXPLICIT_SEPARATORS)
-            if explicit or match.group(4) or (value or 0) >= 1000:
-                line, heat = match.group(1), value
+        found = _trailing_heat(line)
+        if found:
+            before, separator, number, unit = found
+            value = _heat(number, unit)
+            explicit = any(ch in separator for ch in _EXPLICIT_SEPARATORS)
+            if explicit or unit or (value or 0) >= 1000:
+                line, heat = before, value
         keyword = clean_keyword(line)
         key = keyword_key(keyword)
         if not key or len(keyword) > MAX_KEYWORD_CHARS or (key not in items and len(items) >= MAX_KEYWORDS_PER_PASTE):
@@ -226,8 +244,12 @@ def score_trends(trend_rows: List[Dict[str, Any]], samples: List[Dict[str, Any]]
 
 
 def payload(store: Any, now: Optional[float] = None) -> Dict[str, Any]:
-    """Scored trends for the active library, voice profile and weighting preference."""
+    """Scored trends for the active library, voice profile and weighting preference.
+
+    A keyword containing a phrase the creator refuses to say clashes with their voice like any other banned phrase.
+    """
     dna, _ = store.load_dna()
+    dna = creator.apply_never(dna, store.load_creator())
     weight = store.load_config().get("trend_weight") or "balanced"
     return score_trends(store.list_trends(), store.list_samples(), dna, weight, now)
 

@@ -8,13 +8,14 @@ const I18N = {
     empty: '还没有脚本，点上面的按钮开始第一篇吧。', lines_n: '句', sec: '秒',
     no_ai: '还没连接 AI。可以先自己写，或者去「设置」连接。', go_settings: '去设置',
     new_title: '写新脚本', new_sub: '把想法随手写下来，中文英文都可以。',
-    notes: '想拍什么？', notes_ph: '例如：周日和老公去 Trader Joe\'s 补货，他又想买四盒小笼包，外面风特别大……',
+    notes: '想拍什么？', notes_ph: '例如：周日去 Trader Joe\'s 补货，又忍不住拿了四盒小笼包，外面风特别大……',
     duration: '视频时长', format: '视频形式',
     ai_write: '✨ AI 帮我写初稿', self_write: '我自己写', writing: '正在写，大约半分钟…', back: '← 返回',
     example_voice: '现在用的是示例声音档案，不是你本人的说话习惯，AI 初稿会不像你。',
-    fmt_VLOG_VOICEOVER: '日常 Vlog 旁白', fmt_COUPLE_VLOG: '夫妻日常', fmt_FAVORITES_ROUNDUP: '好物合集', fmt_SINGLE_PRODUCT_SHARE: '单品分享',
+    fmt_VLOG_VOICEOVER: '日常 Vlog 旁白', fmt_COUPLE_VLOG: '双人日常', fmt_COUPLE_VLOG_partner: '和{@partner}的日常',
+    fmt_FAVORITES_ROUNDUP: '好物合集', fmt_SINGLE_PRODUCT_SHARE: '单品分享',
     untitled: '未命名脚本', spoken_ph: '这一句要说的话，用 / 分开每一口气', shot_ph: '画面：拍什么', flower_ph: '花字（可不填）',
-    english_ph: 'English meaning (for partner)', add_line: '＋ 加一句', chars: '字', about: '约',
+    english_ph: 'English meaning', add_line: '＋ 加一句', chars: '字', about: '约',
     written: '已写', budget: '建议', est: '预计念', saved: '已保存', saving: '保存中…', save_failed: '保存失败',
     prompter: '提词器', export: '导出', delete: '删除', confirm_delete: '确定删除这篇脚本吗？删除后无法恢复。',
     exp_voice: '口播文稿', exp_voice_d: '一口气一行，可用于提词或字幕文稿',
@@ -23,7 +24,8 @@ const I18N = {
     start: '开始', pause: '暂停', speed: '速度', size: '字号', close: '关闭', prompter_empty: '脚本还是空的。',
     voice_title: '我的声音', voice_sub: 'AI 写稿和检查时参照的说话习惯。',
     v_essence: '整体感觉', v_rate: '语速', v_rate_u: '字/分钟', v_clause: '每口气字数', v_particles: '常用语气词',
-    v_address: '怎么称呼大家', v_husband: '怎么称呼老公', v_openers: '常用开头', v_connectors: '常用连接词',
+    v_address: '怎么称呼大家', v_partner: '怎么称呼{@partner}', v_partner_any: '怎么称呼一起出镜的人',
+    v_openers: '常用开头', v_connectors: '常用连接词',
     v_praise: '夸东西的说法', v_never: '从来不说',
     settings_title: '设置', settings_sub: '连接一次就好。密钥只保存在这台电脑上。',
     provider: 'AI 服务', api_key: '密钥（API Key）', key_saved_ph: '已保存，留空则继续使用', key_ph: '粘贴密钥',
@@ -33,28 +35,30 @@ const I18N = {
     err_key_required: '请先填写密钥。', err_default: '出错了，请再试一次。',
   },
   en: {
-    brand: 'Learn My Voice', nav_scripts: 'Scripts', nav_voice: 'Her voice', nav_settings: 'Settings', lang_btn: '中文',
+    brand: 'Learn My Voice', nav_scripts: 'Scripts', nav_voice: 'Voice', nav_settings: 'Settings', lang_btn: '中文',
     home_title: 'Scripts', home_sub: 'Write, edit and read from one place.', new_script: '+ New script',
     empty: 'No scripts yet. Use the button above to start one.', lines_n: 'lines', sec: 's',
     no_ai: 'AI is not connected. You can write by hand, or connect it in Settings.', go_settings: 'Open settings',
     new_title: 'New script', new_sub: 'Jot down the idea in Chinese or English.',
-    notes: 'What is the video about?', notes_ph: 'e.g. Sunday Trader Joe\'s run, he wanted four boxes of soup dumplings, freezing wind outside…',
+    notes: 'What is the video about?', notes_ph: 'e.g. Sunday Trader Joe\'s run, came home with four boxes of soup dumplings again, freezing wind outside…',
     duration: 'Length', format: 'Format',
     ai_write: '✨ Draft with AI', self_write: 'Write it myself', writing: 'Writing, about half a minute…', back: '← Back',
-    example_voice: 'This is the bundled example voice profile, not her real speech habits, so AI drafts will not sound like her.',
-    fmt_VLOG_VOICEOVER: 'Daily vlog voiceover', fmt_COUPLE_VLOG: 'Couple vlog', fmt_FAVORITES_ROUNDUP: 'Favorites roundup', fmt_SINGLE_PRODUCT_SHARE: 'Single product',
+    example_voice: 'This is the bundled example voice profile, not {@names} real speech habits, so AI drafts will not sound like {@them}.',
+    fmt_VLOG_VOICEOVER: 'Daily vlog voiceover', fmt_COUPLE_VLOG: 'Two-person vlog', fmt_COUPLE_VLOG_partner: 'Vlog with {@partner}',
+    fmt_FAVORITES_ROUNDUP: 'Favorites roundup', fmt_SINGLE_PRODUCT_SHARE: 'Single product',
     untitled: 'Untitled', spoken_ph: 'Spoken line; separate breaths with /', shot_ph: 'Shot: what to film', flower_ph: 'On-screen text (optional)',
-    english_ph: 'English meaning (for partner)', add_line: '+ Add line', chars: 'units', about: '~',
+    english_ph: 'English meaning', add_line: '+ Add line', chars: 'units', about: '~',
     written: 'Written', budget: 'target', est: 'reads in', saved: 'Saved', saving: 'Saving…', save_failed: 'Save failed',
     prompter: 'Teleprompter', export: 'Export', delete: 'Delete', confirm_delete: 'Delete this script? This cannot be undone.',
     exp_voice: 'Voiceover text', exp_voice_d: 'One breath per line, for prompting or subtitle text',
     exp_shots: 'Shot list', exp_shots_d: 'What to film for each line', exp_flower: 'On-screen text list', exp_flower_d: 'Text overlays to add when editing',
     all_good: 'No issues found 👍', issues_n: 'things to check',
     start: 'Start', pause: 'Pause', speed: 'Speed', size: 'Size', close: 'Close', prompter_empty: 'The script is empty.',
-    voice_title: 'Her voice', voice_sub: 'The speech habits used for drafting and checking.',
+    voice_title: '{@Names} voice', voice_sub: 'The speech habits used for drafting and checking.',
     v_essence: 'Overall feel', v_rate: 'Speaking rate', v_rate_u: 'units/min', v_clause: 'Units per breath', v_particles: 'Particles',
-    v_address: 'Addresses viewers as', v_husband: 'Refers to husband as', v_openers: 'Typical openers', v_connectors: 'Connectors',
-    v_praise: 'How she praises things', v_never: 'Never says',
+    v_address: 'Addresses viewers as', v_partner: 'Refers to {@partner} as', v_partner_any: 'Refers to an on-camera partner as',
+    v_openers: 'Typical openers', v_connectors: 'Connectors',
+    v_praise: 'How {@name} praises things', v_never: 'Never says',
     settings_title: 'Settings', settings_sub: 'Connect once. The key stays on this computer.',
     provider: 'AI service', api_key: 'API key', key_saved_ph: 'Saved; leave blank to keep it', key_ph: 'Paste key',
     connect: 'Connect and list models', model: 'Model', pick_model: 'Choose a model', save: 'Save', connected: 'connected',
@@ -65,13 +69,46 @@ const I18N = {
 };
 
 let lang = localStorage.getItem('lang') === 'en' ? 'en' : 'zh';
-let appState = { settings: { configured: false, keys: {} }, dna_is_example: true, video_formats: [], sample_count: 0, trend_count: 0 };
+let appState = { settings: { configured: false, keys: {} }, dna_is_example: true, creator: null, video_formats: [], sample_count: 0, trend_count: 0 };
 const $view = document.getElementById('view');
 const $nav = document.getElementById('nav');
 const $toast = document.getElementById('toast');
 const $prompter = document.getElementById('prompter');
 
-const t = (k) => (I18N[lang][k] !== undefined ? I18N[lang][k] : (I18N.zh[k] !== undefined ? I18N.zh[k] : k));
+/* The creator profile from setup arrives with /api/state as appState.creator; is_set is false until setup is done.
+   English text names the creator and uses their pronoun; before setup it says "the creator" and "they".
+   Chinese text speaks to the creator as 你, so it only ever needs {@partner}.
+   Tokens in text: {@name} {@Name} {@names} {@Names} (possessive) {@them} {@their} {@partner}. */
+const PRONOUN_FORMS = { she: ['her', 'her'], he: ['him', 'his'], they: ['them', 'their'] };   // [object, possessive]
+function creatorProfile() { return appState.creator && appState.creator.is_set ? appState.creator : null; }
+/* How the creator refers on camera to the person who appears with them; '' when nobody does or nothing is set. */
+function partnerName() {
+  const c = creatorProfile();
+  return c && c.partner && typeof c.partner.called === 'string' ? c.partner.called.trim() : '';
+}
+function creatorWords() {
+  const c = creatorProfile();
+  const name = c ? String(c.name).trim() : '';
+  const forms = PRONOUN_FORMS[c && Object.keys(PRONOUN_FORMS).includes(c.pronoun) ? c.pronoun : 'they'];
+  return {
+    name: name || 'the creator', Name: name || 'The creator',
+    names: (name || 'the creator') + "'s", Names: (name || 'The creator') + "'s",
+    them: forms[0], their: forms[1], partner: partnerName(),
+  };
+}
+
+const t = (k) => {
+  const s = I18N[lang][k] !== undefined ? I18N[lang][k] : (I18N.zh[k] !== undefined ? I18N.zh[k] : k);
+  if (s.indexOf('{@') === -1) return s;
+  const words = creatorWords();
+  return s.replace(/\{@(\w+)\}/g, (token, word) => (words[word] !== undefined ? words[word] : token));
+};
+/* COUPLE_VLOG means a video with the on-camera partner from the creator profile, whoever that is. Its label names
+   that person, and it stops being offered once the profile says nobody appears with the creator. */
+const formatLabel = (v) => t(v === 'COUPLE_VLOG' && partnerName() ? 'fmt_COUPLE_VLOG_partner' : 'fmt_' + v);
+const formatChoices = (current) => appState.video_formats.filter(
+  (v) => v !== 'COUPLE_VLOG' || v === current || !creatorProfile() || partnerName());
+
 const esc = (s) => String(s === null || s === undefined ? '' : s)
   .replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
 
@@ -119,8 +156,9 @@ function fmtDate(ts) {
 
 /* ---------- navigation ---------- */
 function renderNav(route) {
-  const item = (hash, key, on) => `<a href="${hash}" class="${on ? 'on' : ''}">${esc(t(key))}</a>`;
+  const item = (hash, key, on, mark) => `<a href="${hash}" class="${on ? 'on' : ''}">${esc(t(key))}${mark ? '<i class="dot"></i>' : ''}</a>`;
   $nav.innerHTML = `<div class="brand">${esc(t('brand'))}</div>` +
+    item('#/start', 'nav_start', route === 'start', appState.setup_next && appState.setup_next !== 'done') +
     item('#/', 'nav_scripts', route === 'home' || route === 'new' || route === 'script') +
     item('#/ideas', 'nav_ideas', route === 'ideas') +
     item('#/trends', 'nav_trends', route === 'trends') +
@@ -143,7 +181,14 @@ async function router() {
   const m = hash.match(/^#\/s\/([0-9a-f]{12})$/);
   try {
     appState = await api('GET', '/api/state');
+    /* Nothing set up yet: open the guided setup once per session. After that the home page only points to it. */
+    if (hash === '#/' && appState.setup_next === 'creator' && !sessionStorage.getItem('start-shown')) {
+      sessionStorage.setItem('start-shown', '1');
+      location.hash = '#/start';
+      return;
+    }
     if (m) { renderNav('script'); await loadTrendSuggestions(); await renderScript(m[1]); }
+    else if (hash === '#/start') { renderNav('start'); await renderSetup(); }
     else if (hash === '#/new') { renderNav('new'); await loadTrendSuggestions(); renderNew(); }
     else if (hash === '#/ideas') { renderNav('ideas'); await renderIdeas(); }
     else if (hash === '#/trends') { renderNav('trends'); await renderTrends(); }
@@ -166,8 +211,11 @@ async function renderHome() {
       <div>${esc(s.preview)}</div>
       <div class="meta">${esc(fmtDate(s.updated_at))} · ${s.line_count} ${esc(t('lines_n'))} · ${s.target_sec}${esc(t('sec'))}</div>
     </a>`).join('');
-  const banner = appState.settings.configured ? '' :
-    `<div class="banner">${esc(t('no_ai'))} <a href="#/settings">${esc(t('go_settings'))}</a></div>`;
+  const next = appState.setup_next;
+  const setupBanner = next && next !== 'done'
+    ? `<div class="banner">${esc(t('st_home_next'))}${esc(t('st_step_' + next))} <a href="#/start">${esc(t('st_home_go'))}</a></div>` : '';
+  const banner = setupBanner || (appState.settings.configured ? '' :
+    `<div class="banner">${esc(t('no_ai'))} <a href="#/settings">${esc(t('go_settings'))}</a></div>`);
   $view.innerHTML = `<div class="wrap">
     <div class="row"><div><h1>${esc(t('home_title'))}</h1><p class="sub">${esc(t('home_sub'))}</p></div>
       <div class="spacer"></div><a class="btn primary big" href="#/new">${esc(t('new_script'))}</a></div>
@@ -191,7 +239,7 @@ function renderNew() {
     <label class="field">${esc(t('duration'))}</label>
     <div class="chips">${chips([30, 60, 90], draft.target_sec, 'sec', (v) => v + t('sec'))}</div>
     <label class="field">${esc(t('format'))}</label>
-    <div class="chips">${chips(appState.video_formats, draft.video_format, 'fmt', (v) => t('fmt_' + v))}</div>
+    <div class="chips">${chips(formatChoices(draft.video_format), draft.video_format, 'fmt', formatLabel)}</div>
     <div id="kw-box"></div>
     <div class="row" style="margin-top:28px">
       <button class="btn primary big" id="ai-btn" ${configured ? '' : 'disabled'}>${esc(t(appState.settings.manual ? 'ai_write_manual' : 'ai_write'))}</button>
@@ -331,10 +379,12 @@ function paintScript() {
     <div class="summary" id="summary"></div>
     <div id="lines">${s.lines.map(lineHtml).join('')}</div>
     <button class="btn" id="add-line">${esc(t('add_line'))}</button>
-    <div id="post-box"></div></div>`;
+    <div id="post-box"></div><div id="basis-box"></div><div id="edits-box"></div></div>`;
   $view.querySelectorAll('textarea').forEach(autoGrow);
   keywordPicker(document.getElementById('kw-box'), s.keywords || [], (list) => { s.keywords = list; scheduleSave(); });
   paintPost(document.getElementById('post-box'), s.post);
+  paintBasis(document.getElementById('basis-box'), s);
+  paintEdits(document.getElementById('edits-box'), s);
   paintChecks();
 
   document.getElementById('title').oninput = (e) => { s.title = e.target.value; scheduleSave(); };
@@ -461,6 +511,8 @@ async function renderVoice() {
   const never = [].concat(get('persona_summary.audience_address_terms.never_uses', []) || [],
     get('anti_voice_blacklist.banned_phrases_zh', []) || []);
   const row = (key, html) => (html ? `<dt>${esc(t(key))}</dt><dd>${html}</dd>` : '');
+  /* Named after the partner in the creator profile; gone once the profile says nobody appears; neutral before setup. */
+  const partnerKey = creatorProfile() ? (partnerName() ? 'v_partner' : '') : 'v_partner_any';
   $view.innerHTML = `<div class="wrap"><h1>${esc(t('voice_title'))}</h1><p class="sub">${esc(t('voice_sub'))}</p>
     ${is_example ? `<div class="banner">${esc(t('example_voice'))}</div>` : ''}
     <div class="card"><dl class="kv">
@@ -469,7 +521,7 @@ async function renderVoice() {
       ${row('v_clause', clause.min !== undefined ? `${esc(clause.min)}–${esc(clause.hard_max)}` : '')}
       ${row('v_particles', tags(particles))}
       ${row('v_address', tags(get('persona_summary.audience_address_terms.uses', [])))}
-      ${row('v_husband', tags(get('persona_summary.husband_and_family_references.spoken_nicknames_zh_en', [])))}
+      ${partnerKey ? row(partnerKey, tags(get('persona_summary.husband_and_family_references.spoken_nicknames_zh_en', []))) : ''}
       ${row('v_openers', tags(openers))}
       ${row('v_connectors', tags(get('lexical_fingerprint.discourse_connectors.high_frequency', [])))}
       ${row('v_praise', tags(praise))}

@@ -11,6 +11,7 @@ and the user picks one. A ``transport`` callable can be injected for tests.
 from __future__ import annotations
 
 import json
+import math
 import re
 import urllib.error
 import urllib.parse
@@ -25,21 +26,29 @@ DEFAULT_LOCAL_BASE = "http://127.0.0.1:11434/v1"  # Ollama's OpenAI-compatible e
 _LOOPBACK_HOSTS = ("127.0.0.1", "localhost", "::1")
 _NON_CHAT_HINTS = ("embedding", "whisper", "tts", "dall-e", "moderation", "image", "audio",
                    "realtime", "transcribe", "babbage", "davinci", "sora")
+# How much of a provider's answer is read. A script or a voice profile is a few thousand bytes and the longest
+# model list a few hundred thousand; a broken or hostile server can send without end.
+MAX_REPLY_BYTES = 4 * 1024 * 1024
+MAX_ERROR_BYTES = 64 * 1024         # of an error answer; 300 characters of it are shown
+# Opens addresses on this computer with no proxy at all, whatever the environment or the system settings say.
+_DIRECT = urllib.request.build_opener(urllib.request.ProxyHandler({}))
 
 
 class LLMError(Exception):
     """An AI step failed.
 
     ``code`` is a stable identifier the UI translates (Chinese / English);
-    the message is an English detail that is safe to show.
+    the message is an English detail that is safe to show, and ``message_zh``
+    the same in Chinese when the error was written with one.
     Codes: not_configured, manual_mode, local_address, http, network,
     bad_response, bad_json, empty_result, no_samples, unknown_provider,
-    cannot_browse, no_focus, other.
+    cannot_browse, no_focus, too_large, other.
     """
 
-    def __init__(self, message: str, code: str = "other") -> None:
+    def __init__(self, message: str, code: str = "other", message_zh: str = "") -> None:
         super().__init__(message)
         self.code = code
+        self.message_zh = message_zh
 
 
 def normalize_local_base(url: str) -> str:
@@ -51,16 +60,64 @@ def normalize_local_base(url: str) -> str:
     return url
 
 
+def _refuse_constant(name: str) -> Any:
+    raise ValueError("%s is not valid JSON" % name)
+
+
+def _finite_float(text: str) -> float:
+    value = float(text)
+    if not math.isfinite(value):
+        raise ValueError("a number too large to read: %s" % text[:40])
+    return value
+
+
+def loads_strict(text: str) -> Any:
+    """Read JSON that arrives from outside: a model's reply, a provider's answer, a request body.
+
+    Python's reader accepts ``NaN``, ``Infinity`` and ``-Infinity``, which are not JSON. Stored and sent back
+    to the page they make an answer a browser cannot read, so the page shows nothing at all. Here they
+    raise ``ValueError`` like any other invalid JSON, and so does a number written so large that Python
+    would read it as Infinity (``1e999``).
+    """
+    return json.loads(text, parse_constant=_refuse_constant, parse_float=_finite_float)
+
+
+def _open(request: urllib.request.Request, timeout: float) -> Any:
+    """Open a request to a provider. An address on this computer is never reached through a proxy.
+
+    ``urlopen`` follows the ``http_proxy`` variable and the system's proxy settings also for 127.0.0.1, which
+    hands the whole prompt to the proxy. With a local model nothing may leave the computer, so those
+    requests go straight to the address. Cloud providers keep using a configured proxy: on some networks
+    it is the only way out.
+    """
+    try:
+        local = urllib.parse.urlsplit(request.full_url).hostname in _LOOPBACK_HOSTS
+    except ValueError:
+        local = False
+    return _DIRECT.open(request, timeout=timeout) if local else urllib.request.urlopen(request, timeout=timeout)
+
+
 def _http(method: str, url: str, headers: Dict[str, str], body: Optional[Dict[str, Any]]) -> Dict[str, Any]:
     data = json.dumps(body).encode("utf-8") if body is not None else None
     request = urllib.request.Request(url, data=data, method=method, headers=dict(headers))
     if data is not None:
         request.add_header("Content-Type", "application/json")
     try:
-        with urllib.request.urlopen(request, timeout=600) as response:
-            return json.loads(response.read().decode("utf-8"))
+        with _open(request, 600) as response:
+            raw = response.read(MAX_REPLY_BYTES + 1)      # never more than this, however much is sent
+        if len(raw) > MAX_REPLY_BYTES:
+            size = "%d MB" % (MAX_REPLY_BYTES // (1024 * 1024))
+            raise LLMError("The AI service sent back far more than an answer needs (over %s), so it was not read. "
+                           "Try again. If it keeps happening, check the AI service's address in Settings." % size,
+                           "too_large",
+                           "AI 服务返回的内容远远超过一个回答该有的大小（超过 %s），所以没有读取。请再试一次；"
+                           "如果总是这样，请到“设置”里检查 AI 服务的地址。" % size)
+        return loads_strict(raw.decode("utf-8"))
     except urllib.error.HTTPError as exc:
-        detail = exc.read().decode("utf-8", "replace")
+        try:
+            detail = exc.read(MAX_ERROR_BYTES).decode("utf-8", "replace")
+        finally:
+            exc.close()                 # whatever else the server goes on sending is not waited for
         try:
             error = json.loads(detail).get("error", detail)
             detail = error.get("message", detail) if isinstance(error, dict) else error
@@ -100,7 +157,10 @@ def list_models(provider: str, api_key: str = "", transport: Optional[Transport]
 
 
 def parse_json_text(text: str) -> Dict[str, Any]:
-    """Parse model text as a JSON object, tolerating ```json fences and stray prose."""
+    """Parse model text as a JSON object, tolerating ```json fences and stray prose.
+
+    ``NaN`` and ``Infinity`` are refused like any other invalid JSON (see ``loads_strict``).
+    """
     # Plain string work on purpose. A pattern did this before, and on a reply that was mostly white space
     # its running time grew with the square of the length: 128,000 spaces held the server for 18 seconds.
     cleaned = (text or "").strip()
@@ -112,13 +172,13 @@ def parse_json_text(text: str) -> Dict[str, Any]:
     if cleaned.endswith("```"):
         cleaned = cleaned[:-3].rstrip()
     try:
-        value = json.loads(cleaned)
+        value = loads_strict(cleaned)
     except ValueError:
         start, end = cleaned.find("{"), cleaned.rfind("}")
         if start == -1 or end <= start:
             raise LLMError("Model did not return valid JSON", "bad_json")
         try:
-            value = json.loads(cleaned[start:end + 1])
+            value = loads_strict(cleaned[start:end + 1])
         except ValueError:
             raise LLMError("Model did not return valid JSON", "bad_json")
     if not isinstance(value, dict):

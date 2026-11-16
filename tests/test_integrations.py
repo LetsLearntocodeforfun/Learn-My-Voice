@@ -153,7 +153,9 @@ class ManualModeTest(ServerCase):
         self.call("POST", "/api/samples", {"title": "超市那天", "text": HER_SCRIPT, "views": 2000, "likes": 150})
         self.assertIn("排队排了半小时啦", self.call("POST", "/api/manual/prompt", {"task": "voice"})[2]["prompt"])
         _, _, voice = self.call("POST", "/api/manual/reply", {"task": "voice", "reply": json.dumps(DNA_REPLY, ensure_ascii=False)})
-        self.assertEqual(voice["dna"]["cadence_and_syntax"]["ideal_clause_length_chars"], {"min": 7, "median": 7, "hard_max": 8})
+        self.assertEqual(voice["pending"]["dna"]["cadence_and_syntax"]["ideal_clause_length_chars"], {"min": 7, "median": 7, "hard_max": 8})
+        self.assertTrue(self.call("GET", "/api/dna")[2]["is_example"])          # a pasted reply is a proposal, not the profile in use
+        self.assertEqual(self.call("POST", "/api/voice/approve", {"created_at": voice["pending"]["created_at"]})[0], 200)
         self.assertFalse(self.call("GET", "/api/dna")[2]["is_example"])
 
         self.assertIn("Recommend exactly 6", self.call("POST", "/api/manual/prompt", {"task": "ideas"})[2]["prompt"])
@@ -333,10 +335,13 @@ class McpToolTest(McpCase):
         self.assertIn("排队排了半小时啦", brief)
         self.assertIn("save_voice_profile", brief)
         is_error, saved = self.tool("save_voice_profile", profile=json.dumps(DNA_REPLY, ensure_ascii=False))   # JSON as a string is accepted
-        self.assertEqual((is_error, saved["saved"]), (False, True))
+        self.assertEqual((is_error, saved["active"]), (False, False))     # stored as a proposal
         self.assertEqual(saved["cadence_and_syntax"]["ideal_clause_length_chars"]["hard_max"], 8)
         self.assertFalse(saved["source"]["speaking_rate_confirmed"])
-        self.assertFalse(self.tool("get_voice_profile")[1]["is_example"])
+        self.assertIn("Only the creator can accept it", saved["next_step"])
+        after = self.tool("get_voice_profile")[1]
+        self.assertTrue(after["is_example"])                               # an AI application cannot put it into use
+        self.assertTrue(after["proposal_waiting"])
 
         _, library = self.tool("list_library")
         self.assertEqual([s["title"] for s in library["scripts"]], ["商单面霜", "超市那天"])

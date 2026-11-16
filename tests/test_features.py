@@ -230,13 +230,17 @@ class FeatureServerTest(unittest.TestCase):
 
         status, out = self.call("POST", "/api/voice/learn", {})
         self.assertEqual(status, 200)
-        cadence = out["dna"]["cadence_and_syntax"]
+        proposed = out["pending"]["dna"]                                           # learning gives a proposal
+        cadence = proposed["cadence_and_syntax"]
         self.assertEqual(cadence["ideal_clause_length_chars"], {"min": 7, "median": 7, "hard_max": 8})   # measured, not the model's 6/11/20
         self.assertEqual(cadence["target_speaking_rate_cpm"], 240)                                        # default, not the model's 235
-        summary = out["dna"]["source_corpus_summary"]
+        summary = proposed["source_corpus_summary"]
         self.assertEqual((summary["organic_scripts_analyzed"], summary["sponsored_scripts_analyzed"]), (1, 1))
         self.assertTrue(summary["clause_lengths_measured"])
         self.assertFalse(summary["speaking_rate_confirmed"])
+        self.assertTrue(self.call("GET", "/api/dna")[1]["is_example"])            # and nothing is in use until she accepts it
+        status, accepted = self.call("POST", "/api/voice/approve", {"rejected": [], "created_at": out["pending"]["created_at"]})
+        self.assertEqual((status, accepted["is_example"]), (200, False))
         self.assertFalse(self.call("GET", "/api/dna")[1]["is_example"])
 
         prompt = self.fake.prompt_for("sociolinguist")
@@ -257,8 +261,12 @@ class FeatureServerTest(unittest.TestCase):
         _, rated = self.call("PUT", "/api/voice/rate", {"cpm": 265})
         self.assertEqual(rated["dna"]["cadence_and_syntax"]["target_speaking_rate_cpm"], 265)
         _, again = self.call("POST", "/api/voice/learn", {})
-        self.assertEqual(again["dna"]["cadence_and_syntax"]["target_speaking_rate_cpm"], 265)             # her confirmed rate survives re-learning
-        self.assertTrue(again["dna"]["source_corpus_summary"]["speaking_rate_confirmed"])
+        relearned = again["pending"]["dna"]
+        self.assertEqual(relearned["cadence_and_syntax"]["target_speaking_rate_cpm"], 265)                # her confirmed rate survives re-learning
+        self.assertTrue(relearned["source_corpus_summary"]["speaking_rate_confirmed"])
+        self.assertEqual(len(list(self.store.dna_history_dir.glob("*.json"))), 1)                         # a proposal replaces nothing
+        _, kept = self.call("POST", "/api/voice/approve", {"created_at": again["pending"]["created_at"]})
+        self.assertEqual(kept["dna"]["cadence_and_syntax"]["target_speaking_rate_cpm"], 265)
         self.assertEqual(len(list(self.store.dna_history_dir.glob("*.json"))), 2)                         # earlier profiles are kept
 
     def test_unusable_profile_reply_does_not_replace_profile(self):
@@ -276,7 +284,7 @@ class FeatureServerTest(unittest.TestCase):
         status, script = self.call("POST", "/api/generate", {"notes": "再去一次超市", "target_sec": 30})
         self.assertEqual((status, script["lines"][0]["spoken_script_zh"]), (201, "今天去超市买菜"))
         prompt = self.fake.prompt_for("ghostwriting")
-        exemplars = prompt.split("<retrieved_real_exemplars_from_her_past_videos>")[1].split("</retrieved_real_exemplars_from_her_past_videos>")[0]
+        exemplars = prompt.split("<retrieved_real_exemplars_from_creator_past_videos>")[1].split("</retrieved_real_exemplars_from_creator_past_videos>")[0]
         self.assertIn("排队排了半小时啦", exemplars)
         self.assertNotIn("神经酰胺", exemplars)
 
