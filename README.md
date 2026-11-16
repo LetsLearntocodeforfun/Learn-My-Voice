@@ -20,10 +20,12 @@ This is an early version. Read this before relying on it.
 | :--- | :--- |
 | Script editor, checks, teleprompter, library, exports | Working. Covered by automated tests and exercised in a real browser (headless Chrome, macOS). |
 | AI steps (draft, learn voice, topic ideas) | Working against stand-in model replies in tests. Output quality with real models has not been evaluated yet. |
+| Guided setup, voice review, lessons from edits | Covered by automated tests. Their AI parts were tested against stand-in replies, like the row above. |
+| On-device transcription | A Mac with an Apple chip and macOS 14 or newer only. Set up and used on one Mac so far. Transcripts contain mistakes, especially in sentence-final particles, and wait for the creator's confirmation before their wording is learned from. |
 | Trend keywords | Pasting, ranking and keyword checks work, are covered by automated tests and were exercised in headless Chrome. The ranking weights are judgement calls that have **not** been tuned against real results. Lookups by a web-searching AI have only been tested with stand-in replies. |
 | 剪映 / CapCut | Exports standard files to import. Importing them has **not** been verified inside 剪映 or CapCut by the maintainers. It does not write 剪映 project drafts. |
 | MCP server | Tested at protocol level (JSON-RPC over stdio). **Not** yet verified with ChatGPT, Codex or Claude Desktop. |
-| Platforms | Developed on macOS with Python 3.9. Windows and Linux are untested. |
+| Platforms | Developed on macOS with Python 3.9. Nobody has used it on Windows or Linux yet. The automated tests run on all three systems on every push; the repository's Actions page shows whether they pass there. |
 
 ## Quick start
 
@@ -44,14 +46,16 @@ The interface starts in Chinese. Use the **English** button at the bottom of the
 
 ## First 10 minutes
 
-1. **设置 / Settings**: choose how AI is provided (see the next section). The default needs no key.
-2. **素材库 / Library**: upload or paste scripts she wrote by hand (`.txt`, `.md`, `.docx`). Five or more is better. Add views, likes, collects and comments where you have them, and tick 商单 for sponsored ones.
-3. **我的声音 / Her voice**: click *Learn her voice from the library*, then enter her real speaking rate.
-4. **热点 / Trends** (optional): paste keywords you see trending on Xiaohongshu to have them ranked against her own results.
-5. **选题建议 / Ideas**: ask for topic suggestions, pick one, and draft it.
-6. **我的脚本 / Scripts**: edit the draft, read it with the teleprompter, and export the 剪映 kit.
+1. **开始 / Start** opens the first time. Step 1: the creator's name, what they make, and phrases they never use.
+2. Step 2: add material. Scripts written by hand (`.txt`, `.md`, `.docx`), subtitle files (`.srt`, `.vtt`), or videos on a Mac with an Apple chip. At least 3 non-sponsored items; 5 or more is better.
+3. Step 3: choose how AI is provided (see the next section; the default needs no key) and have it propose a voice profile. Each item of the proposal is checked against the material. Decide item by item, then accept it.
+4. Step 4: draft a first script. Under it the app lists which material the draft was based on.
+5. **素材库 / Library**: add views, likes, collects and comments where you have them, and tick 商单 for sponsored items.
+6. **热点 / Trends** (optional): paste keywords you see trending on Xiaohongshu to have them ranked against her own results.
+7. **选题建议 / Ideas**: ask for topic suggestions, pick one, and draft it.
+8. **我的脚本 / Scripts**: edit the draft, read it with the teleprompter, and export the 剪映 kit.
 
-Until step 3 is done the app uses a bundled *example* voice profile for a fictional creator, and says so on screen.
+Until a voice profile has been accepted the app uses a bundled *example* voice profile for a fictional creator, and says so on screen.
 
 ## Ways to provide the AI
 
@@ -127,8 +131,11 @@ Then ask in chat, for example: *"Use Learn My Voice to write a 60-second script 
 
 - **Script editor**: one card per spoken line, with shot and on-screen text (花字) fields, live character count and read time, autosave.
 - **Live checks**, in Chinese and English: lines too long for one breath, phrases she never uses, influencer clichés, translated-sounding Chinese, risky advertising wording, and total length against the target duration. These are rules, not AI, so they are instant and repeatable.
-- **Voice learning**: builds a voice profile from her own scripts. Breath-length limits are measured in code rather than taken from the model. Sponsored scripts are kept out of the core profile. Earlier profiles are kept as backups.
+- **Guided setup** (开始 / Start): five steps: who the creator is, their material, their voice, a first script, and what keeps learning afterwards. Each step says what leaves the computer and what does not.
+- **Material**: scripts written by hand (`.txt`, `.md`, `.docx`), subtitle files (`.srt`, `.vtt`) and, on a Mac with an Apple chip, videos transcribed on the computer. Subtitle files and videos carry timestamps, so speaking rate is measured from them.
+- **Voice learning**: an AI reads the material and proposes a voice profile. Code then looks up every phrase the proposal attributes to the creator in that material. The review shows what was found, what was not, and what the AI wanted to ban although the creator says it. Nothing takes effect until the creator accepts the proposal. Breath-length limits are measured in code once there are 30 breaths of material. Sponsored scripts are kept out of the core profile. Earlier profiles are kept and can be restored.
 - **Drafting**: every draft is anchored on her own best-performing scripts as examples. A script can have up to 8 target keywords; her past scripts on those topics are then used as the examples first, and the editor shows whether each keyword ended up in the spoken lines or in the drafted title options, caption or hashtags. The title options, cover text, caption and hashtags that the AI drafts with a script are shown under it, to read and copy.
+- **Lessons from edits**: each AI draft lists which of the creator's scripts its prompt contained. The app shows what the creator then changed in the draft, counting wording only, and a change can be remembered. Remembered changes go into later draft prompts, and a phrase removed in more than one script is offered for the never-say list.
 - **Topic ideas**: ranks her past videos by interactions and suggests what to film next. Each idea must cite her own videos; citations that do not match a real title are removed. Tracked trend keywords are passed in as a second signal, and an idea can only name keywords that are actually tracked.
 - **Trend keywords** (热点): paste keywords you see trending, with an optional heat number, and the studio ranks them by how hot and recent they are and by how her own videos on that topic performed. You choose how much each side counts. The ranking is arithmetic, not AI. Keywords that clash with her voice profile are marked and left out of suggestions. A web-searching chat AI can also look keywords up through the copy & paste dialog or MCP; those need a source link and are labelled as unverified.
 - **Teleprompter**: full screen, adjustable speed and size.
@@ -158,12 +165,14 @@ generator reports limits for drafts produced on macOS, so this needs testing aga
 
 ## Data and privacy
 
-- Everything is stored in `data/` inside the project folder: scripts, library, voice profile, settings. The folder is git-ignored.
+- Everything is stored in `data/` inside the project folder: scripts, library, the creator profile from setup, voice profile, settings. The folder is git-ignored, and on macOS and Linux it is closed to the other accounts on the computer.
 - API keys are stored in `data/config.json` with owner-only permissions and are never sent back to the browser.
 - The web server listens on `127.0.0.1` only, rejects requests with an unexpected Host header, and refuses writes sent by other websites.
-- AI steps send her voice profile, her notes and parts of her past scripts to whichever AI you chose. With a local model nothing leaves the computer.
+- AI steps send the creator profile, her voice profile, her notes and parts of her past scripts to whichever AI you chose. With a local model nothing leaves the computer.
+- A video added for transcription is copied into `data/uploads/` and transcribed on this Mac. The copy is deleted when the transcription ends, whatever the outcome; only the text and timing are kept. The programs that transcribe are started under macOS rules that deny them the network, and where those rules cannot be set up nothing is transcribed.
+- Setting up transcription downloads software from pypi.org and one speech model from huggingface.co, about 2 GB in all, into `local_tools/whisper/` inside the project folder. Nothing about the creator is sent.
 - Views, likes, collects and comments are typed in by hand. Nothing is fetched from any platform.
-- Trend keywords are pasted in by hand, or returned by a web-searching AI that you ask yourself. The studio makes no web requests for them. A trend lookup prompt contains her video titles, a one-line description of her persona if her voice has been learned, the area you typed and the keywords already tracked. It does not contain script text.
+- Trend keywords are pasted in by hand, or returned by a web-searching AI that you ask yourself. The studio makes no web requests for them. A trend lookup prompt contains the niches from the creator profile, the titles of up to 20 non-sponsored videos, the area you typed and the keywords already tracked. It does not contain script text, the creator's name or anything from the voice profile.
 
 ## Project layout
 
@@ -173,14 +182,20 @@ generator reports limits for drafts produced on macOS, so this needs testing aga
 | `studio/guardrails.py`, `studio/lexicon.json`, `studio/checks.py` | Rule-based checks and their bilingual messages |
 | `studio/pipeline.py`, `studio/llm.py` | Prompt building, reply validation, model providers |
 | `studio/corpus.py` | Reading her scripts, measured statistics, performance ranking |
+| `studio/creator.py`, `studio/setup.py` | The creator profile from setup, and where setup stands |
+| `studio/evidence.py` | Looks up what a proposed voice profile claims in the creator's own material |
+| `studio/learning.py` | Compares an AI draft with the creator's version |
+| `studio/timing.py` | Subtitle files, and speaking rate measured from their timestamps |
+| `studio/transcribe.py`, `studio/whisper_worker.py`, `studio/jobs.py` | On-device transcription and its background jobs |
 | `studio/trends.py` | Reading pasted trend keywords, scoring them against her own results, keyword coverage |
 | `studio/exports.py` | Text exports, `.srt`, 剪映 kit |
 | `studio/mcp_server.py`, `run_mcp.py` | MCP server |
 | `prompts/` | The prompt text. The app reads prompts 02, 04, 06 and 07 directly from these files, so editing them changes behaviour. |
+| `.github/workflows/tests.yml` | Runs the tests on macOS, Windows and Linux on every push |
 | `SYSTEM_DESIGN.md` | The original, larger design. Parts of it are not built. |
 
-The prompts are written for one scenario: a Chinese creator who makes lifestyle and couple vlogs with an
-English-speaking husband. Edit `prompts/` to fit someone else.
+The prompts receive the creator profile from setup (name, niches, an on-camera partner, phrases never
+to be used) and no longer assume one particular creator. They are written for Xiaohongshu video scripts in Chinese.
 
 ## Development
 
@@ -192,11 +207,12 @@ python3 -m studio.guardrails tests/fixtures/worked_example_script.json --dna sch
 ## Known limits
 
 - The advertising-rule word lists are a starting point collected for this project. They have not been checked against current platform or legal rules and are not legal advice.
-- Speaking rate cannot be learned from text. It is a default until she enters her own.
+- Speaking rate cannot be learned from text. It is measured once the library holds at least a minute of timed material (subtitle files or transcribed videos). Until then it is a default, or the number the creator types in.
+- On-device transcription only runs on a Mac with an Apple chip, macOS 14 or newer, and the Python that comes with Apple's Command Line Tools (3.9). It has been set up and used on one Mac so far. Whisper gets some sentence-final particles wrong: in testing on synthetic speech it wrote 嘛 as 吗, 呗 as 背, 喔 as 哦 and 呐 as 呢. So a transcript is used to learn wording only after the creator has read and confirmed it.
 - With only a few videos that have numbers, topic suggestions are weak. The app says so.
 - Trend scores are a guide, not a measurement. The weights and the 14-day half-life are judgement calls that have not been tuned against real outcomes, and heat numbers are whatever was typed in. Matching a keyword to her past videos is by shared characters and words, so it can miss a video that covers the topic in other words.
 - Keywords found by an AI are only as good as the page it cites. The studio requires a web link and drops entries whose stated source date is more than 30 days old, but it never opens the page, so it cannot confirm the page says what the AI claims. They stay marked as unverified unless you paste the same keyword in yourself.
-- Sponsored-brief handling, a second-pass critic, learning from her edits to drafts, and video transcription are designed in `prompts/` and `SYSTEM_DESIGN.md` but not built.
+- Sponsored-brief handling and a second-pass critic are designed in `prompts/` and `SYSTEM_DESIGN.md` but not built.
 
 ## License
 

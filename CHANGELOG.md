@@ -3,6 +3,61 @@
 Each beta release is a tag on `main` and a pre-release on GitHub. Versions are `v0.<iteration>.0-beta`.
 The README's Status section says what has and has not been verified; this file says what changed.
 
+## v0.2.0-beta (not released yet)
+
+A draft, written from the code on 16 November 2026. Nothing has been tagged or published. The date goes in
+when the tag is made, and "State of this release" has to be read again then.
+
+**New**
+
+- **Guided setup.** A Start page with five steps: who the creator is, their material, their voice, a first
+  script, and what keeps learning. The prompts receive the creator profile and no longer assume one specific
+  creator.
+- **Subtitle files and videos as material.** `.srt` and `.vtt` files are read with their timing. On a Mac with
+  an Apple chip a video can be transcribed on the computer; the uploaded copy is deleted afterwards. Speaking
+  rate is measured from timed material once there is a minute of it. A transcript waits for the creator's
+  confirmation before its wording is learned from.
+- **A learned voice is a proposal.** Every phrase the AI attributes to the creator is looked up in their own
+  material, the review shows what was and was not found, and nothing takes effect until the creator accepts
+  it. Earlier profiles are kept and can be restored. This closes the item left open in v0.1.1-beta.
+- **Lessons from edits.** The app shows what the creator changed in an AI draft. A change can be remembered
+  and then goes into later draft prompts.
+- **What a draft was based on.** Each AI draft lists which of the creator's scripts its prompt contained.
+- **Phrases never to be used.** Typed in during setup and enforced by rule in every check.
+
+**Changed**
+
+- Through MCP, `save_voice_profile` stores a proposal only, and `update_script` only revises an AI draft the
+  creator has not edited.
+- A save based on an older version of a script is refused instead of replacing the newer one.
+
+**Fixed**
+
+- Saving the settings, the creator profile or a voice profile would have failed on Windows with a Python older
+  than 3.13. Found by reading the code; not yet run on Windows.
+- On Windows the pages' scripts could be sent as plain text, which leaves the page empty. Also found by
+  reading the code.
+- A `.docx` of 437 bytes held the server for 10 seconds, and one pasted trend line of 32,000 spaces for 7.5.
+- Answers and stored files never contain `NaN` or `Infinity`, which used to make a page show nothing.
+- Files are written whole and flushed to disk before they replace the old one. On macOS and Linux the data
+  folder is closed to the other accounts on the computer.
+- Every answer carries a content security policy and forbids framing. At most 4 MB of a provider's answer is
+  read. A request to a local model never goes through a proxy.
+- Text from the library can no longer close a block of a prompt.
+
+**State of this release**
+
+- 429 automated tests pass on macOS with Python 3.9.6. One of them transcribes real audio and only runs where
+  the transcriber is installed.
+- On-device transcription has been set up and used on one Mac. Whisper gets some sentence-final particles
+  wrong.
+- A workflow runs the tests on macOS, Windows and Linux on every push. At the time of writing it has not run.
+- AI steps were tested against stand-in model replies only. Output quality with real models has not been
+  evaluated.
+- Importing the exported files into 剪映 or CapCut has not been verified.
+- The MCP server was tested at protocol level, not with ChatGPT, Codex or Claude Desktop.
+- Sponsored-brief handling and a second-pass critic are designed but not built.
+
 ## v0.1.1-beta (15 November 2026)
 
 Security and reliability fixes for v0.1.0-beta. Nothing else changes. **Anyone using v0.1.0-beta should update.**
