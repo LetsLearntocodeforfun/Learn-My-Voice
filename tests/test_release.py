@@ -371,6 +371,7 @@ class NotesTest(TempCase):
         text, problems = self.notes(self.results())
         self.assertEqual(problems, [])
         self.assertNotIn("Desktop app", text)
+        self.assertIn("### Get it", text)                                       # the zip is then the one way to get it
 
     def test_an_installer_is_offered_only_when_its_trial_passed(self):
         folder = self.installers("macos-arm64", "windows-x64")
@@ -381,8 +382,11 @@ class NotesTest(TempCase):
         with mock.patch.object(build_release, "changelog_section", return_value=""):
             text, problems = build_release.release_notes(self.BUILD, "f" * 64, "learn-my-voice-0.2.0-beta.rc.7.zip", results,
                                                          ["macos", "linux:tests"], "", "", self.LEGS, found)
-        self.assertEqual(problems, [])                                          # a failed desktop trial does not stop the release
+        self.assertEqual(problems, [])                                          # no installer is asked for in this call
         section = text[text.index("### Desktop app"):]
+        # The installers come first: they are what a person who only wants to use the app takes. The zip follows.
+        self.assertLess(text.index("### Desktop app"), text.index("### The zip, for a computer that has Python"))
+        self.assertNotIn("### Get it", text)
         self.assertIn("| macOS, Apple chip | `learn-my-voice-0.2.0-beta.rc.7-macos-arm64.dmg` | passed |", section)
         self.assertIn("| Windows, 64-bit | not attached | FAILED: it was built, and the trial of it did not pass |", section)
         self.assertNotIn("windows-x64-setup.exe", section)                      # a file that failed its trial is not named as a download
@@ -394,6 +398,33 @@ class NotesTest(TempCase):
         self.assertIn("windows-x64, the desktop app:", text)                    # what the failed trial reported is quoted
         self.assertIn("the window had not finished loading the page", text)
         self.assertIn("| Windows | passed (3 of 3) | passed (2 of 2) |", text)   # the package's own table is not touched by it
+
+    def test_a_release_can_need_an_installer_that_passed_for_a_system(self):
+        folder = self.installers("macos-arm64", "macos-x64", "windows-x64")
+        found = build_release.find_installers(folder, "0.2.0-beta.rc.7")
+        none = "%s: no installer of the desktop app that passed its trial is there to attach"
+
+        def problems(installers, **outcomes):
+            with mock.patch.object(build_release, "changelog_section", return_value=""):
+                return build_release.release_notes(self.BUILD, "f" * 64, "x.zip", self.results() + self.desktop(**outcomes),
+                                                   ["macos", "linux:tests", "macos:desktop", "windows:desktop"], "", "", self.LEGS,
+                                                   installers)[1]
+
+        self.assertEqual(problems(found, macos_arm64=True, macos_x64=True, windows_x64=True), [])
+        # Of the two for macOS one is enough: the other failed, or GitHub had no such Mac and its job never ran.
+        self.assertEqual(problems(found, macos_arm64=False, macos_x64=True, windows_x64=True), [])
+        self.assertEqual(problems(found, macos_x64=True, windows_x64=True), [])
+        # A system with none that passed stops the release.
+        self.assertEqual(problems(found, macos_arm64=True, macos_x64=True, windows_x64=False), [none % "windows"])
+        self.assertEqual(problems(found, macos_arm64=False, macos_x64=False, windows_x64=True), [none % "macos"])
+        self.assertEqual(problems(found), [none % "macos", none % "windows"])     # no desktop job reported anything
+        # A trial that reported a pass is not enough when its file is not there to attach.
+        without_windows = [entry for entry in found if entry["system"] != "windows-x64"]
+        self.assertEqual(problems(without_windows, macos_arm64=True, macos_x64=True, windows_x64=True), [none % "windows"])
+        self.assertEqual(problems([], macos_arm64=True, macos_x64=True, windows_x64=True), [none % "macos", none % "windows"])
+        # A system named alone still stands for its tests and its trial of the package, not for the desktop app.
+        self.assertEqual(build_release.required(["windows"]), [("windows", "tests"), ("windows", "try")])
+        self.assertEqual(build_release.required(["windows:desktop"]), [("windows", "desktop")])
 
     def test_a_desktop_build_that_failed_is_said_and_no_first_open_steps_are_given_for_nothing(self):
         results = self.results() + [{"kind": "desktop", "label": "windows-x64", "ok": False, "detail": "The installer could not be built.\nerror[E0432]"}]
@@ -564,6 +595,7 @@ class WorkflowsTest(unittest.TestCase):
         self.assertIn('branches-ignore: ["beta/**"]', tests)
         self.assertIn("needs: [tests, build, try, desktop]", release)           # nothing is published before all of them
         self.assertIn("--require macos --require linux:tests --require windows:tests", release)
+        self.assertIn("--require macos:desktop --require windows:desktop", release)    # something to install, for each
         self.assertIn("--prerelease", release)
         # A later push does not stop a release-candidate run, nor the tests inside it.
         self.assertNotIn("cancel-in-progress", release)
@@ -626,10 +658,10 @@ class WorkflowsTest(unittest.TestCase):
             self.assertIn("run: python desktop/%s.py\n" % script, self.files["release-candidate.yml"])
             self.assertTrue((ROOT / "desktop" / (script + ".py")).is_file())
 
-    def test_the_desktop_app_never_holds_up_the_release_and_is_attached_only_when_its_trial_passed(self):
+    def test_a_release_needs_an_installer_for_macos_and_windows_and_attaches_only_what_passed_its_trial(self):
         release = self.files["release-candidate.yml"]
         desktop = release[release.index("\n  desktop:"):release.index("\n  publish:")]
-        self.assertIn("continue-on-error: true", desktop)
+        self.assertIn("continue-on-error: true", desktop)                       # the publish job decides, from what was written down
         self.assertIn("needs: build", desktop)                                  # built around the very package that is published
         self.assertIn("DESKTOP_PACKAGE: dist/${{ needs.build.outputs.file }}", desktop)
         self.assertEqual(desktop.count("run: python tools/build_release.py result --kind desktop --if-missing\n"), 1)
@@ -637,7 +669,8 @@ class WorkflowsTest(unittest.TestCase):
         publish = release[release.index("\n  publish:"):]
         self.assertIn("--installers installers --attach attach.txt", publish)
         self.assertIn('gh release create "$TAG" "${FILES[@]}"', publish)        # only what the notes step listed is attached
-        self.assertNotIn("--require macos:desktop", release)                    # not required: see the workflow's first lines
+        self.assertIn("--require macos:desktop --require windows:desktop", publish)
+        self.assertNotIn("linux:desktop", release)                              # there is no desktop app for Linux yet
 
 
 class RunTestsTest(TempCase):

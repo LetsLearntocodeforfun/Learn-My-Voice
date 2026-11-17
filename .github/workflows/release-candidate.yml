@@ -11,10 +11,13 @@
 #   publish  a pre-release named v<version>.rc.<run number>, with the zip, its SHA-256, each installer
 #            whose trial passed, and notes that say per system what the jobs above found
 #
-# Nothing is published unless the tests pass on macOS, Linux and Windows and the trial passes on macOS, the one
-# system the app has been used on by a person. The trial on Windows and Linux is allowed to fail for now; the
-# notes then say so in words, with what those jobs reported. The desktop app is new:
-# its jobs never hold up the release candidate, and an installer is attached only when its own trial passed.
+# Nothing is published unless the tests pass on macOS, Linux and Windows, the trial passes on macOS, the one
+# system the app has been used on by a person, and there is an installer of the desktop app for macOS and one
+# for Windows that passed its own trial: a release candidate is what people download, so each one has
+# something to install. The trial on Windows and Linux is allowed to fail for now; the notes then say so in
+# words, with what those jobs reported. An installer is attached only when its own trial passed. Of the two
+# for macOS one is enough: when GitHub has no Mac of one kind to give, or one of the two fails, the other
+# still goes out, and the notes say what happened to the first.
 #
 # A job that fails says why in an annotation at the top of the run's page, which can be read without signing in.
 #
@@ -137,7 +140,7 @@ jobs:
     name: Desktop app / ${{ matrix.system }}
     needs: build
     runs-on: ${{ matrix.os }}
-    continue-on-error: true         # new: it never holds up the release candidate; the notes say what happened
+    continue-on-error: true         # the publish job decides from what these jobs wrote down: see the first lines
     timeout-minutes: 60
     strategy:
       fail-fast: false
@@ -247,7 +250,8 @@ jobs:
           path: installers
           merge-multiple: true
       # The notes are written from what each job wrote down. This step fails, and nothing is published,
-      # if the tests or the trial did not pass on macOS, or the tests on Linux or Windows, whatever the jobs' own colours say.
+      # if the tests or the trial did not pass on macOS, or the tests on Linux or Windows, or if macOS or Windows
+      # has no installer that passed its trial, whatever the jobs' own colours say.
       - name: Check the package and write the notes
         shell: bash
         env:
@@ -257,6 +261,7 @@ jobs:
           python tools/build_release.py verify "dist/$PACKAGE" --sha256 "$SHA256"
           python tools/build_release.py notes --package "dist/$PACKAGE" --results results \
             --require macos --require linux:tests --require windows:tests \
+            --require macos:desktop --require windows:desktop \
             --legs tests=3 --legs try=2 --run-url "$RUN_URL" --branch "$BRANCH" \
             --installers installers --attach attach.txt --out notes.md
           cat notes.md >> "$GITHUB_STEP_SUMMARY"

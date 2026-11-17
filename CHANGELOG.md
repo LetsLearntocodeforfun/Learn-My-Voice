@@ -150,11 +150,15 @@ be read again then.
 - On Windows the app does not close its data folder to the other accounts on the computer. Who may read it is
   decided by the folder the app was unpacked in; the desktop app keeps its data in the user's own folder for
   application data.
-- A release candidate is published only when the tests pass on macOS, Linux and Windows and the package,
-  started with its launcher, works on macOS. A trial of the package on Windows and Linux (unpack, start with
-  the launcher, use, stop) and the build and trial of each installer run as well; when one of them fails the
-  release candidate is still published, its notes say so with what that job reported, and an installer whose
-  trial did not pass is not attached.
+- A release candidate is published only when the tests pass on macOS, Linux and Windows, the package, started
+  with its launcher, works on macOS, and there is an installer of the desktop app for macOS and one for
+  Windows that passed its own trial. A trial of the package on Windows and Linux (unpack, start with the
+  launcher, use, stop) runs as well; when it fails the release candidate is still published and its notes say
+  so with what that job reported. An installer whose trial did not pass is never attached; of the two for
+  macOS one is enough for the candidate to go out.
+- The Rust packages the desktop app's window is compiled from are the versions listed in the source
+  (`desktop/src-tauri/Cargo.lock`, taken from the first build that worked), so two builds of one commit
+  compile the same code. The Python inside it is downloaded by its SHA-256.
 - Voice match, openings, proposals for a line and the teleprompter were run in headless Chrome against the
   real server with stand-in AI replies and invented material. None has been tried on the creator's real
   material, and no real model has written a proposal. The teleprompter file has not been opened on a phone;

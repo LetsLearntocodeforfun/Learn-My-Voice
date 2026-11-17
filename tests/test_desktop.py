@@ -202,6 +202,25 @@ class ShellFilesTest(unittest.TestCase):
         for made in ("desktop/src-tauri/core/", "desktop/src-tauri/target/"):
             self.assertIn(made, ignored)
 
+    def test_the_rust_packages_are_the_ones_on_the_list_in_the_source(self):
+        # Cargo.lock is the list of every Rust package and version the shell is compiled from. It is part of the
+        # source, and the build tells Cargo to use it as it is.
+        lock = (SHELL / "Cargo.lock").read_text(encoding="utf-8")
+        self.assertNotIn("\r", lock)
+        listed = dict(re.findall(r'\[\[package\]\]\nname = "([^"]+)"\nversion = "([^"]+)"', lock))
+        self.assertEqual(listed[try_installer.BINARY], re.search(r'^version = "([^"]+)"', self.cargo, re.M).group(1))
+        wanted = re.findall(r"^([a-z][a-z0-9_-]*) = ", self.cargo.split("[dependencies]")[1].split("[profile")[0], re.M)
+        for name in wanted + ["tauri-build"]:
+            self.assertIn(name, listed)
+        self.assertTrue(listed["tauri"].startswith("2.12."), listed["tauri"])
+        self.assertIn("*.lock      text eol=lf\n", (ROOT / ".gitattributes").read_text(encoding="utf-8"))    # the same bytes on Windows
+        self.assertNotIn("Cargo.lock", (ROOT / ".gitignore").read_text(encoding="utf-8"))
+        override = SHELL / "release.conf.json"
+        plain = build.tauri_command("npx", "dmg", override, locked=False)
+        self.assertEqual(plain, ["npx", "--yes", build.TAURI_CLI, "build", "--ci", "--bundles", "dmg", "--config", str(override)])
+        self.assertEqual(build.tauri_command("npx", "dmg", override, locked=True), plain + ["--", "--locked"])
+        self.assertRegex(build.TAURI_CLI, r"^@tauri-apps/cli@\d+\.\d+\.\d+$")     # the tool that builds is one exact version too
+
     def test_the_page_inside_the_shell_loads_nothing_from_elsewhere(self):
         for path in sorted((DESKTOP / "ui").iterdir()):
             text = path.read_text(encoding="utf-8")

@@ -218,6 +218,18 @@ def run(command: List[str], cwd: Path, what: str) -> None:
         raise Failed("%s failed with code %d. The end of what it printed:\n%s" % (what, process.returncode, "\n".join(last)))
 
 
+def tauri_command(npx: str, bundle: str, override: Path, locked: bool) -> List[str]:
+    """The command that compiles the shell and makes the installer.
+
+    ``locked`` says that the source holds the list of Rust packages to compile (``Cargo.lock``, taken from the
+    first build that worked). What follows ``--`` goes to Cargo: with ``--locked`` it uses exactly the versions on
+    that list, and fails instead of choosing others if the list no longer fits ``Cargo.toml``. Without the list
+    Cargo picks the newest versions that fit, which is how the list was first made.
+    """
+    command = [npx, "--yes", TAURI_CLI, "build", "--ci", "--bundles", bundle, "--config", str(override)]
+    return command + ["--", "--locked"] if locked else command
+
+
 def make_installer(system: str, version: str, out: Path) -> Path:
     """Compile the shell, make the installer, and copy it to ``out`` under its release name."""
     npx = shutil.which("npx")
@@ -232,8 +244,7 @@ def make_installer(system: str, version: str, out: Path) -> Path:
     override.write_text(json.dumps({"version": numbers.group(0)}), encoding="utf-8")
     runtime = SYSTEMS[system]
     try:
-        run([npx, "--yes", TAURI_CLI, "build", "--ci", "--bundles", runtime["bundle"], "--config", str(override)], HERE,
-            "building the desktop app")
+        run(tauri_command(npx, runtime["bundle"], override, (SHELL / "Cargo.lock").is_file()), HERE, "building the desktop app")
     finally:
         override.unlink()
     made = sorted((SHELL / "target" / "release" / "bundle" / runtime["found_in"]).glob(runtime["pattern"]))

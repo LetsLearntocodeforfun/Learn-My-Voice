@@ -220,7 +220,8 @@ def summarize(results: List[Dict[str, Any]], legs: Optional[Dict[str, int]] = No
 
 
 def required(require: List[str]) -> List[Tuple[str, str]]:
-    """``["macos", "linux:tests"]`` as ``(system, kind)`` pairs: a system alone stands for both of its checks."""
+    """``["macos", "linux:tests"]`` as ``(system, kind)`` pairs: a system alone stands for both checks of the
+    package, its tests and its trial. The desktop app is asked for by name (``windows:desktop``)."""
     out: List[Tuple[str, str]] = []
     for given in require:
         system, _, kind = given.partition(":")
@@ -247,22 +248,38 @@ def changelog_section(version_heading: str) -> str:
 def release_notes(build: Dict[str, Any], sha256: str, file_name: str, results: List[Dict[str, Any]], require: List[str],
                   run_url: str = "", branch: str = "", legs: Optional[Dict[str, int]] = None,
                   installers: Optional[List[Dict[str, str]]] = None) -> Tuple[str, List[str]]:
-    """``(notes, problems)``. ``problems`` is not empty when a required system did not pass both checks: then
-    nothing should be published."""
+    """``(notes, problems)``. ``problems`` is not empty when something required did not pass: then nothing should
+    be published.
+
+    A system required for ``tests`` or ``try`` needs every one of those jobs to have passed. A system required for
+    ``desktop`` needs one installer of the desktop app that passed its own trial and is among ``installers``, so
+    that a person on that system has something to install. Where a system has two (macOS: Apple chip and Intel
+    chip), one that failed does not stop the release while the other passed: it is not attached, and the notes
+    say that it failed.
+    """
     version = build["version"]
     base = version.split(".rc.")[0].split(".dev")[0]
     table = summarize(results, legs)
+    passed_trial = {r["label"] for r in results if r["kind"] == "desktop" and r["ok"]}
+    installable = {system_of(entry["system"]) for entry in (installers or []) if entry["system"] in passed_trial}
     problems = []
     for system, kind in required(require):
         found = table["%s/%s" % (system, kind)]
-        if found["failed"] or not found["passed"]:
+        if kind == "desktop":
+            if system not in installable:
+                problems.append("%s: no installer of the desktop app that passed its trial is there to attach" % system)
+        elif found["failed"] or not found["passed"]:
             problems.append("%s: %s %s" % (system, "the tests" if kind == "tests" else "starting the package",
                                            "failed" if found["failed"] else "did not run"))
     lines = [
         "**A release candidate of %s.** Built by GitHub Actions from commit `%s`%s. It is for trying out, and is not the finished %s."
         % (base, build["commit"][:12], " on branch `%s`" % branch if branch else "", base),
+    ]
+    # The desktop app comes first when there is one: it is what a person who only wants to use the app installs.
+    desktop = desktop_section(results, installers or [])
+    lines += desktop + [
         "",
-        "### Get it",
+        "### The zip, for a computer that has Python" if desktop else "### Get it",
         "",
         "Download **%s** below and unpack it. You need Python 3.9 or newer and nothing else." % file_name,
         "",
@@ -315,7 +332,6 @@ def release_notes(build: Dict[str, Any], sha256: str, file_name: str, results: L
         "commit `%s`, `python3 tools/build_release.py build%s` makes the same file."
         % (build["commit"][:12], _rc_arguments(version)),
     ]
-    lines += desktop_section(results, installers or [])
     body = changelog_section(base)
     if body:
         lines += ["", "### What is in %s" % base, "", body]
@@ -369,7 +385,7 @@ def desktop_section(results: List[Dict[str, Any]], installers: List[Dict[str, st
                   "- **Windows:** run the setup program. When \"Windows protected your PC\" appears, click More info, then "
                   "Run anyway. (运行安装程序。出现「Windows 已保护你的电脑」时，点「更多信息」，再点「仍要运行」。)", "",
                   "On a computer managed by an employer or a school this may not be allowed at all. "
-                  "Transcribing videos on the Mac is not in the desktop app yet; the zip above does that. "
+                  "Transcribing videos on the Mac is not in the desktop app yet; the zip below does that. "
                   "What the desktop app keeps (scripts, library, settings) is in the system's folder for application data, "
                   "not in the app, so installing a newer version keeps it."]
     return lines
@@ -426,7 +442,8 @@ def main(argv: Optional[List[str]] = None) -> int:
     notes.add_argument("--package", required=True)
     notes.add_argument("--results", required=True)
     notes.add_argument("--require", action="append", default=[], metavar="SYSTEM[:KIND]",
-                       help="what has to have passed for the notes to be usable, e.g. macos (its tests and its trial) or linux:tests")
+                       help="what has to have passed for the notes to be usable, e.g. macos (its tests and its trial), linux:tests, or "
+                            "windows:desktop (an installer for it that passed its own trial)")
     notes.add_argument("--legs", action="append", default=[], metavar="KIND=N",
                        help="how many jobs of a kind run on each system, e.g. tests=3; a job without a result then counts as failed")
     notes.add_argument("--run-url", default="")
