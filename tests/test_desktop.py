@@ -156,6 +156,7 @@ class ShellFilesTest(unittest.TestCase):
         self.assertEqual(self.config["mainBinaryName"], try_installer.BINARY)
         self.assertIn('name = "%s"' % try_installer.BINARY, self.cargo)
         self.assertIn('const RUNNING_FILE: &str = "%s";' % try_installer.RUNNING_FILE, self.rust)
+        self.assertIn('const PROBLEM_FILE: &str = "%s";' % try_installer.PROBLEM_FILE, self.rust)
         self.assertRegex(self.config["identifier"], r"^[a-z0-9.-]+$")
         self.assertFalse(self.config["identifier"].endswith(".app"))            # macOS takes that ending for something else
 

@@ -42,6 +42,7 @@ IDENTIFIER = "io.github.letslearntocodeforfun.learn-my-voice"     # as in src-ta
 PRODUCT = "Learn My Voice"
 BINARY = "learn-my-voice"
 RUNNING_FILE = "desktop-running.json"                              # as in src-tauri/src/main.rs
+PROBLEM_FILE = "desktop-problem.txt"                               # as in src-tauri/src/main.rs
 START_TIMEOUT_SEC = 180
 
 
@@ -126,6 +127,22 @@ def uninstall_windows(folder: Path, checks: List[str]) -> None:
     checks.append("it uninstalls")
 
 
+def python_inside(core: Path, checks: List[str]) -> None:
+    """Run the Python that ships inside the app by itself, before the app is trusted to start it."""
+    python = core / "python" / ("python.exe" if os.name == "nt" else "bin/python3")
+    about = "%s (mode %s)" % (python, oct(python.stat().st_mode & 0o777) if python.is_file() else "missing")
+    try:
+        done = subprocess.run([str(python), "-X", "utf8", "-E", "-s", "-c",
+                               "import sys, ssl, sqlite3, zlib, json, http.server; print(sys.version.split()[0], '|', ssl.OPENSSL_VERSION, '| sqlite', sqlite3.sqlite_version)"],
+                              capture_output=True, timeout=120, cwd=str(core / "app"))
+    except (OSError, subprocess.SubprocessError) as problem:
+        raise Failed("the Python inside the app could not be started: %s: %s\n%s" % (type(problem).__name__, problem, about))
+    said = (done.stdout + done.stderr).decode("utf-8", "replace").strip()
+    if done.returncode != 0:
+        raise Failed("the Python inside the app ended with code %s: %s\n%s" % (done.returncode, said[-800:], about))
+    checks.append("the Python inside the app runs by itself: %s" % said[:120])
+
+
 def picture(target: Path) -> bool:
     """A picture of the whole screen, for a person to look at. Not having one fails nothing."""
     try:
@@ -181,6 +198,9 @@ def wait_for(running: Path, process: "subprocess.Popen[bytes]", want_page: bool,
             note = {}
         if note.get("url") and (note.get("page_loaded") or not want_page):
             return note
+        problem = running.with_name(PROBLEM_FILE)
+        if problem.is_file():                                # the app's own account of why it could not start
+            raise Failed("%s could not start, and says why:\n%s" % (how, problem.read_text(encoding="utf-8", errors="replace")[-1500:]))
         if process.poll() is not None:
             raise Failed("%s ended by itself with code %s" % (how, process.returncode))
         if time.time() > deadline:
@@ -218,6 +238,7 @@ def try_installer(installer: Path, shots: Optional[Path], label: str) -> Dict[st
         version = str(build.get("version"))
         record["version"], record["python"] = version, runtime.get("python")
         checks.append("it carries the package %s and its own Python %s" % (version, runtime.get("python")))
+        python_inside(core, checks)
 
         data = work / "data"
         process = start(program, data, log)

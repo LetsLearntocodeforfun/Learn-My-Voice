@@ -40,6 +40,8 @@ const CORE_ARGUMENTS: [&str; 12] = [
 ];
 /// Written into the data folder while the app runs: where the core listens and which processes these are.
 const RUNNING_FILE: &str = "desktop-running.json";
+/// Written into the data folder when the app could not start: what the window says, to be read without it.
+const PROBLEM_FILE: &str = "desktop-problem.txt";
 
 #[derive(Default)]
 struct Core {
@@ -164,6 +166,7 @@ fn prepare(app: &AppHandle) -> Result<(Url, PathBuf, u32), String> {
         .map_err(|error| format!("The app's own folder could not be found:\n{error}"))?;
     let data = data_folder(app)?;
     let (child, url) = start_core(&resources, &data)?;
+    let _ = std::fs::remove_file(data.join(PROBLEM_FILE)); // left by an earlier start that failed
     let core_pid = child.id();
     let running = data.join(RUNNING_FILE);
     note_running(&running, &url, core_pid, false);
@@ -283,7 +286,13 @@ fn main() {
             let handle = app.handle().clone();
             match prepare(&handle) {
                 Ok((url, running, core_pid)) => open_window(&handle, url, running, core_pid)?,
-                Err(problem) => open_problem(&handle, &problem)?,
+                Err(problem) => {
+                    eprintln!("{problem}");
+                    if let Ok(folder) = data_folder(&handle) {
+                        let _ = std::fs::write(folder.join(PROBLEM_FILE), &problem);
+                    }
+                    open_problem(&handle, &problem)?
+                }
             }
             Ok(())
         })

@@ -151,7 +151,8 @@ def put_python_windows(data: bytes, target: Path) -> None:
             out.write_bytes(archive.read(info))
         listed = archive.read(paths[0]).decode("utf-8").split()
     standard = [line for line in listed if line.endswith(".zip")]
-    (target / paths[0]).write_text("\n".join(standard + [".", "..\\app"]) + "\n", encoding="utf-8")
+    # Written as bytes: on Windows a text file would get that system's line ends, and the file is the same everywhere.
+    (target / paths[0]).write_bytes(("\n".join(standard + [".", "..\\app"]) + "\n").encode("utf-8"))
 
 
 def put_python_macos(data: bytes, target: Path) -> None:
@@ -198,8 +199,8 @@ def make_core(package: Path, system: str) -> Dict[str, Any]:
     runtime = SYSTEMS[system]
     data = fetch(runtime["python"], runtime["sha256"])
     (put_python_windows if system.startswith("windows") else put_python_macos)(data, CORE / "python")
-    (CORE / "runtime.json").write_text(json.dumps({"python": PYTHON, "from": runtime["python"], "sha256": runtime["sha256"]},
-                                                  indent=1) + "\n", encoding="utf-8")
+    (CORE / "runtime.json").write_bytes((json.dumps({"python": PYTHON, "from": runtime["python"], "sha256": runtime["sha256"]},
+                                                    indent=1) + "\n").encode("utf-8"))
     return build
 
 
