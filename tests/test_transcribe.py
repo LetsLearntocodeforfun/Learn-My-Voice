@@ -251,33 +251,122 @@ class StatusTest(Sandbox):
                     self.assertEqual((error.code, error.reason, str(error)), ("unsupported", reason, state["reason_en"]))
         self.assertEqual(self.tools.calls, [])
 
-    def test_inside_the_desktop_app_it_says_so_and_names_no_launcher(self):
-        # The desktop app carries a Python of its own, not the one transcription was proven with. What is said
-        # there must not be "start the app with its launcher": the desktop app has none.
+    RUNTIME = {"python": "3.14.10", "from": "https://example.test/python.tar.gz", "sha256": "a" * 64}
+
+    def inside_the_desktop_app(self, apple_pythons=(), versions=None, home=None):
+        """An Apple-chip Mac on which the core runs with a Python that is not the proven one, as inside the desktop
+        app, with the file the desktop build writes next to the app folder. ``apple_pythons``: which of Apple's
+        Pythons are there, as paths that exist; ``versions``: what each says it is."""
         mock.patch.stopall()
         self.patch(transcribe, "_run", self.tools)
-        runtime = self.tmp / "runtime.json"                                       # what the desktop build writes next to the app folder
-        runtime.write_text(json.dumps({"python": "3.14.10", "from": "https://example.test/python.tar.gz", "sha256": "a" * 64}),
-                           encoding="utf-8")
-        mac = [mock.patch.object(transcribe.sys, "platform", "darwin"),
-               mock.patch.object(transcribe.platform, "machine", lambda: "arm64"),
-               mock.patch.object(transcribe.platform, "mac_ver", lambda: ("15.1", ("", "", ""), "arm64")),
-               mock.patch.object(transcribe, "PYTHON_VERSION", (3, 8))]           # not the Python this runs on, as inside the app
-        with contextlib.ExitStack() as stack:
-            for p in mac:
-                stack.enter_context(p)
-            self.assertEqual(transcribe.status()["reason"], "python_version")       # from the zip or the source: as before
-            stack.enter_context(mock.patch.object(transcribe.buildinfo, "RUNTIME_FILE", runtime))
-            state = transcribe.status()
-            self.assertEqual((state["supported"], state["reason"]), (False, "desktop_app"))
-            self.assertIn("desktop app", state["reason_en"])
-            self.assertIn("桌面应用", state["reason_zh"])
-            for text in (state["reason_en"], state["reason_zh"]):
-                self.assertNotIn(".command", text)
-                self.assertIn(".srt", text)                                       # what does work there is named
-            error = self.failure(transcribe.install)
-            self.assertEqual((error.code, error.reason, str(error)), ("unsupported", "desktop_app", state["reason_en"]))
-        self.assertEqual(self.tools.calls, [])                                    # nothing was started to find that out
+        self.patch(transcribe, "_seal_problem", mock.Mock(return_value=None))
+        runtime = self.tmp / "runtime.json"
+        runtime.write_text(json.dumps(self.RUNTIME), encoding="utf-8")
+        self.patch(transcribe.buildinfo, "RUNTIME_FILE", runtime)
+        self.patch(transcribe.sys, "platform", "darwin")
+        self.patch(transcribe.platform, "machine", lambda: "arm64")
+        self.patch(transcribe.platform, "mac_ver", lambda: ("15.1", ("", "", ""), "arm64"))
+        self.patch(transcribe, "PYTHON_VERSION", (3, 8))                        # not the Python this runs on
+        self.patch(transcribe, "AFCONVERT", __file__)
+        self.patch(transcribe, "APPLE_PYTHONS", tuple(apple_pythons))
+        self.patch(transcribe, "_APPLE_PYTHON_VERSIONS", {})
+        asked = self.patch(transcribe, "_version_of", mock.Mock(side_effect=lambda python: (versions or {}).get(python)))
+        self.patch(transcribe, "HOME", home or self.tmp / "application data" / "whisper")
+        return asked
+
+    def apple_python(self, name="python3"):
+        path = self.tmp / "tools" / name
+        path.parent.mkdir(exist_ok=True)
+        path.write_text("")
+        return str(path)
+
+    def test_inside_the_desktop_app_the_environment_is_made_with_apples_python(self):
+        apple = self.apple_python()
+        asked = self.inside_the_desktop_app([str(self.tmp / "tools" / "not-installed"), apple], {apple: (3, 8)})
+        self.assertEqual(transcribe._environment_python(), apple)               # not sys.executable: that is the app's own Python
+        state = transcribe.status()
+        self.assertEqual((state["supported"], state["reason"]), (True, None))
+        self.assertEqual(state["location"], str(self.tmp / "application data" / "whisper"))
+        for _ in range(3):
+            transcribe.status()
+        asked.assert_called_once_with(apple)                                    # its version is asked once while the app runs
+        self.assertEqual(self.tools.calls, [])
+        # Setup makes the environment with that Python, in the folder beside the data, and writes down which it was.
+        self.patch(transcribe, "MODEL_FILES", tuple((n, len(b), hashlib.sha256(b).hexdigest()) for n, b in self.files.items()))
+        self.patch(transcribe, "_open_url", self.hub)
+        self.patch(transcribe, "SAY", str(self.tmp / "no-say"))
+        transcribe.install()
+        venv = self.tools.of("venv")[0][0]
+        self.assertEqual(venv, [apple, "-I", "-m", "venv", str(self.tmp / "application data" / "whisper" / "venv")])
+        marker = json.loads((self.tmp / "application data" / "whisper" / "installed.json").read_text(encoding="utf-8"))
+        self.assertEqual((marker["python"], marker["python_from"]), ("3.8", apple))
+        self.assertTrue(transcribe.status()["installed"])
+
+    def test_inside_the_desktop_app_without_apples_tools_it_says_how_to_get_them(self):
+        asked = self.inside_the_desktop_app([str(self.tmp / "tools" / "not-installed")])
+        state = transcribe.status()
+        self.assertEqual((state["supported"], state["reason"]), (False, "desktop_needs_tools"))
+        self.assertIn("xcode-select --install", state["reason_en"])
+        self.assertIn("xcode-select --install", state["reason_zh"])
+        for text in (state["reason_en"], state["reason_zh"]):
+            self.assertNotIn(".command", text)                                  # the launcher is in the zip, not in the desktop app
+            self.assertIn(".srt", text)                                         # what works without them is named
+        error = self.failure(transcribe.install)
+        self.assertEqual((error.code, error.reason, str(error)), ("unsupported", "desktop_needs_tools", state["reason_en"]))
+        asked.assert_not_called()                                               # a file that is not there is not started
+        self.assertEqual(self.tools.calls, [])
+        # Installed while the app is open, they are found the next time it is asked, without starting the app again.
+        apple = self.apple_python()
+        self.patch(transcribe, "APPLE_PYTHONS", (apple,))
+        asked.side_effect = lambda python: (3, 8)
+        self.assertEqual(transcribe.status()["reason"], None)
+
+    def test_inside_the_desktop_app_another_python_from_apple_is_not_used(self):
+        apple = self.apple_python()
+        asked = self.inside_the_desktop_app([apple], {apple: (3, 12)})          # Apple's tools carry a newer Python than the proven one
+        state = transcribe.status()
+        self.assertEqual((state["supported"], state["reason"]), (False, "desktop_app"))
+        self.assertNotIn(".command", state["reason_en"] + state["reason_zh"])
+        self.assertNotIn("xcode-select", state["reason_en"] + state["reason_zh"])   # the tools are there: installing them is no advice
+        transcribe.status()
+        asked.assert_called_once_with(apple)
+        # One that does not run at all is not used either.
+        asked = self.inside_the_desktop_app([apple], {apple: None})
+        self.assertEqual(transcribe.status()["reason"], "desktop_app")
+
+    def test_inside_the_desktop_app_nothing_is_ever_set_up_in_the_app_folder(self):
+        apple = self.apple_python()
+        self.inside_the_desktop_app([apple], {apple: (3, 8)}, home=ROOT / "local_tools" / "whisper")
+        state = transcribe.status()
+        self.assertEqual((state["supported"], state["reason"]), (False, "desktop_app"))
+        self.assertEqual(self.failure(transcribe.install).reason, "desktop_app")
+        self.assertEqual(self.tools.calls, [])
+
+    def test_where_it_is_kept_inside_the_desktop_app_and_outside_it(self):
+        mock.patch.stopall()
+        runtime = self.tmp / "runtime.json"
+        runtime.write_text(json.dumps(self.RUNTIME), encoding="utf-8")
+        data = self.tmp / "Application Support" / "the app" / "data"
+        usual = ROOT / "local_tools" / "whisper"
+        with mock.patch.dict(os.environ, {"STUDIO_DATA_DIR": str(data)}):
+            self.assertEqual(transcribe._install_folder(), usual)               # from the zip or the source: in the app folder, as before
+            with mock.patch.object(transcribe.buildinfo, "RUNTIME_FILE", runtime):
+                self.assertEqual(transcribe._install_folder(), data.parent / "whisper")     # beside the data, outside the app
+        with mock.patch.object(transcribe.buildinfo, "RUNTIME_FILE", runtime), mock.patch.dict(os.environ):
+            os.environ.pop("STUDIO_DATA_DIR", None)
+            self.assertEqual(transcribe._install_folder(), usual)               # which _platform_problem then refuses, see above
+        # From the zip or the source nothing changes: another Python is told to use the launcher, and Apple's is not looked for.
+        asked = self.inside_the_desktop_app([self.apple_python()], {})
+        self.patch(transcribe.buildinfo, "RUNTIME_FILE", self.tmp / "none.json")
+        self.assertEqual(transcribe.status()["reason"], "python_version")
+        self.assertIsNone(transcribe._environment_python())
+        asked.assert_not_called()
+
+    def test_the_real_version_question_is_answered_by_the_python_that_runs_this(self):
+        mock.patch.stopall()
+        self.assertEqual(transcribe._version_of(sys.executable), tuple(sys.version_info[:2]))
+        self.assertIsNone(transcribe._version_of(str(self.tmp / "no-such-python")))
+        self.assertNotIn("/usr/bin/python3", transcribe.APPLE_PYTHONS)          # on a Mac without the tools that is not a Python
 
     def test_audio_tool_detection(self):
         self.assertEqual(transcribe.status()["audio_tool"], "afconvert")

@@ -94,9 +94,11 @@ be read again then.
   window is a small program written with Tauri 2 that starts the app on this computer, shows it, and ends it
   when the window is closed; it gives the page no abilities of its own. The installers are not signed,
   because this project has no paid certificates: the system has to be told once that the app may run, and
-  each release candidate's notes say how, in English and Chinese. Transcribing videos is not in the desktop
-  app yet; the zip does that, and the app says so where a video would be added. The settings page says that it
-  is the desktop app and which Python it carries.
+  each release candidate's notes say how, in English and Chinese. The settings page says that it is the
+  desktop app and which Python it carries. On a Mac with an Apple chip, videos can be transcribed in the
+  desktop app once Apple's free Command Line Tools are installed: the app uses their Python to set
+  transcription up, and keeps what it sets up beside its data, outside the app. Without the tools it says how
+  to get them.
 
 **Changed**
 
@@ -153,8 +155,10 @@ be read again then.
 - The desktop app: no person has installed it. On GitHub's machines each of the three installers was
   installed and the app opened, used and ended, first on 17 November 2026. The installers are not signed. On
   a computer managed by an employer or a school the app may be refused whatever is clicked. Transcription
-  does not work inside the desktop app yet, a microphone has not been tried in it, and there is no build for
-  Linux.
+  for the desktop app was set up and used on one Mac, with the app started from its source and told that it
+  is the desktop app: Apple's Python made the environment beside a data folder, and a spoken Chinese sentence
+  was transcribed. Inside the desktop app itself it has not been tried. A microphone has not been tried in
+  the desktop app, and there is no build for Linux.
 - On Windows the app does not close its data folder to the other accounts on the computer. Who may read it is
   decided by the folder the app was unpacked in; the desktop app keeps its data in the user's own folder for
   application data.

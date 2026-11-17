@@ -145,13 +145,19 @@ def python_inside(core: Path, checks: List[str]) -> None:
     checks.append("the Python inside the app runs by itself: %s" % said[:120])
 
 
+def same_place(one: Any, other: Any) -> bool:
+    """Whether two paths name the same place, however each is spelled (links on the way, letter case on Windows)."""
+    return os.path.normcase(os.path.realpath(str(one))) == os.path.normcase(os.path.realpath(str(other)))
+
+
 def as_the_desktop_app(base: str, data: Path, python: Any, checks: List[str]) -> None:
     """What only the desktop app has to get right, asked of the running app.
 
-    It knows that it is the desktop app. About transcription it says why that is not there, and does not send
-    people to a launcher they do not have. And what its settings page gives an AI app to start (the Python
-    inside the app, the script, the data folder) starts, from another folder, a server that works on the data
-    the window is showing: a script saved through the window is listed by it.
+    It knows that it is the desktop app. About transcription it either can set it up, or says why not without
+    sending people to a launcher they do not have, and what it would set up goes beside the data folder, never
+    into the app. And what its settings page gives an AI app to start (the Python inside the app, the script,
+    the data folder) starts, from another folder, a server that works on the data the window is showing: a
+    script saved through the window is listed by it.
     """
     status, state, _ = trial.ask(base, "GET", "/api/state")
     state = state if status == 200 and isinstance(state, dict) else {}
@@ -163,14 +169,18 @@ def as_the_desktop_app(base: str, data: Path, python: Any, checks: List[str]) ->
     status, ears, _ = trial.ask(base, "GET", "/api/transcriber")
     ears = ears if status == 200 and isinstance(ears, dict) else {}
     reason = ears.get("reason")
-    if ears.get("supported") is not False or reason in (None, "python_version"):
-        raise Failed("about transcription the desktop app has to say why it is not there, without naming a launcher "
-                     "(it says %r)" % ({key: ears.get(key) for key in ("supported", "reason", "reason_en")},))
-    checks.append("about transcription it says: %s" % reason)
+    if reason == "python_version" or (ears.get("supported") is not True and not reason):
+        raise Failed("about transcription the desktop app has to say that it can be set up, or why not without naming "
+                     "a launcher (it says %r)" % ({key: ears.get(key) for key in ("supported", "reason", "reason_en")},))
+    beside = os.path.join(os.path.dirname(os.path.realpath(str(data))), "whisper")
+    if not same_place(ears.get("location"), beside):
+        raise Failed("what transcription sets up would go to %s, not beside the data folder (%s)" % (ears.get("location"), beside))
+    checks.append("about transcription it says: %s; what it sets up goes beside the data folder, not into the app"
+                  % (reason or "it can be set up on this Mac"))
 
     mcp = state.get("mcp") if isinstance(state.get("mcp"), dict) else {}
     command = [str(mcp.get("python")), str(mcp.get("script")), "--data-dir", str(mcp.get("data_dir"))]
-    if os.path.realpath(command[3]) != os.path.realpath(str(data)):
+    if not same_place(command[3], data):
         raise Failed("the data folder it gives an AI app is %s, and its data is in %s" % (command[3], data))
     title = "written in the window"
     status, made, _ = trial.ask(base, "POST", "/api/scripts", {"title": title, "lines": [{"spoken_script_zh": "今天去超市啦"}]})

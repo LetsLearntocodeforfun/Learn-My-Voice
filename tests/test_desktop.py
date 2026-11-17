@@ -291,7 +291,13 @@ class KnowsItIsTheDesktopAppTest(TempCase):
                 with self.assertRaises(try_installer.Failed) as refused:
                     try_installer.as_the_desktop_app(base, data, "3.14.10", [])
             self.assertIn("without naming a launcher", str(refused.exception))
+            # So does one that would set transcription up inside the app (from the source that is where it goes).
             with mock.patch.object(transcribe, "_platform_problem", lambda: "desktop_app"):
+                with self.assertRaises(try_installer.Failed) as refused:
+                    try_installer.as_the_desktop_app(base, data, "3.14.10", [])
+            self.assertIn("not beside the data folder", str(refused.exception))
+            with mock.patch.object(transcribe, "_platform_problem", lambda: "desktop_app"), \
+                    mock.patch.object(transcribe, "HOME", self.tmp / "whisper"):
                 # Another data folder than the one the window uses is noticed.
                 with self.assertRaises(try_installer.Failed) as refused:
                     try_installer.as_the_desktop_app(base, self.tmp / "elsewhere", "3.14.10", [])
@@ -299,7 +305,7 @@ class KnowsItIsTheDesktopAppTest(TempCase):
                 checks = []
                 try_installer.as_the_desktop_app(base, data, "3.14.10", checks)
         self.assertEqual(checks, ["the app knows it is the desktop app, with its own Python 3.14.10",
-                                  "about transcription it says: desktop_app",
+                                  "about transcription it says: desktop_app; what it sets up goes beside the data folder, not into the app",
                                   "an AI app started as the settings page says reaches the same data, through the Python inside the app"])
         self.assertEqual(store.list_scripts(), [])                               # the script it saved to show that is gone again
         # The settings page says it is the desktop app, and gives the AI app the data folder.

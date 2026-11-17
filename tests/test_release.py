@@ -393,7 +393,7 @@ class NotesTest(TempCase):
         self.assertIn(found[0]["sha256"] + "  learn-my-voice-0.2.0-beta.rc.7-macos-arm64.dmg", section)
         self.assertNotIn(found[1]["sha256"], text)
         for said in ("no person has used it yet", "not signed", "Open Anyway", "仍要打开", "Run anyway", "仍要运行", "managed by an employer",
-                     "Transcribing videos on the Mac is not in the desktop app yet"):
+                     "To transcribe videos, the desktop app needs a Mac with an Apple chip", "not inside the desktop app"):
             self.assertIn(said, section)
         self.assertIn("windows-x64, the desktop app:", text)                    # what the failed trial reported is quoted
         self.assertIn("the window had not finished loading the page", text)

@@ -41,7 +41,7 @@ Object.assign(I18N.zh, {
   mt_bad_subs: '「{name}」不是能识别的字幕文件。', mt_bad_media: '「{name}」不是支持的视频或录音格式。', mt_added_n: '已加入 {n} 篇',
   mt_confirm_delete: '确定删除这篇素材吗？', mt_video_removed: '转写完成后，上传的视频副本会从工作台里删除，只留下文字和时间。',
   tr_local_title: '在这台电脑上转写视频',
-  tr_local_need: '需要先下载一个语音识别模型和运行它的组件，一共约 2 GB，装在这个项目的文件夹里。装好以后转写不联网，视频不会离开这台电脑。',
+  tr_local_need: '需要先下载一个语音识别模型和运行它的组件，一共约 2 GB，放在这台电脑的这个文件夹里：{where}。装好以后转写不联网，视频不会离开这台电脑。',
   tr_local_install: '下载并安装', tr_local_installing: '正在安装：', tr_local_ready: '已经装好，可以直接放视频。转写时不联网。',
   tr_local_caution: '机器转写会有错字，尤其是句尾的语气词（啦/了、嘛/吗）。所以转写出来的文字要你看过、确认以后，才会用来学你的说话习惯；确认之前只用它量语速。',
   tr_local_unsupported: '这台电脑暂时不能本地转写：', tr_local_use_subs: '可以改用字幕文件：在剪映里识别字幕，再导出 .srt。',
@@ -125,7 +125,7 @@ Object.assign(I18N.en, {
   mt_bad_subs: '"{name}" is not a subtitle file that could be read.', mt_bad_media: '"{name}" is not a supported video or audio format.', mt_added_n: 'Added {n}',
   mt_confirm_delete: 'Delete this item?', mt_video_removed: 'After transcription the uploaded copy of the video is deleted from the studio. Only the text and timing are kept.',
   tr_local_title: 'Transcribe videos on this computer',
-  tr_local_need: 'This needs a speech-recognition model and the components that run it, about 2 GB in all, installed inside this project\'s folder. After that, transcription works offline and videos never leave this computer.',
+  tr_local_need: 'This needs a speech-recognition model and the components that run it, about 2 GB in all, kept in this folder on this computer: {where}. After that, transcription works offline and videos never leave this computer.',
   tr_local_install: 'Download and install', tr_local_installing: 'Installing: ', tr_local_ready: 'Installed. Add videos directly. Transcription makes no network requests.',
   tr_local_caution: 'Machine transcripts contain mistakes, especially in sentence-final particles (啦/了, 嘛/吗). So a transcript is used to learn {@names} way of speaking only after it has been read and confirmed; before that it counts only toward speaking rate.',
   tr_local_unsupported: 'This computer cannot transcribe locally yet: ', tr_local_use_subs: 'Use subtitle files instead: run auto-captions in 剪映 / CapCut and export .srt.',
@@ -305,7 +305,7 @@ function transcriberHtml(tr) {
       <p class="hint">${esc(t('tr_local_caution'))}</p>`;
   } else {
     const failed = tr.job && tr.job.status === 'failed' ? `<div class="banner">${esc(t('tr_local_failed') + failText(tr.job.error))}</div>` : '';
-    body = `${failed}<p class="hint">${esc(t('tr_local_need'))}</p><p class="hint">${esc(t('tr_local_caution'))}</p>
+    body = `${failed}<p class="hint">${esc(tf('tr_local_need', { where: tr.location || '' }))}</p><p class="hint">${esc(t('tr_local_caution'))}</p>
       <div class="row" style="margin-top:10px"><button class="btn" id="tr-install">${esc(t('tr_local_install'))}</button></div>`;
   }
   return `<div class="card soft"><h3>${esc(t('tr_local_title'))}</h3>${body}</div>`;

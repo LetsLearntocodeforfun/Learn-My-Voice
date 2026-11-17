@@ -14,6 +14,15 @@ environment made with the Python that runs the app, an exact list of packages,
 and the speech model. Nothing is installed system-wide and nothing is written
 to ``~/.cache``. ``uninstall()`` removes it.
 
+Inside the desktop app two of those are different, because the app folder is
+part of a signed program that an update replaces, and the Python inside it is
+not the one the packages were proven with. There everything is under
+``whisper/`` beside the data folder, in the system's folder for application
+data (``_install_folder``), and the private environment is made with the
+Python that comes with Apple's Command Line Tools, when that is installed
+(``_environment_python``). The Python inside the app only starts the
+programs; it never loads the speech libraries.
+
 Two things do sit outside that folder. This module writes the audio it is
 about to transcribe as a temporary WAV in the system temporary folder and
 deletes it as soon as the transcription ends (the two tiny files it uses to
@@ -101,7 +110,29 @@ PACKAGES: Tuple[str, ...] = (
 )
 
 ROOT = Path(__file__).resolve().parent.parent
-HOME = ROOT / "local_tools" / "whisper"
+# The Pythons Apple ships with its developer tools, at the places the tools install them. /usr/bin/python3 is
+# deliberately not here: on a Mac without the tools that file is not a Python but a program that puts up a
+# window offering to install them.
+APPLE_PYTHONS = ("/Library/Developer/CommandLineTools/usr/bin/python3",
+                 "/Applications/Xcode.app/Contents/Developer/usr/bin/python3")
+
+
+def _install_folder() -> Path:
+    """Where everything this module installs is kept.
+
+    From the zip or the source: ``local_tools/whisper`` in the app folder. Inside the desktop app: ``whisper``
+    beside the data folder, which the shell names in STUDIO_DATA_DIR before it starts the core. That is in the
+    system's folder for application data, so an update of the app keeps what was set up, and nothing is ever
+    written into the app itself. (Inside the desktop app with no data folder named, which the shell never does,
+    the app folder is answered and ``_platform_problem`` then refuses to set anything up there.)
+    """
+    data = os.environ.get("STUDIO_DATA_DIR")
+    if data and buildinfo.desktop():
+        return Path(os.path.abspath(data)).parent / "whisper"
+    return ROOT / "local_tools" / "whisper"
+
+
+HOME = _install_folder()
 WORKER = Path(__file__).resolve().with_name("whisper_worker.py")
 AFCONVERT = "/usr/bin/afconvert"
 SAY = "/usr/bin/say"
@@ -172,11 +203,18 @@ _TEXT: Dict[str, Tuple[str, str]] = {
     "python_version": ("On-device transcription has only been proven with the Python that comes with Apple's "
                        "Command Line Tools (3.9). Start the app by double-clicking \"Start Learn My Voice.command\".",
                        "在本机转写目前只在苹果命令行工具自带的 Python（3.9）上验证过。请双击「启动工作台.command」来打开应用。"),
-    "desktop_app": ("Transcribing videos is not part of the desktop app yet. Subtitle files (.srt or .vtt) and "
-                    "pasted words work here. A video can be transcribed on this Mac with the zip of the same "
-                    "release, which keeps a library of its own.",
-                    "桌面应用里暂时还不能转写视频。字幕文件（.srt 或 .vtt）和粘贴文字在这里都可以用。"
-                    "想在这台 Mac 上转写视频，可以用同一版本的压缩包；它有自己单独的素材库。"),
+    "desktop_app": ("Transcribing videos does not work in the desktop app on this Mac yet. Subtitle files (.srt or "
+                    ".vtt) and pasted words work here.",
+                    "在这台 Mac 上，桌面应用暂时还不能转写视频。字幕文件（.srt 或 .vtt）和粘贴文字在这里都可以用。"),
+    "desktop_needs_tools": ("To transcribe videos, the desktop app uses the Python that comes with Apple's free "
+                            "Command Line Tools, and they are not installed on this Mac. To install them, open the "
+                            "Terminal app, copy this into it: xcode-select --install (two hyphens before install), "
+                            "press Return, and follow the window that appears. Then come back here. Subtitle files "
+                            "(.srt or .vtt) and pasted words work without them.",
+                            "桌面应用转写视频时，用的是苹果免费的「命令行工具」里自带的 Python，而这台 Mac 还没有安装它。"
+                            "安装方法：打开「终端」应用，把这一行复制进去：xcode-select --install（install 前面是两个短横线），"
+                            "按回车，然后按弹出的窗口操作。"
+                            "装好以后回到这里就可以了。字幕文件（.srt 或 .vtt）和粘贴文字不需要它也能用。"),
     "no_audio_tool": ("The macOS audio converter (afconvert) is missing on this Mac, so sound cannot be read "
                       "from videos." + _USE_SUBTITLES[0],
                       "这台 Mac 上找不到系统自带的音频转换工具（afconvert），无法从视频里读出声音。" + _USE_SUBTITLES[1]),
@@ -192,9 +230,9 @@ _TEXT: Dict[str, Tuple[str, str]] = {
     "disk_full": ("Not enough free space. Setup needs about {need} GB free and this disk has {free} GB. "
                   "Free up some space and try again.",
                   "磁盘空间不够。安装大约需要 {need} GB 可用空间，现在只有 {free} GB。请你腾出一些空间后再试。"),
-    "environment": ("Could not create the private Python environment in the app folder. Check that the app "
-                    "folder is not read-only, then try again.",
-                    "无法在应用文件夹里创建独立的 Python 环境。请确认应用文件夹不是只读的，然后再试一次。"),
+    "environment": ("Could not create the private Python environment for transcription in {where}. Check that "
+                    "this folder can be written to, then try again.",
+                    "无法在 {where} 里创建转写用的独立 Python 环境。请确认这个文件夹可以写入，然后再试一次。"),
     "no_internet": ("Could not reach the internet to finish the download. Check your connection and try again. "
                     "What was already downloaded is kept.",
                     "无法连接网络完成下载。请检查你的网络后再试一次，已经下载的部分会保留。"),
@@ -468,6 +506,42 @@ def _note_seal_failure(detail: str) -> None:
 
 # --------------------------------------------------------------------------- status
 
+_APPLE_PYTHON_VERSIONS: Dict[str, Optional[Tuple[int, ...]]] = {}   # what each of APPLE_PYTHONS said it is, asked once
+
+
+def _version_of(python: str) -> Optional[Tuple[int, ...]]:
+    """``(major, minor)`` as the Python at ``python`` reports it, or None when it does not run or says something else."""
+    code, out, _ = _run([python, "-I", "-S", "-c", "import sys; print('%d.%d' % sys.version_info[:2])"],
+                        env=_base_env(), timeout=30)
+    try:
+        major, minor = out.strip().split(".")
+        return (int(major), int(minor)) if code == 0 else None
+    except ValueError:
+        return None
+
+
+def _environment_python() -> Optional[str]:
+    """The Python the private environment is made with: one of the version the packages were proven with.
+
+    That is the Python that runs the app, when it is that version: the zip started with its launcher. Inside
+    the desktop app it never is, so there the Python of Apple's developer tools is looked for at the places
+    those tools put it (APPLE_PYTHONS), and taken when it is that version. Each is asked for its version once
+    while the app runs; whether it is there is looked at every time, so tools installed while the app is open
+    are found without starting it again. None when there is no such Python.
+    """
+    if tuple(sys.version_info[:2]) == PYTHON_VERSION:
+        return sys.executable
+    if not buildinfo.desktop():
+        return None                     # from the zip or the source the answer stays "start it with the launcher"
+    for python in APPLE_PYTHONS:
+        if os.path.exists(python):
+            if python not in _APPLE_PYTHON_VERSIONS:
+                _APPLE_PYTHON_VERSIONS[python] = _version_of(python)
+            if _APPLE_PYTHON_VERSIONS[python] == PYTHON_VERSION:
+                return python
+    return None
+
+
 def _platform_problem() -> Optional[str]:
     if sys.platform != "darwin":
         return "not_macos"
@@ -479,11 +553,15 @@ def _platform_problem() -> Optional[str]:
         version = ()
     if version < MIN_MACOS:
         return "macos_too_old"
-    if tuple(sys.version_info[:2]) != PYTHON_VERSION:
-        # Inside the desktop app the Python is the app's own, which the transcription software has not been
-        # tried with, and the app folder is no place for what setup downloads. That is said as what it is:
-        # the advice to start the app with its launcher means nothing to someone who installed the desktop app.
-        return "desktop_app" if buildinfo.desktop() else "python_version"
+    inside_desktop_app = bool(buildinfo.desktop())
+    if _environment_python() is None:
+        if not inside_desktop_app:
+            return "python_version"
+        # The advice to start the app with its launcher means nothing to someone who installed the desktop app.
+        # What is missing there is Apple's tools, or, when they are there, a Python of the proven version in them.
+        return "desktop_app" if any(os.path.exists(python) for python in APPLE_PYTHONS) else "desktop_needs_tools"
+    if inside_desktop_app and ROOT in HOME.parents:
+        return "desktop_app"            # no data folder was named, and nothing is ever set up inside the app
     return None
 
 
@@ -518,7 +596,8 @@ def status() -> Dict[str, Any]:
     - ``supported``: this computer can run it (Apple-chip Mac, recent macOS, the audio tool, and
       macOS enforcing the seal).
     - ``reason``: why not, as a code (``not_macos``, ``not_apple_silicon``, ``macos_too_old``,
-      ``python_version``, ``desktop_app``, ``no_audio_tool``, ``no_network_block``), else ``None``.
+      ``python_version``, ``desktop_app``, ``desktop_needs_tools``, ``no_audio_tool``, ``no_network_block``),
+      else ``None``.
       ``reason_en`` / ``reason_zh`` say it plainly.
     - ``network_block``: ``"enforced"`` when macOS was seen, on this Mac and in this run of the app,
       refusing the network (and other personal files) to a program started the way transcription
@@ -654,9 +733,12 @@ def _make_environment() -> None:
     if python.exists() and _run([python, "-I", "-c", "import sys"], env=_base_env(), timeout=120)[0] == 0:
         return
     shutil.rmtree(str(HOME / "venv"), ignore_errors=True)
-    code, out, err = _run([sys.executable, "-I", "-m", "venv", HOME / "venv"], env=_base_env(), timeout=600)
+    # Made with the Python the packages were proven with (``_environment_python``), which inside the desktop app
+    # is Apple's and not the one that runs the app. ``status`` has said there is one before setup gets here.
+    base = _environment_python() or sys.executable
+    code, out, err = _run([base, "-I", "-m", "venv", HOME / "venv"], env=_base_env(), timeout=600)
     if code != 0 or not python.exists():
-        raise _error("failed", "environment", detail=out + "\n" + err)
+        raise _error("failed", "environment", detail=out + "\n" + err, where=str(HOME))
 
 
 def _self_check() -> Dict[str, Any]:
@@ -692,7 +774,7 @@ def _self_check() -> Dict[str, Any]:
 
 
 def install(progress: Optional[Callable[[str, Optional[float]], None]] = None) -> None:
-    """Set up on-device transcription under ``local_tools/whisper/``. Safe to call again.
+    """Set up on-device transcription under ``local_tools/whisper/`` (``_install_folder``). Safe to call again.
 
     ``progress(stage, fraction)`` is called with stage ``environment``,
     ``packages``, ``model``, ``check`` then ``done``; ``fraction`` is overall
@@ -736,7 +818,10 @@ def install(progress: Optional[Callable[[str, Optional[float]], None]] = None) -
         check = _self_check()
         marker = {
             "model": MODEL, "revision": MODEL_REVISION, "packages": list(PACKAGES), "pip": PIP_PIN,
-            "python": platform.python_version(), "macos": platform.mac_ver()[0], "self_check": check,
+            # The Python the environment was made with: the one that runs the app, or inside the desktop app Apple's.
+            "python": platform.python_version() if _environment_python() in (None, sys.executable) else "%d.%d" % PYTHON_VERSION,
+            "python_from": _environment_python() or sys.executable,
+            "macos": platform.mac_ver()[0], "self_check": check,
             "installed_at": time.strftime("%Y-%m-%dT%H:%M:%S%z"),
         }
         pending = _marker().with_name("installed.json.tmp")

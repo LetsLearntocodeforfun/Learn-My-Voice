@@ -385,7 +385,9 @@ def desktop_section(results: List[Dict[str, Any]], installers: List[Dict[str, st
                   "- **Windows:** run the setup program. When \"Windows protected your PC\" appears, click More info, then "
                   "Run anyway. (运行安装程序。出现「Windows 已保护你的电脑」时，点「更多信息」，再点「仍要运行」。)", "",
                   "On a computer managed by an employer or a school this may not be allowed at all. "
-                  "Transcribing videos on the Mac is not in the desktop app yet; the zip below does that. "
+                  "To transcribe videos, the desktop app needs a Mac with an Apple chip and Apple's free Command Line Tools; it "
+                  "says how to get them. That was tried with the app started from its source, not inside the desktop "
+                  "app. "
                   "What the desktop app keeps (scripts, library, settings) is in the system's folder for application data, "
                   "not in the app, so installing a newer version keeps it."]
     return lines
