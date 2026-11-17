@@ -1,11 +1,11 @@
 # Runs the test suite on every push and pull request, on the three systems the app is meant for.
 #
-# What GitHub's machines have found so far (runs of 16 and 17 November 2026):
-#   macOS    passes. It is what the app was built and tested on, so a failure there fails the run.
-#   Linux    passes, so a failure there fails the run too.
-#   Windows  18 of 642 tests failed on 17 November. Its jobs are allowed to fail for now: a red job there is
-#            the list of what to fix, and it does not mark the whole run as failed. Remove `experimental`
-#            from Windows once its jobs pass, so that a later failure there counts.
+# What GitHub's machines have found (runs of 16 and 17 November 2026): the suite passes on macOS, on Linux and,
+# since the fourth run of 17 November, on Windows. A failure on any of the three fails the run.
+#
+# On Windows the tests of what Windows does not have are not run, each with its reason where it is skipped:
+# file modes that close the data folder to other accounts, and the transcription pipeline, which is for a Mac.
+# `experimental` stays in the matrix so that a system can be allowed to fail again while something is worked on.
 #
 # The suite needs nothing installed besides Python. The one test that transcribes real audio only
 # runs where on-device transcription has been set up, which is never the case here.
@@ -28,8 +28,10 @@ on:
 permissions:
   contents: read
 
+# A newer push to a branch or a pull request stops the tests of the older one. Not so for a beta branch, where
+# these tests are part of a release-candidate run that is to finish: there every run is a group of its own.
 concurrency:
-  group: tests-${{ github.ref }}
+  group: tests-${{ github.ref }}-${{ startsWith(github.ref, 'refs/heads/beta/') && github.run_id || 'latest' }}
   cancel-in-progress: true
 
 jobs:
@@ -42,16 +44,20 @@ jobs:
       fail-fast: false
       matrix:
         # ubuntu-24.04 by name: Python 3.9 is not built for newer Ubuntu images.
-        os: [macos-latest, windows-latest, ubuntu-24.04]
+        # macos-15-intel: GitHub's Macs with an Intel chip. On 17 November 2026 its Macs with an Apple chip
+        # (macos-latest) were short: jobs waited fifteen minutes and were cancelled without ever running, which
+        # stopped a release candidate. The suite is plain Python and does not depend on the chip. On an
+        # Apple-chip Mac it is run by hand before every commit.
+        os: [macos-15-intel, windows-latest, ubuntu-24.04]
         # 3.9 is the lowest version supported and the one macOS ships. 3.14 is the one the desktop app
         # carries; from 3.13 on Windows has os.fchmod, so 3.9 and 3.14 take different paths there.
         # 3.15 is the newest.
         python: ["3.9", "3.14", "3.15"]
         include:
-          - os: macos-latest
+          - os: macos-15-intel
             experimental: false
           - os: windows-latest
-            experimental: true
+            experimental: false
           - os: ubuntu-24.04
             experimental: false
     steps:

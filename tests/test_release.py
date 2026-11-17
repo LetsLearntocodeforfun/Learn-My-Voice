@@ -563,8 +563,11 @@ class WorkflowsTest(unittest.TestCase):
         self.assertIn("workflow_call:", tests)
         self.assertIn('branches-ignore: ["beta/**"]', tests)
         self.assertIn("needs: [tests, build, try, desktop]", release)           # nothing is published before all of them
-        self.assertIn("--require macos --require linux:tests", release)
+        self.assertIn("--require macos --require linux:tests --require windows:tests", release)
         self.assertIn("--prerelease", release)
+        # A later push does not stop a release-candidate run, nor the tests inside it.
+        self.assertNotIn("cancel-in-progress", release)
+        self.assertIn("startsWith(github.ref, 'refs/heads/beta/') && github.run_id || 'latest'", tests)
         self.assertIn("persist-credentials: false", release)
         self.assertEqual(release.count("actions/checkout@"), release.count("persist-credentials: false"))
         # The numbers of jobs the notes are told to expect are the numbers the two matrices make.
@@ -573,13 +576,16 @@ class WorkflowsTest(unittest.TestCase):
         self.assertIn('python: ["3.9", "3.15"]', release)
 
     def test_a_failure_counts_where_the_suite_is_known_to_pass(self):
-        # macOS and Linux have passed on GitHub's machines; Windows has not yet. `experimental` is what lets a job fail.
+        # The suite has passed on all three on GitHub's machines. `experimental` is what would let a job fail.
         tests = self.files["tests.yml"]
         allowed = dict(re.findall(r"- os: (\S+)\n\s+experimental: (true|false)", tests))
-        self.assertEqual(allowed, {"macos-latest": "false", "ubuntu-24.04": "false", "windows-latest": "true"})
+        self.assertEqual(allowed, {"macos-15-intel": "false", "ubuntu-24.04": "false", "windows-latest": "false"})
         self.assertIn("continue-on-error: ${{ matrix.experimental }}", tests)
         trial = dict(re.findall(r"- os: (\S+)\n\s+experimental: (true|false)", self.files["release-candidate.yml"]))
-        self.assertEqual(trial["macos-latest"], "false")
+        self.assertEqual(trial["macos-15-intel"], "false")
+        # Whatever GitHub calls its Macs, the notes file a job under macOS by how its name starts.
+        for runner in list(allowed) + ["macos-latest", "macos-26", "macos-15"]:
+            self.assertEqual(build_release.system_of(runner + " / Python 3.9"), {"m": "macos", "w": "windows", "u": "linux"}[runner[0]])
 
     def test_every_job_that_checks_something_leaves_a_result_whatever_happens(self):
         for name, kind in (("tests.yml", "tests"), ("release-candidate.yml", "try")):

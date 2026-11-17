@@ -5,14 +5,15 @@
 #   build    one zip, built twice and compared: the same commit always gives the same bytes
 #   try      on each system: unpack that zip, start it with the launcher a person would double-click,
 #            use the running app, stop it
-#   desktop  on macOS and Windows: build the desktop app's installer around that same zip and a Python of
-#            its own, install it, open the app, use it, end it (desktop/build.py, desktop/try_installer.py)
+#   desktop  on macOS (Apple chip and Intel chip) and Windows: build the desktop app's installer around that
+#            same zip and a Python of its own, install it, open the app, use it, end it
+#            (desktop/build.py, desktop/try_installer.py)
 #   publish  a pre-release named v<version>.rc.<run number>, with the zip, its SHA-256, each installer
 #            whose trial passed, and notes that say per system what the jobs above found
 #
-# Nothing is published unless the tests pass on macOS and Linux and the trial passes on macOS, the one system
-# the app has been used on by a person. The tests on Windows, and the trial on Windows and Linux, are allowed
-# to fail for now; the notes then say so in words, with what those jobs reported. The desktop app is new:
+# Nothing is published unless the tests pass on macOS, Linux and Windows and the trial passes on macOS, the one
+# system the app has been used on by a person. The trial on Windows and Linux is allowed to fail for now; the
+# notes then say so in words, with what those jobs reported. The desktop app is new:
 # its jobs never hold up the release candidate, and an installer is attached only when its own trial passed.
 #
 # A job that fails says why in an annotation at the top of the run's page, which can be read without signing in.
@@ -29,9 +30,9 @@ on:
 permissions:
   contents: read
 
-concurrency:
-  group: release-candidate-${{ github.ref }}
-  cancel-in-progress: true
+# No run is stopped or held back by a later push: every commit that was pushed gets its own run, and its own
+# release candidate when it passes. (On 17 November two runs were cancelled by the pushes that followed them,
+# one of them minutes before it would have published the first working Windows installer.)
 
 jobs:
   tests:
@@ -82,12 +83,13 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: [macos-latest, windows-latest, ubuntu-24.04]
+        # macos-15-intel and not macos-latest: see the note in tests.yml.
+        os: [macos-15-intel, windows-latest, ubuntu-24.04]
         # The oldest Python supported and the newest. The launcher uses whichever Python the system
         # has; the second start in the trial uses this one.
         python: ["3.9", "3.15"]
         include:
-          - os: macos-latest
+          - os: macos-15-intel
             experimental: false
           - os: windows-latest
             experimental: true
@@ -143,6 +145,9 @@ jobs:
         include:
           - system: macos-arm64
             os: macos-latest
+            ending: .dmg
+          - system: macos-x64
+            os: macos-15-intel
             ending: .dmg
           - system: windows-x64
             os: windows-latest
@@ -242,7 +247,7 @@ jobs:
           path: installers
           merge-multiple: true
       # The notes are written from what each job wrote down. This step fails, and nothing is published,
-      # if the tests or the trial did not pass on macOS, or the tests on Linux, whatever the jobs' own colours say.
+      # if the tests or the trial did not pass on macOS, or the tests on Linux or Windows, whatever the jobs' own colours say.
       - name: Check the package and write the notes
         shell: bash
         env:
@@ -251,7 +256,7 @@ jobs:
         run: |
           python tools/build_release.py verify "dist/$PACKAGE" --sha256 "$SHA256"
           python tools/build_release.py notes --package "dist/$PACKAGE" --results results \
-            --require macos --require linux:tests \
+            --require macos --require linux:tests --require windows:tests \
             --legs tests=3 --legs try=2 --run-url "$RUN_URL" --branch "$BRANCH" \
             --installers installers --attach attach.txt --out notes.md
           cat notes.md >> "$GITHUB_STEP_SUMMARY"
