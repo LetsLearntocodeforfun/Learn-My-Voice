@@ -9,3 +9,8 @@ __pycache__/
 studio/build.json
 # Where release packages are built locally.
 dist/
+# The desktop app: what its build puts in place and what it makes (desktop/build.py).
+desktop/src-tauri/core/
+desktop/src-tauri/target/
+desktop/src-tauri/gen/
+desktop/src-tauri/release.conf.json

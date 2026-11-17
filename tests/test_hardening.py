@@ -1357,7 +1357,8 @@ class VoiceHistoryTest(StudioCase):
         self.assertEqual((status, body["dna"]), (200, self.C))
         self.assertEqual(self.names(), ["A (English)", "B (English)"])
         self.assertEqual(self.restore(oldest["id"])[0], 404)                     # that copy is the one that went back into use
-        self.assertEqual(Tree.open_to_others(self.data), {})
+        if os.name == "posix":            # Windows has no such modes: there the folder decides who may read the files
+            self.assertEqual(Tree.open_to_others(self.data), {})
 
     def test_a_profile_is_restored_byte_for_byte(self):
         self.store.save_dna(self.A)

@@ -38,11 +38,15 @@ from typing import Any, Dict, List, Optional, Tuple
 ROOT = Path(__file__).resolve().parent.parent
 NAME = "learn-my-voice"
 # What a person who only wants to use the app has no use for. Everything else that is committed goes in.
-LEFT_OUT = (".github/", "tests/", "tools/", ".gitattributes", ".gitignore")
+LEFT_OUT = (".github/", "tests/", "tools/", "desktop/", ".gitattributes", ".gitignore")
 BUILD_FILE = "studio/build.json"
 LAUNCHERS = {"macos": "Start Learn My Voice.command", "windows": "Start Learn My Voice.bat", "linux": "start-learn-my-voice.sh"}
 SYSTEMS = (("macos", "macOS"), ("windows", "Windows"), ("linux", "Linux"))
 OUTCOMES = ("success", "failure", "cancelled", "skipped")
+# What a job can report on: the test suite, a trial of the package, a trial of the desktop app's installer.
+KINDS = ("tests", "try", "desktop")
+INSTALLERS = (("macos-arm64", ".dmg", "macOS, Apple chip"), ("macos-x64", ".dmg", "macOS, Intel chip"),
+              ("windows-x64", "-setup.exe", "Windows, 64-bit"))
 _VERSION_HEADING = re.compile(r"^## v([0-9]+\.[0-9]+\.[0-9]+(?:-[0-9A-Za-z.]+)?)\b", re.M)
 
 
@@ -155,8 +159,8 @@ def system_of(label: str) -> Optional[str]:
 
 def write_result(out: Path, kind: str, label: str, outcome: str, detail: str = "") -> Dict[str, Any]:
     """Write down what one job found, for the job that publishes to read. ``outcome`` is the step's own."""
-    if kind not in ("tests", "try"):
-        raise SystemExit("--kind is tests or try")
+    if kind not in KINDS:
+        raise SystemExit("--kind is one of: %s" % ", ".join(KINDS))
     record = {"kind": kind, "label": " ".join(label.split())[:120], "ok": outcome == "success",
               "outcome": outcome if outcome in OUTCOMES else "failure", "detail": detail[:2000]}
     out.parent.mkdir(parents=True, exist_ok=True)
@@ -170,7 +174,7 @@ def _one_result(path: Path) -> Optional[Dict[str, Any]]:
         record = json.loads(path.read_text(encoding="utf-8"))
     except (OSError, ValueError):
         return None
-    if not isinstance(record, dict) or record.get("kind") not in ("tests", "try") or not isinstance(record.get("label"), str):
+    if not isinstance(record, dict) or record.get("kind") not in KINDS or not isinstance(record.get("label"), str):
         return None
     return record
 
@@ -202,7 +206,7 @@ def summarize(results: List[Dict[str, Any]], legs: Optional[Dict[str, int]] = No
     """
     table: Dict[str, Dict[str, Any]] = {}
     for system, shown in SYSTEMS:
-        for kind in ("tests", "try"):
+        for kind in KINDS:
             rows = [r for r in results if r["kind"] == kind and system_of(r["label"]) == system]
             passed = sum(1 for r in rows if r["ok"])
             failed_labels = [r["label"] for r in rows if not r["ok"]]
@@ -220,8 +224,8 @@ def required(require: List[str]) -> List[Tuple[str, str]]:
     out: List[Tuple[str, str]] = []
     for given in require:
         system, _, kind = given.partition(":")
-        if system not in dict(SYSTEMS) or kind not in ("", "tests", "try"):
-            raise SystemExit("--require takes macos, windows or linux, alone or followed by :tests or :try")
+        if system not in dict(SYSTEMS) or kind not in ("", "tests", "try", "desktop"):
+            raise SystemExit("--require takes macos, windows or linux, alone or followed by :tests, :try or :desktop")
         out += [(system, one) for one in (("tests", "try") if not kind else (kind,)) if (system, one) not in out]
     return out
 
@@ -241,7 +245,8 @@ def changelog_section(version_heading: str) -> str:
 
 
 def release_notes(build: Dict[str, Any], sha256: str, file_name: str, results: List[Dict[str, Any]], require: List[str],
-                  run_url: str = "", branch: str = "", legs: Optional[Dict[str, int]] = None) -> Tuple[str, List[str]]:
+                  run_url: str = "", branch: str = "", legs: Optional[Dict[str, int]] = None,
+                  installers: Optional[List[Dict[str, str]]] = None) -> Tuple[str, List[str]]:
     """``(notes, problems)``. ``problems`` is not empty when a required system did not pass both checks: then
     nothing should be published."""
     version = build["version"]
@@ -280,20 +285,20 @@ def release_notes(build: Dict[str, Any], sha256: str, file_name: str, results: L
     ]
     for system, shown in SYSTEMS:
         lines.append("| %s | %s | %s |" % (shown, _cell(table[system + "/tests"]), _cell(table[system + "/try"])))
-    failed = sorted({label for found in table.values() for label in found["failed_labels"]})
+    failed = sorted({label for key, found in table.items() if not key.endswith("/desktop") for label in found["failed_labels"]})
     if failed:
         lines += ["", "Failed: " + "; ".join(failed) + ". A system with a failure here should be taken as not working yet."]
     # What the failed jobs said about it, once for each different account (three Python versions often say the same).
     accounts: Dict[Tuple[str, str], List[str]] = {}
     for system, _ in SYSTEMS:
-        for kind in ("tests", "try"):
+        for kind in KINDS:
             for label, said in table["%s/%s" % (system, kind)]["told"]:
                 accounts.setdefault((kind, said), []).append(label)
     if accounts:
         lines += ["", "What those jobs reported:"]
         for (kind, said), labels in accounts.items():
-            lines += ["", "%s, %s:" % ("; ".join(labels), "the test suite" if kind == "tests" else "starting the package"), "",
-                      "~~~~text", _fenced(said), "~~~~"]
+            lines += ["", "%s, %s:" % ("; ".join(labels), {"tests": "the test suite", "try": "starting the package"}.get(kind, "the desktop app")),
+                      "", "~~~~text", _fenced(said), "~~~~"]
     if run_url:
         lines += ["", "Every step of these checks: %s" % run_url]
     lines += [
@@ -310,10 +315,64 @@ def release_notes(build: Dict[str, Any], sha256: str, file_name: str, results: L
         "commit `%s`, `python3 tools/build_release.py build%s` makes the same file."
         % (build["commit"][:12], _rc_arguments(version)),
     ]
+    lines += desktop_section(results, installers or [])
     body = changelog_section(base)
     if body:
         lines += ["", "### What is in %s" % base, "", body]
     return "\n".join(lines) + "\n", problems
+
+
+def find_installers(folder: Optional[Path], version: str) -> List[Dict[str, str]]:
+    """The installers in ``folder`` that belong to ``version``: ``{"system", "shown", "name", "sha256", "path"}``."""
+    found = []
+    for system, ending, shown in INSTALLERS:
+        path = (folder / ("%s-%s-%s%s" % (NAME, version, system, ending))) if folder else None
+        if path is not None and path.is_file():
+            found.append({"system": system, "shown": shown, "name": path.name, "path": str(path),
+                          "sha256": hashlib.sha256(path.read_bytes()).hexdigest()})
+    return found
+
+
+def desktop_section(results: List[Dict[str, Any]], installers: List[Dict[str, str]]) -> List[str]:
+    """What the notes say about the desktop app: which installers there are, and what a trial of each found.
+
+    An installer is offered only when its trial passed. One that was built and failed its trial is named as
+    not attached, with what the trial reported further up. Nothing at all is said when no desktop job ran.
+    """
+    reports = {r["label"]: r for r in results if r["kind"] == "desktop"}
+    built = {entry["system"]: entry for entry in installers}
+    if not reports and not built:
+        return []
+    lines = ["", "### Desktop app", "",
+             "New, and no person has used it yet. It is the same app in a window of its own, installed like any other "
+             "program, and it needs no Python on the computer: Python 3.14 is inside it.", "",
+             "| System | File | Installed, opened and used on GitHub's machine |", "| :--- | :--- | :--- |"]
+    offered = []
+    for system, _ending, shown in INSTALLERS:
+        report, entry = reports.get(system), built.get(system)
+        if report is None and entry is None:
+            continue
+        if report is not None and report["ok"] and entry is not None:
+            offered.append(entry)
+            lines.append("| %s | `%s` | passed |" % (shown, entry["name"]))
+        elif entry is not None:
+            lines.append("| %s | not attached | FAILED: it was built, and the trial of it did not pass |" % shown)
+        else:
+            lines.append("| %s | none | FAILED: it could not be built |" % shown)
+    if offered:
+        lines += ["", "SHA-256:", "", "```"] + ["%s  %s" % (entry["sha256"], entry["name"]) for entry in offered] + ["```", "",
+                  "The installers are not signed, because this project has no paid certificates. So the system stops them the "
+                  "first time, and has to be told once that you want this:", "",
+                  "- **macOS:** open the `.dmg` and drag Learn My Voice to Applications. Open it; macOS refuses. Then open "
+                  "System Settings, go to Privacy & Security, scroll down and click Open Anyway. "
+                  "(打开 `.dmg`，把 Learn My Voice 拖到「应用程序」。第一次打开会被拦住：请到「系统设置」→「隐私与安全性」，往下找到「仍要打开」。)",
+                  "- **Windows:** run the setup program. When \"Windows protected your PC\" appears, click More info, then "
+                  "Run anyway. (运行安装程序。出现「Windows 已保护你的电脑」时，点「更多信息」，再点「仍要运行」。)", "",
+                  "On a computer managed by an employer or a school this may not be allowed at all. "
+                  "Transcribing videos on the Mac is not in the desktop app yet; the zip above does that. "
+                  "What the desktop app keeps (scripts, library, settings) is in the system's folder for application data, "
+                  "not in the app, so installing a newer version keeps it."]
+    return lines
 
 
 def _fenced(text: str, limit: int = 1500) -> str:
@@ -371,6 +430,9 @@ def main(argv: Optional[List[str]] = None) -> int:
     notes.add_argument("--legs", action="append", default=[], metavar="KIND=N",
                        help="how many jobs of a kind run on each system, e.g. tests=3; a job without a result then counts as failed")
     notes.add_argument("--run-url", default="")
+    notes.add_argument("--installers", default="", metavar="DIR", help="where the desktop app's installers and pictures are, if any were built")
+    notes.add_argument("--attach", default="", metavar="FILE",
+                       help="write the files a release should carry to FILE, one on a line: the package, its checksum, and each installer whose trial passed")
     notes.add_argument("--branch", default="")
     notes.add_argument("--out", default="")
     args = parser.parse_args(argv)
@@ -410,8 +472,22 @@ def main(argv: Optional[List[str]] = None) -> int:
             raise SystemExit("--legs takes tests=N or try=N")
         legs[kind] = int(count)
     required(args.require)                                   # a mistyped --require stops here, before anything is written
-    text, problems = release_notes(verify_package(package, sha256), sha256, package.name, read_results(Path(args.results)),
-                                   args.require, args.run_url, " ".join(args.branch.split())[:100], legs)
+    build_file, results = verify_package(package, sha256), read_results(Path(args.results))
+    folder = Path(args.installers) if args.installers else None
+    installers = find_installers(folder, build_file["version"])
+    text, problems = release_notes(build_file, sha256, package.name, results, args.require, args.run_url,
+                                   " ".join(args.branch.split())[:100], legs, installers)
+    if args.attach:
+        passed = {r["label"] for r in results if r["kind"] == "desktop" and r["ok"]}
+        files = [str(package), str(package) + ".sha256"]
+        for entry in installers:
+            if entry["system"] in passed:
+                Path(entry["path"] + ".sha256").write_text("%s  %s\n" % (entry["sha256"], entry["name"]), encoding="utf-8")
+                files += [entry["path"], entry["path"] + ".sha256"]
+        # Pictures of the screen from the trials, and the list of Rust packages each build used: small, and worth keeping.
+        files += sorted(str(path) for path in (folder.glob("desktop-*.png") if folder else [])) \
+            + sorted(str(path) for path in (folder.glob("Cargo-*.lock") if folder else []))
+        Path(args.attach).write_text("".join(name + "\n" for name in files if Path(name).is_file()), encoding="utf-8")
     if args.out:
         Path(args.out).write_text(text, encoding="utf-8")
     else:

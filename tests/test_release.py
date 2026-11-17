@@ -188,7 +188,7 @@ class PackageTest(TempCase):
                        "README.md", "README.zh-CN.md", "LICENSE", "CHANGELOG.md"):
             self.assertIn(needed, names)
         for name in names:
-            for never in ("data/", "local_tools/", "tests/", "tools/", ".git", "__pycache__", "dist/"):
+            for never in ("data/", "local_tools/", "tests/", "tools/", "desktop/", ".git", "__pycache__", "dist/"):
                 self.assertFalse(name.startswith(never), name)
             self.assertFalse(name.endswith((".pyc", ".db", ".sqlite", "config.json", ".DS_Store")), name)
 
@@ -352,6 +352,80 @@ class NotesTest(TempCase):
         self.assertEqual(sorted(problems), ["linux: the tests failed", "macos: starting the package failed", "macos: the tests failed"])
         self.assertIn("| Windows | FAILED (0 of 3 passed) | FAILED (0 of 2 passed) |", text)
 
+    def desktop(self, **outcomes):
+        """Results of the desktop trials as the jobs write them: ``macos_arm64=True`` passed, ``False`` failed."""
+        return [{"kind": "desktop", "label": system.replace("_", "-"), "ok": ok, "detail": "" if ok else "the window had not finished loading the page"}
+                for system, ok in outcomes.items()]
+
+    def installers(self, *systems):
+        folder = self.tmp / "installers"
+        folder.mkdir(exist_ok=True)
+        for system in systems:
+            ending = ".dmg" if system.startswith("macos") else "-setup.exe"
+            (folder / ("learn-my-voice-0.2.0-beta.rc.7-%s%s" % (system, ending))).write_bytes(b"installer for " + system.encode())
+        (folder / "learn-my-voice-0.2.0-beta.rc.6-macos-arm64.dmg").write_bytes(b"of another version")
+        (folder / "desktop-macos-arm64.png").write_bytes(b"picture")
+        return folder
+
+    def test_nothing_is_said_about_the_desktop_app_when_no_desktop_job_ran(self):
+        text, problems = self.notes(self.results())
+        self.assertEqual(problems, [])
+        self.assertNotIn("Desktop app", text)
+
+    def test_an_installer_is_offered_only_when_its_trial_passed(self):
+        folder = self.installers("macos-arm64", "windows-x64")
+        found = build_release.find_installers(folder, "0.2.0-beta.rc.7")
+        self.assertEqual([entry["system"] for entry in found], ["macos-arm64", "windows-x64"])           # the other version's file is not taken
+        self.assertEqual(found[0]["sha256"], hashlib.sha256(b"installer for macos-arm64").hexdigest())
+        results = self.results() + self.desktop(macos_arm64=True, windows_x64=False)
+        with mock.patch.object(build_release, "changelog_section", return_value=""):
+            text, problems = build_release.release_notes(self.BUILD, "f" * 64, "learn-my-voice-0.2.0-beta.rc.7.zip", results,
+                                                         ["macos", "linux:tests"], "", "", self.LEGS, found)
+        self.assertEqual(problems, [])                                          # a failed desktop trial does not stop the release
+        section = text[text.index("### Desktop app"):]
+        self.assertIn("| macOS, Apple chip | `learn-my-voice-0.2.0-beta.rc.7-macos-arm64.dmg` | passed |", section)
+        self.assertIn("| Windows, 64-bit | not attached | FAILED: it was built, and the trial of it did not pass |", section)
+        self.assertNotIn("windows-x64-setup.exe", section)                      # a file that failed its trial is not named as a download
+        self.assertIn(found[0]["sha256"] + "  learn-my-voice-0.2.0-beta.rc.7-macos-arm64.dmg", section)
+        self.assertNotIn(found[1]["sha256"], text)
+        for said in ("no person has used it yet", "not signed", "Open Anyway", "仍要打开", "Run anyway", "仍要运行", "managed by an employer",
+                     "Transcribing videos on the Mac is not in the desktop app yet"):
+            self.assertIn(said, section)
+        self.assertIn("windows-x64, the desktop app:", text)                    # what the failed trial reported is quoted
+        self.assertIn("the window had not finished loading the page", text)
+        self.assertIn("| Windows | passed (3 of 3) | passed (2 of 2) |", text)   # the package's own table is not touched by it
+
+    def test_a_desktop_build_that_failed_is_said_and_no_first_open_steps_are_given_for_nothing(self):
+        results = self.results() + [{"kind": "desktop", "label": "windows-x64", "ok": False, "detail": "The installer could not be built.\nerror[E0432]"}]
+        with mock.patch.object(build_release, "changelog_section", return_value=""):
+            text, _ = build_release.release_notes(self.BUILD, "f" * 64, "x.zip", results, ["macos"], "", "", self.LEGS, [])
+        self.assertIn("| Windows, 64-bit | none | FAILED: it could not be built |", text)
+        self.assertNotIn("Open Anyway. (", text)                                # nothing is offered, so nothing is explained
+        self.assertIn("error[E0432]", text)
+
+    def test_the_list_of_files_to_attach_holds_only_what_passed(self):
+        folder = self.installers("macos-arm64", "windows-x64")
+        results_dir = self.tmp / "results"
+        results_dir.mkdir()
+        for at, record in enumerate(self.results() + self.desktop(macos_arm64=True, windows_x64=False)):
+            (results_dir / ("r%d.json" % at)).write_text(json.dumps(dict(record, outcome="success" if record["ok"] else "failure")), encoding="utf-8")
+        package = self.tmp / "learn-my-voice-0.2.0-beta.rc.7.zip"
+        with zipfile.ZipFile(str(package), "w") as archive:
+            archive.writestr("learn-my-voice-0.2.0-beta.rc.7/studio/build.json", json.dumps(self.BUILD))
+        Path(str(package) + ".sha256").write_text("x", encoding="utf-8")
+        attach = self.tmp / "attach.txt"
+        with mock.patch.object(build_release, "changelog_section", return_value=""), contextlib.redirect_stdout(io.StringIO()):
+            code = build_release.main(["notes", "--package", str(package), "--results", str(results_dir), "--require", "macos", "--require", "linux:tests",
+                                       "--legs", "tests=3", "--legs", "try=2", "--installers", str(folder), "--attach", str(attach),
+                                       "--out", str(self.tmp / "notes.md")])
+        self.assertEqual(code, 0)
+        names = [Path(line).name for line in attach.read_text(encoding="utf-8").split("\n") if line]
+        self.assertEqual(names, ["learn-my-voice-0.2.0-beta.rc.7.zip", "learn-my-voice-0.2.0-beta.rc.7.zip.sha256",
+                                 "learn-my-voice-0.2.0-beta.rc.7-macos-arm64.dmg", "learn-my-voice-0.2.0-beta.rc.7-macos-arm64.dmg.sha256",
+                                 "desktop-macos-arm64.png"])
+        self.assertTrue((folder / "learn-my-voice-0.2.0-beta.rc.7-macos-arm64.dmg.sha256").read_text(encoding="utf-8").startswith(
+            hashlib.sha256(b"installer for macos-arm64").hexdigest()))
+
     def test_results_are_written_and_read_back_and_a_broken_file_is_a_failure(self):
         folder = self.tmp / "results"
         build_release.write_result(folder / "tests-a.json", "tests", "macos-latest / Python 3.9", "success")
@@ -488,7 +562,7 @@ class WorkflowsTest(unittest.TestCase):
         self.assertIn("uses: ./.github/workflows/tests.yml", release)
         self.assertIn("workflow_call:", tests)
         self.assertIn('branches-ignore: ["beta/**"]', tests)
-        self.assertIn("needs: [tests, build, try]", release)                    # nothing is published before all three
+        self.assertIn("needs: [tests, build, try, desktop]", release)           # nothing is published before all of them
         self.assertIn("--require macos --require linux:tests", release)
         self.assertIn("--prerelease", release)
         self.assertIn("persist-credentials: false", release)
@@ -524,10 +598,11 @@ class WorkflowsTest(unittest.TestCase):
         self.assertIn("run: python tools/try_release.py\n", self.files["release-candidate.yml"])
         self.assertNotIn("defaults:", self.files["release-candidate.yml"])       # no shell is forced on the jobs that run everywhere
         uploads = re.findall(r"uses: actions/upload-artifact@.*\n((?:\s+.*\n)+?)(?=\s*- |\n|\Z)", "".join(self.files.values()))
-        self.assertEqual(len(uploads), 3)
+        self.assertEqual(len(uploads), 5)
         for block in uploads:
-            self.assertIn("if-no-files-found: error", block)
             self.assertIn("overwrite: true", block)
+            # Every upload has to find its files, but one: a desktop build that failed has made no installer.
+            self.assertIn("if-no-files-found: ignore" if "name: installer-" in block else "if-no-files-found: error", block)
 
     def test_the_commands_the_workflows_run_exist(self):
         both = self.files["release-candidate.yml"] + self.files["tests.yml"]
@@ -541,6 +616,22 @@ class WorkflowsTest(unittest.TestCase):
         self.assertNotIn("unittest discover", "\n".join(line for line in both.split("\n") if not line.lstrip().startswith("#")))
         for tool in ("build_release", "try_release", "run_tests"):
             self.assertTrue((ROOT / "tools" / (tool + ".py")).is_file())
+        for script in ("build", "try_installer"):
+            self.assertIn("run: python desktop/%s.py\n" % script, self.files["release-candidate.yml"])
+            self.assertTrue((ROOT / "desktop" / (script + ".py")).is_file())
+
+    def test_the_desktop_app_never_holds_up_the_release_and_is_attached_only_when_its_trial_passed(self):
+        release = self.files["release-candidate.yml"]
+        desktop = release[release.index("\n  desktop:"):release.index("\n  publish:")]
+        self.assertIn("continue-on-error: true", desktop)
+        self.assertIn("needs: build", desktop)                                  # built around the very package that is published
+        self.assertIn("DESKTOP_PACKAGE: dist/${{ needs.build.outputs.file }}", desktop)
+        self.assertEqual(desktop.count("run: python tools/build_release.py result --kind desktop --if-missing\n"), 1)
+        self.assertNotIn("contents: write", desktop)
+        publish = release[release.index("\n  publish:"):]
+        self.assertIn("--installers installers --attach attach.txt", publish)
+        self.assertIn('gh release create "$TAG" "${FILES[@]}"', publish)        # only what the notes step listed is attached
+        self.assertNotIn("--require macos:desktop", release)                    # not required: see the workflow's first lines
 
 
 class RunTestsTest(TempCase):

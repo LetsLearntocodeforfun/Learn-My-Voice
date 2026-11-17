@@ -1,0 +1,6 @@
+body { margin: 0; background: #faf7f4; color: #2b2623; font: 15px/1.6 -apple-system, "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif; }
+main { max-width: 680px; margin: 0 auto; padding: 36px 28px; }
+h1 { font-size: 22px; margin: 0 0 18px; }
+p { margin: 0 0 6px; font-size: 17px; }
+p.hint { font-size: 14px; color: #8a7f78; margin-top: 12px; }
+pre { margin-top: 20px; padding: 14px 16px; background: #fff; border: 1px solid #ebe4de; border-radius: 10px; white-space: pre-wrap; overflow-wrap: anywhere; font: 12px/1.5 ui-monospace, Menlo, Consolas, monospace; }

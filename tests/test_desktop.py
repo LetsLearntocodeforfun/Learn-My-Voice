@@ -1,26 +1,53 @@
-"""Tests for what the desktop app relies on in the core.
+"""Tests for the desktop app: what it relies on in the core, what goes into it, and what its files must agree on.
 
-The desktop app is a small shell: it starts the core as its child, shows the page the core serves, and
-goes away. These tests cover the core's side of that, on any system and without the shell: the core takes
-any free port when asked, says where it listens, and stops when the one who started it is gone.
+The desktop app is a small shell (desktop/src-tauri, in Rust): it starts the core as its child, shows the page
+the core serves, and goes away. Covered here, on any system and without building anything:
 
-Whether the shell itself works can only be seen where it is built and run, on GitHub's machines.
+- the core's side: it takes any free port when asked, says where it listens, and stops when the one who
+  started it is gone;
+- desktop/build.py: what is put inside the app (the release package and a Python), and that a download is
+  used only when it is the file whose SHA-256 is written down;
+- the shell's files: that they agree with each other and with the scripts, and that the page is granted nothing.
+
+The shell itself cannot be compiled or run by these tests. Whether it works is seen where it is built and
+tried, on GitHub's machines (desktop/try_installer.py).
 """
+import hashlib
 import http.client
+import importlib.util
+import io
+import json
 import os
+import re
 import shutil
 import subprocess
 import sys
+import tarfile
 import tempfile
 import threading
 import time
 import unittest
+import zipfile
 from pathlib import Path
+from unittest import mock
 
 from studio import server
 from studio.store import Store
 
 ROOT = Path(__file__).resolve().parent.parent
+DESKTOP = ROOT / "desktop"
+SHELL = DESKTOP / "src-tauri"
+
+
+def load(name):
+    spec = importlib.util.spec_from_file_location("desktop_" + name, str(DESKTOP / (name + ".py")))
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+build = load("build")
+try_installer = load("try_installer")
 
 
 class TempCase(unittest.TestCase):
@@ -113,6 +140,212 @@ class StopsWithItsParentTest(TempCase):
         self.assertTrue(answers(port))
         process.terminate()
         process.wait(15)
+
+
+class ShellFilesTest(unittest.TestCase):
+    """What the shell's files must agree on. None of this shows that the shell works; it shows that the parts fit."""
+
+    def setUp(self):
+        self.config = json.loads((SHELL / "tauri.conf.json").read_text(encoding="utf-8"))
+        self.rust = (SHELL / "src" / "main.rs").read_text(encoding="utf-8")
+        self.cargo = (SHELL / "Cargo.toml").read_text(encoding="utf-8")
+
+    def test_the_names_are_the_same_everywhere(self):
+        self.assertEqual(self.config["identifier"], try_installer.IDENTIFIER)
+        self.assertEqual(self.config["productName"], try_installer.PRODUCT)
+        self.assertEqual(self.config["mainBinaryName"], try_installer.BINARY)
+        self.assertIn('name = "%s"' % try_installer.BINARY, self.cargo)
+        self.assertIn('const RUNNING_FILE: &str = "%s";' % try_installer.RUNNING_FILE, self.rust)
+        self.assertRegex(self.config["identifier"], r"^[a-z0-9.-]+$")
+        self.assertFalse(self.config["identifier"].endswith(".app"))            # macOS takes that ending for something else
+
+    def test_the_page_is_granted_nothing(self):
+        # The window shows a page served on this computer. It must get no way into the shell: no command is
+        # offered, no permission file exists, and the bridge to the shell is not put into the page.
+        self.assertNotIn("invoke_handler", self.rust)
+        self.assertNotIn("tauri::command", self.rust)
+        self.assertFalse((SHELL / "capabilities").exists())
+        self.assertIs(self.config["app"]["withGlobalTauri"], False)
+        self.assertEqual(self.config["app"]["windows"], [])                     # the shell opens its one window itself, on the core's address
+        self.assertEqual(self.config["app"]["security"]["csp"], "default-src 'self'")
+        self.assertNotIn("plugins", self.config)
+        wanted = re.findall(r"^([a-z][a-z0-9_-]*) = ", self.cargo.split("[dependencies]")[1].split("[profile")[0], re.M)
+        self.assertEqual(wanted, ["tauri", "tauri-plugin-single-instance", "open", "serde_json"])       # a new one is a decision, not a habit
+        self.assertIn('tauri = { version = "2.12", features = [] }', self.cargo)
+
+    def test_the_core_is_started_closed_off_and_tied_to_the_shell(self):
+        arguments = re.search(r"const CORE_ARGUMENTS: \[&str; (\d+)\] = \[(.*?)\];", self.rust, re.S)
+        given = re.findall(r'"([^"]+)"', arguments.group(2))
+        self.assertEqual(len(given), int(arguments.group(1)))
+        self.assertEqual(given, ["-X", "utf8", "-B", "-u", "-E", "-s", "-m", "studio.server", "--no-browser", "--port", "0", "--exit-with-parent"])
+        core = (ROOT / "studio" / "server.py").read_text(encoding="utf-8")
+        for option in ("--no-browser", "--port", "--exit-with-parent"):
+            self.assertIn('"%s"' % option, core)                                # every option it passes is one the core has
+        self.assertIn('.env("STUDIO_DATA_DIR", data)', self.rust)
+        self.assertIn(".stdin(Stdio::piped())", self.rust)                      # held open: what --exit-with-parent watches
+        self.assertIn('url.host_str() == Some("127.0.0.1")', self.rust)         # no other address is ever shown in the window
+        self.assertIn('"LEARN_MY_VOICE_DATA_DIR"', self.rust)
+        self.assertIn("app_data_dir()", self.rust)                              # data is kept outside the app, so an update keeps it
+
+    def test_what_is_bundled_is_the_core_folder_and_the_icons(self):
+        bundle = self.config["bundle"]
+        self.assertEqual(bundle["resources"], ["core/"])
+        self.assertEqual(bundle["macOS"]["signingIdentity"], "-")               # signed with no certificate: there is none
+        self.assertEqual(bundle["windows"]["nsis"]["installMode"], "currentUser")       # installs without administrator rights
+        starts = {".png": b"\x89PNG\r\n\x1a\n", ".icns": b"icns", ".ico": b"\x00\x00\x01\x00"}
+        for name in bundle["icon"]:
+            data = (SHELL / name).read_bytes()
+            self.assertTrue(data.startswith(starts[Path(name).suffix]), name)
+        self.assertEqual((SHELL / "icons" / "icon.ico").read_bytes()[4:6], b"\x06\x00")       # six sizes
+        ignored = (ROOT / ".gitignore").read_text(encoding="utf-8")
+        for made in ("desktop/src-tauri/core/", "desktop/src-tauri/target/"):
+            self.assertIn(made, ignored)
+
+    def test_the_page_inside_the_shell_loads_nothing_from_elsewhere(self):
+        for path in sorted((DESKTOP / "ui").iterdir()):
+            text = path.read_text(encoding="utf-8")
+            self.assertIsNone(re.search(r"https?://|//[a-z]", text), path.name)
+            self.assertNotIn("innerHTML", text, path.name)                      # the reason for a failed start is shown as text
+
+
+class CoreForTheAppTest(TempCase):
+    """desktop/build.py: what goes inside the app."""
+
+    def package(self, extra=None, without=()):
+        files = {"studio/server.py": "print('core')", "studio/build.json": json.dumps({"version": "0.2.0-beta.rc.7", "commit": "a" * 40, "built_on": "2026-11-17"}),
+                 "studio/web/index.html": "<main>", "README.md": "read me", "run_mcp.py": "#!/usr/bin/env python3\n"}
+        files.update({name: "launcher" for name in build.LAUNCHERS})
+        files.update(extra or {})
+        path = self.tmp / "learn-my-voice-0.2.0-beta.rc.7.zip"
+        with zipfile.ZipFile(str(path), "w") as archive:
+            for name, text in files.items():
+                if name not in without:
+                    info = zipfile.ZipInfo("learn-my-voice-0.2.0-beta.rc.7/" + name)
+                    info.create_system = 3
+                    info.external_attr = (0o100755 if name == "run_mcp.py" else 0o100644) << 16
+                    archive.writestr(info, text)
+        return path
+
+    def test_every_download_is_pinned_and_one_that_does_not_match_is_refused(self):
+        self.assertEqual(sorted(build.SYSTEMS), ["macos-arm64", "macos-x64", "windows-x64"])
+        for system, runtime in build.SYSTEMS.items():
+            self.assertTrue(runtime["python"].startswith("https://"), system)
+            self.assertRegex(runtime["sha256"], r"^[0-9a-f]{64}$", system)
+            self.assertIn(build.PYTHON, runtime["python"], system)              # the same Python version on every system
+        self.assertIn("www.python.org/ftp/python/", build.SYSTEMS["windows-x64"]["python"])
+        self.assertRegex(build.TAURI_CLI, r"^@tauri-apps/cli@\d+\.\d+\.\d+$")       # an exact version, not "the newest"
+        workflow = (ROOT / ".github" / "workflows" / "tests.yml").read_text(encoding="utf-8")
+        self.assertIn('"%s"' % build.PYTHON.rsplit(".", 1)[0], workflow)        # the tests run with the version the app carries
+
+        class Answer(io.BytesIO):
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *args):
+                return False
+
+        data = b"the real file"
+        with mock.patch.object(build.urllib.request, "urlopen", return_value=Answer(data)) as asked:
+            self.assertEqual(build.fetch("https://example.test/python.zip", hashlib.sha256(data).hexdigest()), data)
+            asked.return_value = Answer(b"another file under the same address")
+            with self.assertRaises(build.Failed):
+                build.fetch("https://example.test/python.zip", hashlib.sha256(data).hexdigest())
+            asked.reset_mock()
+            with self.assertRaises(build.Failed):
+                build.fetch("http://example.test/python.zip", hashlib.sha256(data).hexdigest())
+            asked.assert_not_called()                                           # not even asked for over plain http
+
+    def test_the_package_goes_in_as_it_is_without_its_launchers(self):
+        target = self.tmp / "app"
+        found = build.put_app(self.package(), target)
+        self.assertEqual(found["version"], "0.2.0-beta.rc.7")
+        names = sorted(str(path.relative_to(target)).replace(os.sep, "/") for path in target.rglob("*") if path.is_file())
+        self.assertEqual(names, ["README.md", "run_mcp.py", "studio/build.json", "studio/server.py", "studio/web/index.html"])
+        self.assertEqual((target / "studio" / "server.py").read_text(encoding="utf-8"), "print('core')")
+        if os.name != "nt":
+            self.assertTrue(os.access(str(target / "run_mcp.py"), os.X_OK))
+        for wrong in (self.package(without=("studio/server.py",)), self.package(without=("studio/build.json",)),
+                      self.package(extra={"../outside.txt": "x"})):
+            with self.assertRaises(build.Failed):
+                build.put_app(wrong, self.tmp / "other")
+        self.assertFalse((self.tmp / "outside.txt").exists())
+
+    def test_the_python_for_windows_is_told_where_the_app_is_and_nothing_else(self):
+        data = io.BytesIO()
+        with zipfile.ZipFile(data, "w") as archive:
+            for name, text in (("python.exe", "MZ"), ("python314.zip", "PK"), ("python314._pth", "python314.zip\r\n.\r\n\r\n# Uncomment to run site.main() automatically\r\n#import site\r\n"),
+                               ("_sqlite3.pyd", "MZ")):
+                archive.writestr(name, text)
+        target = self.tmp / "python"
+        build.put_python_windows(data.getvalue(), target)
+        self.assertEqual((target / "python314._pth").read_bytes(), b"python314.zip\n.\n..\\app\n")
+        self.assertEqual(sorted(path.name for path in target.iterdir()), ["_sqlite3.pyd", "python.exe", "python314._pth", "python314.zip"])
+        for names in (("python314._pth",), ("python.exe",), ("python.exe", "python314._pth", "../evil.txt")):
+            wrong = io.BytesIO()
+            with zipfile.ZipFile(wrong, "w") as archive:
+                for name in names:
+                    archive.writestr(name, "x")
+            with self.assertRaises(build.Failed, msg=names):
+                build.put_python_windows(wrong.getvalue(), self.tmp / ("wrong-%d" % len(names)))
+
+    def python_for_macos(self, extra=()):
+        data = io.BytesIO()
+        with tarfile.open(fileobj=data, mode="w:gz") as archive:
+            def add(name, text=None, link=None, kind=tarfile.REGTYPE, mode=0o644):
+                info = tarfile.TarInfo("python/" + name if not name.startswith("/") and not name.startswith("..") else name)
+                info.type, info.mode = kind, mode
+                if link is not None:
+                    info.linkname = link
+                    archive.addfile(info)
+                else:
+                    payload = (text or "").encode("utf-8")
+                    info.size = len(payload)
+                    archive.addfile(info, io.BytesIO(payload))
+            add("bin/python3.14", "the program", mode=0o755)
+            add("bin/python3", link="python3.14", kind=tarfile.SYMTYPE)
+            add("bin/python", link="python3.14", kind=tarfile.SYMTYPE)
+            add("bin/pip3", "#!/somewhere/else/python3")
+            add("lib/libpython3.14.dylib", "for programs that embed Python")
+            add("lib/python3.14/os.py", "import sys")
+            add("lib/python3.14/again.py", link="python/lib/python3.14/os.py", kind=tarfile.LNKTYPE)
+            add("lib/python3.14/to-tests.py", link="test/x.py", kind=tarfile.SYMTYPE)
+            for unused in ("lib/python3.14/test/x.py", "lib/python3.14/tkinter/__init__.py", "lib/python3.14/site-packages/pip/__init__.py",
+                           "lib/python3.14/ensurepip/__init__.py", "include/python3.14/Python.h", "share/man/man1/python3.1", "lib/tcl9.0/init.tcl"):
+                add(unused, "not needed")
+            for name in extra:
+                add(name, "x")
+        return data.getvalue()
+
+    def test_the_python_for_macos_loses_what_is_not_used_and_keeps_no_links(self):
+        target = self.tmp / "python"
+        build.put_python_macos(self.python_for_macos(), target)
+        names = sorted(str(path.relative_to(target)).replace(os.sep, "/") for path in target.rglob("*") if path.is_file())
+        self.assertEqual(names, ["bin/python3", "lib/python3.14/again.py", "lib/python3.14/os.py"])       # one program, under the name the shell starts
+        self.assertEqual([path for path in target.rglob("*") if path.is_symlink()], [])
+        self.assertEqual((target / "bin" / "python3").read_text(encoding="utf-8"), "the program")
+        self.assertEqual((target / "lib" / "python3.14" / "again.py").read_text(encoding="utf-8"), "import sys")
+        if os.name != "nt":
+            self.assertTrue(os.access(str(target / "bin" / "python3"), os.X_OK))
+            self.assertFalse(os.access(str(target / "lib" / "python3.14" / "os.py"), os.X_OK))
+        for wrong in ("../outside.py", "/absolute.py"):
+            with self.assertRaises(build.Failed, msg=wrong):
+                build.put_python_macos(self.python_for_macos(extra=(wrong,)), self.tmp / "wrong")
+        self.assertFalse((self.tmp / "outside.py").exists())
+
+    def test_each_system_the_build_knows_has_an_installer_the_notes_know(self):
+        release = load_release()
+        self.assertEqual({system: ending for system, ending, _ in release.INSTALLERS}, {system: runtime["ending"] for system, runtime in build.SYSTEMS.items()})
+        workflow = (ROOT / ".github" / "workflows" / "release-candidate.yml").read_text(encoding="utf-8")
+        for system, ending in re.findall(r"- system: (\S+)\n\s+os: \S+\n\s+ending: (\S+)", workflow):
+            self.assertEqual(build.SYSTEMS[system]["ending"], ending)
+        self.assertIn("desktop/", release.LEFT_OUT)                             # the shell's sources are not in the package people download
+
+
+def load_release():
+    spec = importlib.util.spec_from_file_location("desktop_build_release", str(ROOT / "tools" / "build_release.py"))
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
 
 
 if __name__ == "__main__":

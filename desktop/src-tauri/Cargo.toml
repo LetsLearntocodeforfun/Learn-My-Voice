@@ -1,0 +1,29 @@
+# The desktop shell of Learn My Voice. See src/main.rs for what it does, which is little on purpose.
+[package]
+name = "learn-my-voice"
+version = "0.2.0"
+description = "Learn My Voice: a script studio that runs on this computer"
+edition = "2021"
+rust-version = "1.77.2"
+license = "MIT"
+publish = false
+
+[build-dependencies]
+tauri-build = { version = "2.7", features = [] }
+
+[dependencies]
+# The window and the app bundle. No feature is switched on beyond the defaults, and no plugin gives the page
+# access to anything.
+tauri = { version = "2.12", features = [] }
+# Opening the app a second time shows the first one's window.
+tauri-plugin-single-instance = "2.5"
+# Opens a link to another site in the system's browser.
+open = "5.4"
+# Writes the small file that says where the running app listens.
+serde_json = "1"
+
+[profile.release]
+opt-level = "s"
+lto = true
+codegen-units = 1
+strip = true

@@ -5,12 +5,15 @@
 #   build    one zip, built twice and compared: the same commit always gives the same bytes
 #   try      on each system: unpack that zip, start it with the launcher a person would double-click,
 #            use the running app, stop it
-#   publish  a pre-release named v<version>.rc.<run number>, with the zip, its SHA-256, and notes that
-#            say per system what the jobs above found
+#   desktop  on macOS and Windows: build the desktop app's installer around that same zip and a Python of
+#            its own, install it, open the app, use it, end it (desktop/build.py, desktop/try_installer.py)
+#   publish  a pre-release named v<version>.rc.<run number>, with the zip, its SHA-256, each installer
+#            whose trial passed, and notes that say per system what the jobs above found
 #
 # Nothing is published unless the tests pass on macOS and Linux and the trial passes on macOS, the one system
 # the app has been used on by a person. The tests on Windows, and the trial on Windows and Linux, are allowed
-# to fail for now; the notes then say so in words, with what those jobs reported.
+# to fail for now; the notes then say so in words, with what those jobs reported. The desktop app is new:
+# its jobs never hold up the release candidate, and an installer is attached only when its own trial passed.
 #
 # A job that fails says why in an annotation at the top of the run's page, which can be read without signing in.
 #
@@ -128,9 +131,85 @@ jobs:
           overwrite: true           # a job started again replaces what its earlier attempt left
           retention-days: 14
 
+  desktop:
+    name: Desktop app / ${{ matrix.system }}
+    needs: build
+    runs-on: ${{ matrix.os }}
+    continue-on-error: true         # new: it never holds up the release candidate; the notes say what happened
+    timeout-minutes: 60
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - system: macos-arm64
+            os: macos-latest
+            ending: .dmg
+          - system: windows-x64
+            os: windows-latest
+            ending: -setup.exe
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1         # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0     # v7.1.0
+        with:
+          python-version: "3.14"
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: package
+          path: dist
+      # What Rust has downloaded and compiled is kept between runs: without it every build starts from nothing.
+      - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9            # v6.1.0
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            desktop/src-tauri/target
+          key: desktop-${{ matrix.system }}-${{ hashFiles('desktop/src-tauri/Cargo.toml', 'desktop/src-tauri/Cargo.lock') }}
+          restore-keys: desktop-${{ matrix.system }}-
+      # The scripts take what they need from the environment, so the command lines hold no variable.
+      - name: Build the installer
+        env:
+          DESKTOP_PACKAGE: dist/${{ needs.build.outputs.file }}
+          DESKTOP_OUT: installers
+          DESKTOP_RESULT: results/desktop-${{ matrix.system }}.json
+        run: python desktop/build.py
+      - name: Install it, open the app, use it, end it
+        id: trial
+        env:
+          INSTALLER: installers/*-${{ matrix.system }}${{ matrix.ending }}
+          INSTALLER_RESULT: results/desktop-${{ matrix.system }}.json
+          INSTALLER_SHOTS: installers
+          INSTALLER_LABEL: ${{ matrix.system }}
+        run: python desktop/try_installer.py
+      # If neither step above got as far as writing a result, this writes down that they did not.
+      - name: Write down a job that left no result
+        if: ${{ always() }}
+        env:
+          RESULT_LABEL: ${{ matrix.system }}
+          RESULT_OUTCOME: ${{ steps.trial.outcome }}
+          RESULT_FILE: results/desktop-${{ matrix.system }}.json
+        run: python tools/build_release.py result --kind desktop --if-missing
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9   # v7.0.2
+        if: ${{ always() }}
+        with:
+          name: result-desktop-${{ matrix.system }}
+          path: results/
+          if-no-files-found: error
+          overwrite: true           # a job started again replaces what its earlier attempt left
+          retention-days: 14
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9   # v7.0.2
+        if: ${{ always() }}
+        with:
+          name: installer-${{ matrix.system }}
+          path: installers/
+          if-no-files-found: ignore # a build that failed has made none
+          overwrite: true
+          retention-days: 14
+
   publish:
     name: Publish the release candidate
-    needs: [tests, build, try]
+    needs: [tests, build, try, desktop]
     runs-on: ubuntu-24.04
     timeout-minutes: 10
     permissions:
@@ -156,6 +235,12 @@ jobs:
           pattern: result-*
           path: results
           merge-multiple: true
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        continue-on-error: true     # there are none when no installer could be built
+        with:
+          pattern: installer-*
+          path: installers
+          merge-multiple: true
       # The notes are written from what each job wrote down. This step fails, and nothing is published,
       # if the tests or the trial did not pass on macOS, or the tests on Linux, whatever the jobs' own colours say.
       - name: Check the package and write the notes
@@ -167,13 +252,15 @@ jobs:
           python tools/build_release.py verify "dist/$PACKAGE" --sha256 "$SHA256"
           python tools/build_release.py notes --package "dist/$PACKAGE" --results results \
             --require macos --require linux:tests \
-            --legs tests=3 --legs try=2 --run-url "$RUN_URL" --branch "$BRANCH" --out notes.md
+            --legs tests=3 --legs try=2 --run-url "$RUN_URL" --branch "$BRANCH" \
+            --installers installers --attach attach.txt --out notes.md
           cat notes.md >> "$GITHUB_STEP_SUMMARY"
       - name: Publish it as a pre-release
         shell: bash
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          gh release create "$TAG" "dist/$PACKAGE" "dist/$PACKAGE.sha256" \
+          mapfile -t FILES < attach.txt     # the package, its checksum, and each installer whose trial passed
+          gh release create "$TAG" "${FILES[@]}" \
             --repo "$GITHUB_REPOSITORY" --target "$GITHUB_SHA" --prerelease \
             --title "$VERSION (release candidate)" --notes-file notes.md

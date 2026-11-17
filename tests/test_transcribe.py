@@ -334,6 +334,7 @@ class InstallTest(Sandbox):
         self.assertEqual(self.install(), [("done", 1.0)])                         # second time: nothing to do
         self.assertEqual((len(self.tools.calls), len(self.hub.requests)), (calls, requests))
 
+    @mac_pipeline
     def test_the_test_transcription_at_the_end_of_setup_is_sealed_too(self):
         self.install()
         sealed = {kind: seal for kind, seal in zip(self.tools.kinds(), self.tools.seals)}
