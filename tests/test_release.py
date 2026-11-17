@@ -671,6 +671,12 @@ class WorkflowsTest(unittest.TestCase):
         self.assertIn('gh release create "$TAG" "${FILES[@]}"', publish)        # only what the notes step listed is attached
         self.assertIn("--require macos:desktop --require windows:desktop", publish)
         self.assertNotIn("linux:desktop", release)                              # there is no desktop app for Linux yet
+        # A desktop job that GitHub cancelled for want of a machine does not stop the publish job from running:
+        # it waits for all four, and runs when the three that every candidate needs succeeded.
+        self.assertIn("    needs: [tests, build, try, desktop]\n", publish)
+        self.assertIn("    if: ${{ always() && needs.tests.result == 'success' && needs.build.result == 'success' "
+                      "&& needs.try.result == 'success' }}\n", publish)
+        self.assertEqual(release.count("always() && needs."), 1)                # only the publish job is given that
 
 
 class RunTestsTest(TempCase):

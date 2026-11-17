@@ -218,6 +218,12 @@ jobs:
   publish:
     name: Publish the release candidate
     needs: [tests, build, try, desktop]
+    # Left to itself, a job is skipped as soon as one it needs did not succeed. When GitHub has no Apple-chip
+    # Mac to give, it cancels that desktop job after about twenty minutes ("The job was not acquired by
+    # Runner"), and this job was then skipped although everything else had passed (run 8, 17 November). So it
+    # runs whenever the tests, the build and the trial succeeded, whatever became of the desktop jobs, and the
+    # step that writes the notes decides from what those jobs wrote down whether there is something to install.
+    if: ${{ always() && needs.tests.result == 'success' && needs.build.result == 'success' && needs.try.result == 'success' }}
     runs-on: ubuntu-24.04
     timeout-minutes: 10
     permissions:
