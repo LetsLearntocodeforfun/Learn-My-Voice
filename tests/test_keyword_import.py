@@ -35,6 +35,11 @@ from studio.store import MAX_KEYWORD_CHARS, Store
 
 WEB = Path(server.WEB_DIR)
 SLOW = 3.0              # seconds
+# A few files here make the reader go through all it is ever willing to read: about a million parts of markup.
+# That takes a second or two on the machines this was written on, and took up to 5.4 seconds on GitHub's Macs
+# with an Intel chip (17 November 2026), where two tests failed for it. The bound for those files is there to
+# tell a reader that stops at its budget from one that does not, and without a budget such a file takes minutes.
+SLOW_AT_FULL_BUDGET = 15.0
 MB = 1024 * 1024
 MAIN = "http://schemas.openxmlformats.org/spreadsheetml/2006/main"
 LINKS = "http://schemas.openxmlformats.org/officeDocument/2006/relationships"
@@ -149,14 +154,14 @@ class Case(unittest.TestCase):
         self.assertFalse(re.search(r"[\u4e00-\u9fff]", refusal.message), refusal.message)
         return refusal
 
-    def quickly(self, call, *args, **kwargs):
-        """What ``call`` returned, or the refusal it raised. Fails when it took longer than SLOW."""
+    def quickly(self, call, *args, within=SLOW, **kwargs):
+        """What ``call`` returned, or the refusal it raised. Fails when it took longer than ``within`` seconds."""
         started = time.time()
         try:
             outcome = call(*args, **kwargs)
         except ki.ImportRefused as refusal:
             outcome = refusal
-        self.assertLess(time.time() - started, SLOW)
+        self.assertLess(time.time() - started, within)
         return outcome
 
 
@@ -711,8 +716,8 @@ class RouteTest(ServerCase):
 
 # ---- hostile files ------------------------------------------------------------------------------------------------------
 class HostileFileTest(ServerCase):
-    def read(self, data, name="a.xlsx"):
-        return self.quickly(ki.read_table, name, data=data)
+    def read(self, data, name="a.xlsx", within=SLOW):
+        return self.quickly(ki.read_table, name, data=data, within=within)
 
     def assert_refused(self, outcome, code, label=""):
         self.assertIsInstance(outcome, ki.ImportRefused, label)
@@ -808,10 +813,10 @@ class HostileFileTest(ServerCase):
         cells = "".join("<c><v>%d</v></c>" % chooser.getrandbits(40) for _ in range(1000000))
         data = workbook([("s", sheet('<row><c t="inlineStr"><is><t>露营</t></is></c></row><row>%s</row>' % cells))])
         self.assertLess(len(data), ki.MAX_FILE_BYTES)
-        table = self.read(data)
+        table = self.read(data, within=SLOW_AT_FULL_BUDGET)
         self.assertEqual((table["rows"], table["more_rows"], table["more_columns"]), ([["露营"]], True, True))
         nested = workbook([("s", sheet("<row>" + "".join("<c><x%d/></c>" % chooser.getrandbits(30) for _ in range(900000)) + "</row>"))])
-        self.assert_refused(self.read(nested), "import_not_a_table")             # nothing was read before the budget ran out
+        self.assert_refused(self.read(nested, within=SLOW_AT_FULL_BUDGET), "import_not_a_table")     # nothing was read before the budget ran out
 
     def test_an_entity_bomb_is_refused_before_it_is_expanded(self):
         """A "billion laughs" file: nine entities, each ten of the one before. The parser of Python 3.9 would expand it."""
@@ -931,11 +936,11 @@ class HostileFileTest(ServerCase):
         self.assertEqual(ki.read_table("a.xlsx", data=first_only)["rows"], [["词0"]])
         needed_one = time.time() - started
         last = workbook([("s", sheet('<row><c t="s"><v>%d</v></c></row>' % (ki.MAX_SHARED_STRINGS - 1)))], {"xl/sharedStrings.xml": shared(texts)})
-        self.assertEqual(self.read(last)["rows"], [["词%d" % (ki.MAX_SHARED_STRINGS - 1)]])
+        self.assertEqual(self.read(last, within=SLOW_AT_FULL_BUDGET)["rows"], [["词%d" % (ki.MAX_SHARED_STRINGS - 1)]])
         self.assertLess(needed_one, 0.5)
         endless = workbook([("s", sheet('<row><c t="s"><v>5</v></c></row>'))],
                            {"xl/sharedStrings.xml": "<sst><si>" + "".join("<r%d/>" % n for n in range(1200000)) + "</si></sst>"})
-        self.assert_refused(self.read(endless), "import_too_large")
+        self.assert_refused(self.read(endless, within=SLOW_AT_FULL_BUDGET), "import_too_large")
 
     def test_a_file_over_the_size_limit_is_refused_before_it_is_looked_at(self):
         with mock.patch.object(ki, "_read_xlsx", side_effect=AssertionError("opened")), \

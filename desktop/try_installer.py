@@ -219,7 +219,10 @@ def try_installer(installer: Path, shots: Optional[Path], label: str) -> Dict[st
     started = time.time()
     checks: List[str] = []
     record: Dict[str, Any] = {"ok": False, "checks": checks, "error": "", "system": "%s %s %s" % (platform.system(), platform.release(), platform.machine())}
-    work = Path(tempfile.mkdtemp(prefix="try-installer-"))
+    # Its real place, with no link on the way to it: on macOS the temporary folder is reached through one
+    # (/var is a link to /private/var), and the app refuses to start from a place that is reached through a
+    # link. The Applications folder, where a person puts it, is not.
+    work = Path(os.path.realpath(tempfile.mkdtemp(prefix="try-installer-")))
     process = None
     folder = None
     log = work / "app-output.txt"

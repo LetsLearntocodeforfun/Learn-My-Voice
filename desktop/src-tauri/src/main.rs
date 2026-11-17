@@ -160,10 +160,15 @@ fn note_running(path: &Path, url: &Url, core_pid: u32, page_loaded: bool) {
 
 /// Start the core and remember it. Returns the address to show and the file that says the app is running.
 fn prepare(app: &AppHandle) -> Result<(Url, PathBuf, u32), String> {
-    let resources = app
-        .path()
-        .resource_dir()
-        .map_err(|error| format!("The app's own folder could not be found:\n{error}"))?;
+    // On macOS this fails when the app is reached through a link (a folder that is really somewhere else):
+    // the toolkit refuses that on purpose, because a link can be made to point at another program.
+    let resources = app.path().resource_dir().map_err(|error| {
+        format!(
+            "The app could not find its own folder ({error}). This happens when it is opened from a place that is \
+             reached through a link. Move Learn My Voice into the Applications folder and open it from there.\n\n\
+             工作台找不到自己所在的文件夹。请把 Learn My Voice 拖到「应用程序」文件夹，再从那里打开。"
+        )
+    })?;
     let data = data_folder(app)?;
     let (child, url) = start_core(&resources, &data)?;
     let _ = std::fs::remove_file(data.join(PROBLEM_FILE)); // left by an earlier start that failed
