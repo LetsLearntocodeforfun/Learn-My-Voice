@@ -209,7 +209,7 @@ async function renderHome() {
     <a class="card" href="#/s/${esc(s.id)}">
       <h3>${esc(s.title)}</h3>
       <div>${esc(s.preview)}</div>
-      <div class="meta">${esc(fmtDate(s.updated_at))} · ${s.line_count} ${esc(t('lines_n'))} · ${s.target_sec}${esc(t('sec'))}</div>
+      <div class="meta">${esc(fmtDate(s.updated_at))} · ${s.line_count} ${esc(t('lines_n'))} · ${s.target_sec}${esc(t('sec'))}${poCardTag(s)}</div>
     </a>`).join('');
   const next = appState.setup_next;
   const setupBanner = next && next !== 'done'
@@ -302,6 +302,7 @@ async function saveNow() {
     cur.coverage = lint.keyword_coverage;
     cur.voice = lint.voice_match;
     paintChecks();
+    poAfterSave(s);     // posted.js: a posted script that was edited says so
     if (!dirty) setSaved('saved');
   } catch (e) { dirty = true; setSaved('save_failed'); }
 }
@@ -386,10 +387,11 @@ function paintScript() {
     <div id="craft-bar"></div>
     <div id="lines">${s.lines.map(lineHtml).join('')}</div>
     <button class="btn" id="add-line">${esc(t('add_line'))}</button>
-    <div id="post-box"></div><div id="basis-box"></div><div id="edits-box"></div></div>`;
+    <div id="post-box"></div><div id="po-box"></div><div id="basis-box"></div><div id="edits-box"></div></div>`;
   $view.querySelectorAll('textarea').forEach(autoGrow);
   keywordPicker(document.getElementById('kw-box'), s.keywords || [], (list) => { s.keywords = list; scheduleSave(); });
   paintPost(document.getElementById('post-box'), s.post);
+  paintPosted(document.getElementById('po-box'), s);     // posted.js: mark as posted, and what was recorded
   paintBasis(document.getElementById('basis-box'), s);
   paintEdits(document.getElementById('edits-box'), s);
   paintChecks();

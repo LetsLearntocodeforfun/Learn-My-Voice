@@ -215,10 +215,17 @@ def t_list_library(store: Store, args: Dict[str, Any]) -> Dict[str, Any]:
         "note": "The creator's own past scripts. Numbers were typed in by the creator; null means not entered. "
                 "`needs_review` true marks a video transcribed by a machine that the creator has not read and "
                 "confirmed yet: its wording is not used to learn the voice, as an example for a draft or as evidence "
-                "until the creator confirms it in the app.",
+                "until the creator confirms it in the app. "
+                "`from_script_in_app` true marks a video made from a script written in this app, possibly drafted "
+                "by an AI, and then posted: its numbers are real, and while `needs_review` is true its wording is "
+                "left out in the same way, because it may be an AI's and not the creator's. "
+                "`numbers_read_days_after_posting`, where known, is how old the numbers were when they were read: "
+                "numbers read a few days after posting and numbers read weeks after do not compare.",
         "performance": corpus.performance(samples),
         "scripts": [{"title": s["title"], "is_sponsored": s["is_sponsored"], "characters": len(s["text"]),
                      "kind": s["kind"], "needs_review": s["needs_review"],
+                     "from_script_in_app": s.get("origin") == corpus.ORIGIN_SCRIPT,
+                     "numbers_read_days_after_posting": corpus.read_after_days(s),
                      "views": s["views"], "likes": s["likes"], "collects": s["collects"], "comments": s["comments"]}
                     for s in samples],
     }

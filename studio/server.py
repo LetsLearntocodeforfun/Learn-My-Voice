@@ -50,7 +50,7 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
 from . import checks, corpus, creator, exports, keyword_import, llm, pipeline, textstats, timing, transcribe, trends
-from . import buildinfo, hooks, suggest
+from . import buildinfo, hooks, posted, suggest
 from . import setup as setup_status
 from .jobs import JobError, Jobs, Progress
 from .store import HISTORY_ID, MANUAL_PROVIDER, PROVIDERS, ROOT, StaleScript, Store, TextTooLong, clean_file_name
@@ -515,6 +515,11 @@ class Handler(BaseHTTPRequestHandler):
             raise ApiError(400, "bad_upload_id")
         if title is not None and not isinstance(title, str):
             raise ApiError(400, "bad_title")
+        # ``attach_to``: the library item of a posted script. The video's words then go into that item
+        # (``posted.attach_transcript``) and no second item is made. Refused here, before the upload is claimed.
+        attach_to = body.get("attach_to")
+        if attach_to is not None:
+            _posting(lambda: posted.attachable(app.store, attach_to))
         app.uploads.drop_stale()
         upload = app.uploads.claim(upload_id)
         if upload is None:
@@ -522,7 +527,8 @@ class Handler(BaseHTTPRequestHandler):
         title = (title or "").strip() or upload["name"].rsplit(".", 1)[0]
         sponsored = bool(body.get("is_sponsored"))
         try:
-            job = app.jobs.start(TRANSCRIBE_JOB, lambda progress: _transcribe_upload(app, upload, title, sponsored, progress),
+            job = app.jobs.start(TRANSCRIBE_JOB, lambda progress: _transcribe_upload(app, upload, title, sponsored, progress,
+                                                                                     attach_to=attach_to),
                                  label=upload["name"])
         except BaseException:
             _remove(upload["path"])                 # claimed but never started: still no copy may be left
@@ -665,7 +671,8 @@ class Handler(BaseHTTPRequestHandler):
                 answer["unreadable"] = True
             return self._json(answer)
         if route == ("GET", "/api/scripts"):
-            return self._json({"scripts": store.list_scripts()})
+            # Each with ``posted`` and ``posted_on``: whether the script is marked as posted, and the day.
+            return self._json({"scripts": posted.with_posted_dates(store, store.list_scripts())})
         if route == ("POST", "/api/scripts"):
             body = self._read_json()
             return self._json(store.create_script(
@@ -733,7 +740,9 @@ class Handler(BaseHTTPRequestHandler):
             stats = corpus.voice_stats(s["text"] for s in pipeline.confirmed_samples(samples) if not s["is_sponsored"])
             # measured: speaking rate from the timestamps of non-sponsored timed items, or null under a minute of them.
             # Transcripts waiting for confirmation count here: their timing does not depend on the wording.
-            return self._json({"samples": samples, "stats": stats, "measured": pipeline.measured_rate(samples)})
+            # An item that came from a posted script carries ``posted``: its days, its link and how its wording stands.
+            return self._json({"samples": posted.for_page(store, samples), "stats": stats,
+                               "measured": pipeline.measured_rate(samples)})
         if route == ("POST", "/api/samples"):
             body = self._read_json()
             text = str(body.get("text") or "")
@@ -756,14 +765,20 @@ class Handler(BaseHTTPRequestHandler):
             if not text.strip():
                 raise ApiError(400, "empty_text")
             source_name = body.get("source_name")
+            source_name = source_name if isinstance(source_name, str) else ""
             try:
+                if body.get("attach_to") is not None:
+                    # The subtitle file of a posted video, for the item its script already has: its words take
+                    # the place of the script's text there, and no second item is made.
+                    return self._json(posted.shown(store, _posting(lambda: posted.attach_transcript(
+                        store, body["attach_to"], text=text, kind=kind, timing=measured_timing, source_name=source_name))))
                 sample = store.create_sample(
                     title=str(body.get("title") or ""), text=text,
                     is_sponsored=bool(body.get("is_sponsored")), metrics=body, kind=kind, timing=measured_timing,
-                    source_name=source_name if isinstance(source_name, str) else "")
+                    source_name=source_name)
             except TextTooLong as exc:
                 raise ApiError(413, exc.code, exc.message, exc.message_zh, extra={"limit": exc.limit})
-            return self._json(sample, 201)
+            return self._json(posted.shown(store, sample), 201)
         if route == ("POST", "/api/voice/learn"):
             self._read_json()
             self._require_ai()
@@ -938,15 +953,21 @@ class Handler(BaseHTTPRequestHandler):
 
         m = re.fullmatch(r"/api/samples/([0-9a-f]{12})", path)
         if m:
-            if store.get_sample(m.group(1)) is None:
+            sample = store.get_sample(m.group(1))
+            if sample is None:
                 raise ApiError(404, "not_found")
             if method == "PUT":
                 body = self._read_json()
                 # Confirming a transcript is its own act: a real true or false, never a side effect of another edit.
+                # The same act says of a posted script's text "this is what I said, in my words".
                 if "needs_review" in body and not isinstance(body["needs_review"], bool):
                     raise ApiError(400, "bad_needs_review")
                 try:
-                    return self._json(store.update_sample(m.group(1), body))
+                    # For an item that came from a posted script, also ``posted_on``, ``metrics_on`` and ``note_url``;
+                    # a number changed here takes today as the day it was read (``posted.update_item``).
+                    updated = _posting(lambda: posted.update_item(store, sample, body))
+                    # None: the item was removed in the same moment; answered with null, as before.
+                    return self._json(posted.shown(store, updated) if updated is not None else None)
                 except TextTooLong as exc:
                     raise ApiError(413, exc.code, exc.message, exc.message_zh, extra={"limit": exc.limit})
             if method == "DELETE":
@@ -976,6 +997,17 @@ class Handler(BaseHTTPRequestHandler):
                 raise ApiError(404, "not_found")
             return self._json(changes)
 
+        m = re.fullmatch(r"/api/scripts/([0-9a-f]{12})/posted", path)
+        if m and method in ("POST", "PUT"):
+            # POST: mark the script as posted. It gets ONE library item, made from the script as it stands; when
+            # it has one already, that item is changed and no second is made. PUT: change what was recorded
+            # (the numbers and the day they were read, the day posted, the link, or with "refresh_text" the
+            # text); refused when the item is gone. The fields are those of ``posted.mark``. Answers with the
+            # script, as GET /api/scripts/<id> does.
+            body = self._read_json()
+            script, created = _posting(lambda: posted.mark(store, m.group(1), body, update_only=(method == "PUT")))
+            return self._json(script, 201 if created else 200)
+
         m = re.fullmatch(r"/api/scripts/([0-9a-f]{12})(?:/export/(\w+))?", path)
         if m:
             script_id, export_kind = m.group(1), m.group(2)
@@ -992,19 +1024,15 @@ class Handler(BaseHTTPRequestHandler):
                 disposition = "attachment; filename*=UTF-8''" + urllib.parse.quote(filename)
                 return self._send(200, data, content_type, {"Content-Disposition": disposition})
             if not export_kind and method == "GET":
-                return self._json(script)
+                # ``posted``: null, or what was recorded when the script was marked as posted (``posted.for_script``).
+                return self._json(posted.with_posted(store, script))
             if not export_kind and method == "PUT":
                 body = self._read_json()
                 try:    # base_updated_at: the version this save was made from; absent: save whatever is stored
-                    return self._json(store.update_script(script_id, body, base_updated_at=body.get("base_updated_at")))
+                    saved = store.update_script(script_id, body, base_updated_at=body.get("base_updated_at"))
+                    return self._json(posted.with_posted(store, saved) if saved is not None else saved)
                 except StaleScript as exc:
-                    raise ApiError(409, "stale_script",
-                                   "This script was changed somewhere else after you opened it here: in another tab "
-                                   "or window, or by an AI app connected to the studio. Nothing was saved. Reload "
-                                   "it to see the newer version.",
-                                   "这份脚本在你打开之后，已经在别处被改过了：另一个标签页或窗口，或者连接到工作台的 AI 应用。"
-                                   "这次没有保存。请重新加载，查看较新的版本。",
-                                   extra={"updated_at": exc.updated_at})
+                    raise _stale_script(exc)
                 except ValueError as exc:
                     if str(exc) != "bad_base_updated_at":
                         raise
@@ -1014,6 +1042,29 @@ class Handler(BaseHTTPRequestHandler):
                 store.delete_script(script_id)
                 return self._json({"ok": True})
         raise ApiError(404, "not_found")
+
+
+def _stale_script(exc: StaleScript) -> ApiError:
+    """The refusal for a request based on an older version of a script than the one stored: a save, or marking it as posted."""
+    return ApiError(409, "stale_script",
+                    "This script was changed somewhere else after you opened it here: in another tab "
+                    "or window, or by an AI app connected to the studio. Nothing was saved. Reload "
+                    "it to see the newer version.",
+                    "这份脚本在你打开之后，已经在别处被改过了：另一个标签页或窗口，或者连接到工作台的 AI 应用。"
+                    "这次没有保存。请重新加载，查看较新的版本。",
+                    extra={"updated_at": exc.updated_at})
+
+
+def _posting(work: Any) -> Any:
+    """Run a step about a posted script, turning its refusals into answers a page can show, in both languages."""
+    try:
+        return work()
+    except posted.PostedError as exc:
+        raise ApiError(exc.status, exc.code, exc.message, exc.message_zh)
+    except StaleScript as exc:
+        raise _stale_script(exc)
+    except TextTooLong as exc:
+        raise ApiError(413, exc.code, exc.message, exc.message_zh, extra={"limit": exc.limit})
 
 
 _SUGGEST_REFUSALS = {
@@ -1093,8 +1144,13 @@ def _job_error(exc: Exception) -> JobError:
     return JobError(str(getattr(exc, "code", "") or "failed"), str(exc), str(getattr(exc, "message_zh", "") or ""))
 
 
-def _transcribe_upload(app: App, upload: Dict[str, Any], title: str, is_sponsored: bool, progress: Progress) -> Dict[str, Any]:
+def _transcribe_upload(app: App, upload: Dict[str, Any], title: str, is_sponsored: bool, progress: Progress,
+                       attach_to: Optional[str] = None) -> Dict[str, Any]:
     """One transcription job: the upload becomes a ``video`` item in the library, text and measured timing.
+
+    With ``attach_to``, the id of the library item of a posted script, no item is made: the transcript takes
+    the place of the script's text in that item (``posted.attach_transcript``), which keeps its title, its
+    numbers and its link to the script. ``title`` and ``is_sponsored`` are not used then.
 
     The item waits for the creator's confirmation (``needs_review``): its timing counts at once, its
     wording only after they have read it. ``timing.unclear_dropped`` is how many stretches the
@@ -1123,9 +1179,13 @@ def _transcribe_upload(app: App, upload: Dict[str, Any], title: str, is_sponsore
                            "这个文件里没有听到说话的声音，所以没有加进你的素材。")
         measured = dict(timing.timing_stats(segments), unclear_dropped=dropped)
         try:
-            sample = app.store.create_sample(title=title, text=text, is_sponsored=is_sponsored, kind="video",
-                                             timing=measured, source_name=upload["name"])
-        except TextTooLong as exc:                  # the library's length limit: say so, in both languages
+            if attach_to is not None:
+                sample = posted.attach_transcript(app.store, attach_to, text=text, kind="video", timing=measured,
+                                                  source_name=upload["name"])
+            else:
+                sample = app.store.create_sample(title=title, text=text, is_sponsored=is_sponsored, kind="video",
+                                                 timing=measured, source_name=upload["name"])
+        except (TextTooLong, posted.PostedError) as exc:    # the library's length limit, or the item is gone: say so, in both languages
             raise JobError(exc.code, exc.message, exc.message_zh)
         return {"sample_id": sample["id"], "title": sample["title"]}
     finally:

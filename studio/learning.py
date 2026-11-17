@@ -290,6 +290,23 @@ def line_changes(ai_lines: Any, final_lines: Any) -> List[Dict[str, Any]]:
     return [change for _, change in sorted(changes, key=lambda c: c[0])]
 
 
+def lines_by_ai(ai_lines: Any, final_lines: Any, proposed: Any = ()) -> List[Tuple[int, bool]]:
+    """For each line of ``final_lines`` that has spoken words: ``(its 1-based position, whether an AI wrote it)``.
+
+    Both lists hold script line dicts, as for ``line_changes``; ``proposed`` are texts an AI proposed for lines.
+
+    A line is the creator's when ``line_changes`` reports it as rewritten or added, and its words are not
+    those of a proposal. Every other line is still the AI's: unchanged, moved, split in two or merged,
+    different only in spacing, punctuation or cues, or a proposal that was taken. So the count errs towards
+    "an AI wrote this", never towards presenting an AI's sentence as the creator's. With no draft at all
+    (``ai_lines`` empty: a script typed by hand) every line is the creator's, except a proposal that was taken.
+    """
+    proposals = {key for key in (_key(text) for text in (proposed if isinstance(proposed, (list, tuple)) else [])) if key}
+    own = {change["final_line_no"] for change in line_changes(ai_lines, final_lines)
+           if change["kind"] in (REWRITTEN, ADDED) and _key(change["final"]) not in proposals}
+    return [(line.no, line.no not in own) for line in _read_lines(final_lines)]
+
+
 # ---- habits across scripts ----------------------------------------------------
 def _strings(value: Any) -> List[str]:
     return [v for v in value if isinstance(v, str)] if isinstance(value, (list, tuple)) else []

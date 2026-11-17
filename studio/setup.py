@@ -148,7 +148,9 @@ def status(store: Store) -> Dict[str, Any]:
     - ``material.organic`` counts non-sponsored items with text that the creator wrote or confirmed;
       material is done at MATERIAL_DONE_AT of them. ``unreviewed`` is how many items (sponsored or not)
       are transcripts still waiting for the creator's confirmation; they are in ``total`` and not in
-      ``organic``. ``clauses`` and ``enough_for_cadence`` are the measurement and threshold the pipeline
+      ``organic``. A posted script whose wording waits (``corpus.waits_as_posted_script``) is in ``total``
+      and in neither of the two: it is not a transcript, and the page says of each such item why it waits.
+      ``clauses`` and ``enough_for_cadence`` are the measurement and threshold the pipeline
       uses to decide whether breath length is measured or left to the model, over the same items as
       ``organic``. ``measured_rate`` is the speaking rate from timed material, or None under a minute of
       it; ``timed_sec`` is how much there is. Both include transcripts that are still waiting.
@@ -182,7 +184,8 @@ def status(store: Store) -> Dict[str, Any]:
         "creator": {"done": done["creator"], "name": page["name"], "niches": page["niches"]},
         "material": {
             "done": done["material"], "total": len(samples), "organic": len(organic),
-            "unreviewed": sum(1 for s in samples if s.get("needs_review")), "clauses": clauses,
+            "unreviewed": sum(1 for s in samples if s.get("needs_review") and not corpus.waits_as_posted_script(s)),
+            "clauses": clauses,
             "enough_for_cadence": clauses >= pipeline.MIN_CLAUSES_FOR_MEASURED_CADENCE,
             "timed_sec": _timed_seconds(samples),
             "measured_rate": measured["speaking_rate_cpm"] if measured else None,

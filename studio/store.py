@@ -40,6 +40,12 @@ MAX_AI_SUGGESTIONS = 300    # texts an AI suggested for the lines of one script 
 # characters a minute this is more than 27 hours of speech in Chinese, and about 9 hours in English. It is
 # there so that one file somebody handed the creator cannot make every page slow or fill the database.
 MAX_SAMPLE_CHARS = 500000
+# Where a library item came from. "" is everything the creator brought in themselves. ORIGIN_SCRIPT is a script
+# written in this app that was marked as posted (studio/posted.py); it stays on the item when that script is deleted.
+ORIGIN_SCRIPT = "script"
+# What a posted item carries beside its numbers, as columns ``update_sample`` can set: the day it was posted, the
+# link to the note, and the day the numbers were read. Days are text, ``YYYY-MM-DD``.
+POSTED_COLUMNS = ("posted_on", "note_url", "metrics_on")
 
 _CONFIG_LOCK = threading.RLock()    # one read-change-save of the settings at a time (Store.update_config)
 _DNA_LOCK = threading.RLock()       # one replacement of the active voice profile at a time
@@ -114,6 +120,13 @@ CREATE TABLE IF NOT EXISTS samples (
     source_name TEXT NOT NULL DEFAULT '',
     needs_review INTEGER NOT NULL DEFAULT 0,
     reviewed_at REAL,
+    origin TEXT NOT NULL DEFAULT '',
+    script_id TEXT,
+    posted_on TEXT,
+    note_url TEXT NOT NULL DEFAULT '',
+    metrics_on TEXT,
+    ai_json TEXT,
+    snapshot TEXT NOT NULL DEFAULT '',
     created_at REAL NOT NULL,
     updated_at REAL NOT NULL
 );
@@ -163,12 +176,23 @@ _ADDED_COLUMNS = (
     ("samples", "source_name", "TEXT NOT NULL DEFAULT ''"),
     ("samples", "needs_review", "INTEGER NOT NULL DEFAULT 0"),     # before machine transcripts had to be confirmed
     ("samples", "reviewed_at", "REAL"),
+    ("samples", "origin", "TEXT NOT NULL DEFAULT ''"),             # before a posted script could join the library
+    ("samples", "script_id", "TEXT"),
+    ("samples", "posted_on", "TEXT"),
+    ("samples", "note_url", "TEXT NOT NULL DEFAULT ''"),
+    ("samples", "metrics_on", "TEXT"),
+    ("samples", "ai_json", "TEXT"),
+    ("samples", "snapshot", "TEXT NOT NULL DEFAULT ''"),
 )
 # What has to happen once, together with adding a column. A video stored before ``needs_review`` existed
 # was never confirmed by the creator, so it starts out waiting like any video added from now on.
 _AFTER_ADDING = {
     ("samples", "needs_review"): ("UPDATE samples SET needs_review = 1 WHERE kind = 'video'",),
 }
+# One script has at most one item in the library, however often and from however many windows it is marked as
+# posted. Made after the columns above, because a database from an earlier version gets ``script_id`` only then.
+_ONE_ITEM_A_SCRIPT = "CREATE UNIQUE INDEX IF NOT EXISTS samples_by_script ON samples (script_id) WHERE script_id IS NOT NULL"
+_KEEP: Any = object()       # an argument left out: what is stored stays as it is
 
 
 def normalize_lines(lines: Any) -> List[Dict[str, Any]]:
@@ -370,6 +394,7 @@ class Store:
                     # The web app and the MCP server may open the same database at once: fine if the other one added it.
                     if column not in self._columns(db, table):
                         raise
+            db.execute(_ONE_ITEM_A_SCRIPT)
         # Last, so the database just created is covered too. Until then a new one sits in a folder that is
         # already closed; a folder an earlier version left open is closed here, with everything in it.
         _owner_only(self.data_dir)
@@ -653,7 +678,14 @@ class Store:
     # ---- imported material ---------------------------------------------
     @staticmethod
     def _sample_row(row: sqlite3.Row) -> Dict[str, Any]:
-        return {
+        """A library item as it is handed out.
+
+        An item made from a script that was posted (``studio.posted``) carries seven fields more: ``origin``
+        (ORIGIN_SCRIPT), ``script_id`` (None once that script is deleted), ``posted_on``, ``note_url``,
+        ``metrics_on``, ``ai_draft`` (what an AI wrote for the script) and ``snapshot``. Every other item is
+        handed out exactly as before those existed, so read them with ``.get``.
+        """
+        sample = {
             "id": row["id"], "title": row["title"], "text": row["text"],
             "is_sponsored": bool(row["is_sponsored"]),
             "views": row["views"], "likes": row["likes"], "collects": row["collects"], "comments": row["comments"],
@@ -662,6 +694,13 @@ class Store:
             "needs_review": bool(row["needs_review"]), "reviewed_at": row["reviewed_at"],
             "created_at": row["created_at"], "updated_at": row["updated_at"],
         }
+        if row["origin"] == ORIGIN_SCRIPT:
+            sample.update({
+                "origin": ORIGIN_SCRIPT, "script_id": row["script_id"], "posted_on": row["posted_on"],
+                "note_url": row["note_url"] or "", "metrics_on": row["metrics_on"],
+                "ai_draft": _json_object(row["ai_json"]), "snapshot": row["snapshot"] or "",
+            })
+        return sample
 
     def list_samples(self) -> List[Dict[str, Any]]:
         with self._db() as db:
@@ -682,9 +721,22 @@ class Store:
             row = db.execute("SELECT * FROM samples WHERE id = ?", (sample_id,)).fetchone()
         return self._sample_row(row) if row else None
 
+    def get_posted_sample(self, script_id: str) -> Optional[Dict[str, Any]]:
+        """The library item made from this script when it was marked as posted, or None when there is none."""
+        with self._db() as db:
+            row = db.execute("SELECT * FROM samples WHERE script_id = ?", (script_id,)).fetchone()
+        return self._sample_row(row) if row else None
+
+    def posted_dates(self) -> Dict[str, Optional[str]]:
+        """``{script id: the day it was posted}`` for every script that has its item in the library."""
+        with self._db() as db:
+            rows = db.execute("SELECT script_id, posted_on FROM samples WHERE script_id IS NOT NULL").fetchall()
+        return {row["script_id"]: row["posted_on"] for row in rows}
+
     def create_sample(self, *, title: str, text: str, is_sponsored: bool = False,
                       metrics: Optional[Dict[str, Any]] = None, kind: str = "script",
-                      timing: Optional[Dict[str, Any]] = None, source_name: str = "") -> Dict[str, Any]:
+                      timing: Optional[Dict[str, Any]] = None, source_name: str = "",
+                      posted: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
         """Add an item to the library.
 
         ``kind`` says how it came in (see SAMPLE_KINDS). ``timing`` is the dict
@@ -697,6 +749,13 @@ class Store:
         to read and confirm them (``update_sample``). Scripts and subtitle
         files are the creator's own text and do not wait.
 
+        ``posted`` is given for an item made from a script of this app that was marked as posted
+        (``studio.posted``, which checks the values): ``{"script_id", "posted_on", "note_url", "metrics_on",
+        "ai_draft", "snapshot"}``. The item is stored with where it came from (ORIGIN_SCRIPT) and it waits as
+        well (``needs_review``): its text began in this app, possibly as an AI's draft, so its wording is not
+        learned from until the creator says the words are theirs. One script has one item: a second one for
+        the same script raises ``sqlite3.IntegrityError`` and nothing is stored.
+
         Text longer than MAX_SAMPLE_CHARS raises ``TextTooLong`` and nothing is stored.
         """
         text = text.replace("\r\n", "\n").strip()
@@ -708,20 +767,33 @@ class Store:
         kind = kind if kind in SAMPLE_KINDS else SAMPLE_KINDS[0]
         now = time.time()
         sample_id = uuid.uuid4().hex[:12]
+        posted = posted if isinstance(posted, dict) else None
+        ai_draft = posted.get("ai_draft") if posted else None
         with self._db() as db:
             db.execute(
                 "INSERT INTO samples (id, title, text, is_sponsored, views, likes, collects, comments,"
-                " kind, timing_json, source_name, needs_review, created_at, updated_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                " kind, timing_json, source_name, needs_review, origin, script_id, posted_on, note_url, metrics_on,"
+                " ai_json, snapshot, created_at, updated_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
                 (sample_id, title, text, int(bool(is_sponsored)),
                  _metric(metrics.get("views")), _metric(metrics.get("likes")),
                  _metric(metrics.get("collects")), _metric(metrics.get("comments")),
                  kind, _dumps(timing) if isinstance(timing, dict) else None,
-                 clean_file_name(source_name), int(kind == "video"), now, now),
+                 clean_file_name(source_name), int(kind == "video" or posted is not None),
+                 ORIGIN_SCRIPT if posted else "", posted.get("script_id") if posted else None,
+                 posted.get("posted_on") if posted else None, str(posted.get("note_url") or "") if posted else "",
+                 posted.get("metrics_on") if posted else None,
+                 _dumps(ai_draft) if isinstance(ai_draft, dict) else None,
+                 str(posted.get("snapshot") or "") if posted else "", now, now),
             )
         return self.get_sample(sample_id)  # type: ignore[return-value]
 
-    def update_sample(self, sample_id: str, changes: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+    def update_sample(self, sample_id: str, changes: Dict[str, Any],
+                      posted: Optional[Dict[str, Any]] = None) -> Optional[Dict[str, Any]]:
         """Apply ``changes`` (unknown keys are ignored; ``kind`` and ``timing`` cannot be changed).
+
+        ``posted`` holds new values for a posted item's own columns (POSTED_COLUMNS), already checked by
+        ``studio.posted``. They are written in the same statement as ``changes``, so the numbers and the day
+        they were read never part. Those columns are never taken from ``changes``.
 
         ``needs_review`` changes only when it is given as a boolean. Editing the
         text does not confirm an item: confirming is its own act. ``reviewed_at``
@@ -750,11 +822,50 @@ class Store:
             # Every right-hand side reads the row as it was, so the time is set only on the change from waiting.
             sets.append("needs_review = 0")
             sets.append("reviewed_at = CASE WHEN needs_review = 1 THEN ? ELSE reviewed_at END"); values.append(now)
+        for column in POSTED_COLUMNS:
+            if isinstance(posted, dict) and column in posted:
+                sets.append("%s = ?" % column); values.append(posted[column])
         if sets:
             sets.append("updated_at = ?"); values.append(now)
             values.append(sample_id)
             with self._db() as db:
                 db.execute("UPDATE samples SET %s WHERE id = ?" % ", ".join(sets), values)
+        return self.get_sample(sample_id)
+
+    def replace_sample_text(self, sample_id: str, *, text: str, kind: str, needs_review: bool,
+                            timing: Optional[Dict[str, Any]] = None, source_name: str = "",
+                            title: Optional[str] = None, ai_draft: Any = _KEEP,
+                            snapshot: Any = _KEEP) -> Optional[Dict[str, Any]]:
+        """Give a posted item other words, and say how they came in (``studio.posted`` decides when).
+
+        Used when the item's text is taken from its script again, and when the words of the posted video
+        arrive from a subtitle file or a transcription. ``kind`` and ``timing`` are set here together with the
+        text they belong to, which ``update_sample`` never does. ``needs_review`` says whether the new words
+        wait for the creator; when they do not, ``reviewed_at`` is this moment: from now on they are material.
+
+        The numbers, the days and the link to the script stay as they are, and so does the title unless
+        ``title`` is given. ``ai_draft`` and ``snapshot`` replace what was kept when they are given.
+
+        Text longer than MAX_SAMPLE_CHARS raises ``TextTooLong`` and nothing is changed.
+        """
+        text = text.replace("\r\n", "\n").strip()
+        if len(text) > MAX_SAMPLE_CHARS:
+            raise TextTooLong(len(text))
+        now = time.time()
+        sets = ["text = ?", "kind = ?", "timing_json = ?", "source_name = ?", "needs_review = ?", "reviewed_at = ?",
+                "updated_at = ?"]
+        values: List[Any] = [text, kind if kind in SAMPLE_KINDS else SAMPLE_KINDS[0],
+                             _dumps(timing) if isinstance(timing, dict) else None, clean_file_name(source_name),
+                             int(bool(needs_review)), None if needs_review else now, now]
+        if isinstance(title, str) and title.strip():
+            sets.append("title = ?"); values.append(title.strip())
+        if ai_draft is not _KEEP:
+            sets.append("ai_json = ?"); values.append(_dumps(ai_draft) if isinstance(ai_draft, dict) else None)
+        if snapshot is not _KEEP:
+            sets.append("snapshot = ?"); values.append(str(snapshot or ""))
+        values.append(sample_id)
+        with self._db() as db:
+            db.execute("UPDATE samples SET %s WHERE id = ?" % ", ".join(sets), values)
         return self.get_sample(sample_id)
 
     def delete_sample(self, sample_id: str) -> bool:
@@ -877,6 +988,11 @@ class Store:
             row = db.execute("SELECT * FROM scripts WHERE id = ?", (script_id,)).fetchone()
         return self._row(row) if row else None
 
+    def script_titles(self) -> Dict[str, str]:
+        """``{script id: title}`` for every script: what the library needs to name the script an item came from."""
+        with self._db() as db:
+            return {row["id"]: row["title"] for row in db.execute("SELECT id, title FROM scripts")}
+
     def get_ai_lines(self, script_id: str) -> Optional[List[Dict[str, Any]]]:
         """The lines as the AI wrote them, or None for a script that was not drafted by AI (or does not exist)."""
         with self._db() as db:
@@ -990,8 +1106,11 @@ class Store:
         return self.get_script(script_id)
 
     def delete_script(self, script_id: str) -> bool:
+        """Delete a script. The library item of a script that was posted is the creator's video: it stays, with
+        its numbers and with where it came from, and only stops pointing at a script that is no longer there."""
         with self._db() as db:
             db.execute("DELETE FROM ai_suggestions WHERE script_id = ?", (script_id,))
+            db.execute("UPDATE samples SET script_id = NULL WHERE script_id = ?", (script_id,))
             return db.execute("DELETE FROM scripts WHERE id = ?", (script_id,)).rowcount > 0
 
     # ---- what an AI suggested for a script's lines ----------------------

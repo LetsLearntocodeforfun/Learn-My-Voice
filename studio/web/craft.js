@@ -262,7 +262,8 @@ function craftUndo(n) {
 
 function craftOwnHtml(found) {
   if (!found) return '';
-  if (!found.openers.length) return `<p class="hint" id="cr-own-none">${esc(t('cr_own_none'))}</p>`;
+  /* poAiOpeningsHtml (posted.js): openings that are still an AI's sentence, apart from the creator's own and labelled */
+  if (!found.openers.length) return `<p class="hint" id="cr-own-none">${esc(t('cr_own_none'))}</p>${poAiOpeningsHtml(found)}`;
   const seen = new Set();       // the same opening from two items (a script added twice) is shown once, with its better result
   const distinct = found.openers.filter((o) => !seen.has(o.opening) && seen.add(o.opening));
   const rows = distinct.slice(0, 5).map((o) => `<div class="craft-own">
@@ -272,7 +273,7 @@ function craftOwnHtml(found) {
   const labels = found.patterns.map((p) => tf('cr_pattern_row', { name: t('pat_' + p.pattern), n: p.videos })
     + (p.times_usual !== null ? tf('cr_pattern_mid', { x: p.times_usual, m: p.with_numbers }) : '')).join(lang === 'zh' ? '；' : '; ');
   return `<div id="cr-own"><h4>${esc(t('cr_own_openings'))}</h4>${rows}
-    <p class="hint">${esc(labels)}</p><p class="hint">${esc(t('cr_own_hint'))}</p></div>`;
+    <p class="hint">${esc(labels)}</p><p class="hint">${esc(t('cr_own_hint'))}</p></div>${poAiOpeningsHtml(found)}`;
 }
 
 function craftChecksHtml(item, result) {

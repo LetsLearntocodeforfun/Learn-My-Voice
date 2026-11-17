@@ -388,7 +388,7 @@ function sampleHtml(s) {
       <button class="btn ghost" data-del aria-label="${esc(t('delete'))}">✕</button>
     </div>
     <div class="metrics">${['views', 'likes', 'collects', 'comments'].map(metric).join('')}</div>
-    ${s.needs_review ? reviewNoteHtml(s) : ''}
+    ${poSampleHtml(s)}${s.needs_review ? reviewNoteHtml(s) : ''}
     <details ${s.needs_review ? 'open' : ''}><summary><span class="tag ${kind === 'script' ? '' : 'ok'}">${esc(t('mt_kind_' + kind))}</span>
       ${esc(t('show_text'))} · ${spokenUnits(s.text)}${lang === 'zh' ? '' : ' '}${esc(t('chars'))}${esc(timed)}</summary>
       <textarea data-f="text" rows="8">${esc(s.text)}</textarea></details>
@@ -431,7 +431,8 @@ async function renderLibrary() {
     const field = e.target.dataset.f;
     if (!card || !field) return;
     const value = e.target.type === 'checkbox' ? e.target.checked : e.target.value;
-    try { await api('PUT', '/api/samples/' + card.dataset.id, { [field]: value }); toast(t('saved')); }
+    /* posted.js draws an item that came from a posted script again: a number typed here takes the day it was read with it */
+    try { poAfterSampleSave(card, await api('PUT', '/api/samples/' + card.dataset.id, { [field]: value })); toast(t('saved')); }
     catch (err) { showError(err); }
   };
   $list.onclick = async (e) => {
@@ -447,7 +448,7 @@ async function renderLibrary() {
       return;
     }
     if (!e.target.closest('[data-del]')) return;
-    if (!confirm(t('confirm_delete_sample'))) return;
+    if (!confirm(poDeleteSampleText(card.dataset.id, 'confirm_delete_sample'))) return;
     await api('DELETE', '/api/samples/' + card.dataset.id);
     renderLibrary();
   };

@@ -12,13 +12,20 @@ what happened, nothing more; the count is always given next to it.
 Only non-sponsored material the creator wrote or confirmed is used for the openings, as everywhere wording
 is learned from. The creator's usual result is the middle value over their non-sponsored videos with
 numbers, the same baseline the trends page uses.
+
+A script written in this app and then posted is in the library too (``studio.posted``). Its numbers count
+towards the usual result like any video's. Its opening is the creator's own only when they have confirmed
+the item's wording and the opening is not still a sentence an AI wrote. An opening that is still an AI's
+sentence is kept apart (``written_by_ai``): it is shown with the video's result and labelled, it is never
+among the creator's own openings, and so it never reaches a prompt as the way the creator opens. A model
+that is handed its own sentences as the creator's habit drifts towards itself.
 """
 from __future__ import annotations
 
 import re
 from typing import Any, Dict, List, Optional, Tuple
 
-from . import corpus, textstats
+from . import corpus, learning, textstats
 
 OPENING_MAX_BREATHS = 3         # an opening is at most this many breaths
 OPENING_ENOUGH_UNITS = 8        # and ends with the breath that brings it to this many spoken units
@@ -111,6 +118,43 @@ def _times_usual(total: Optional[float], usual: Optional[float]) -> Optional[flo
     return round(total / usual, 1) if (total is not None and usual) else None
 
 
+def _lines(texts: Any) -> List[Dict[str, Any]]:
+    return [{"spoken_script_zh": text} for text in (texts if isinstance(texts, (list, tuple)) else []) if isinstance(text, str)]
+
+
+def opening_by_ai(sample: Dict[str, Any], opening: str) -> bool:
+    """Whether the opening of an item that came from a script is still a sentence an AI wrote.
+
+    Read off what was kept with the item when its script was posted (``ai_draft``: the lines of the AI's
+    draft, and the proposals an AI made that stood in the script), never off a model's opinion. True when:
+
+    - the opening's words stand in a row in the AI's draft or in one of those proposals, however the item's
+      text is cut into lines (a subtitle file of the posted video cuts it its own way); or
+    - any line the opening takes words from is one an AI wrote (``learning.lines_by_ai``). An opening made of
+      a few words of the creator's followed by an AI's sentence is not an opening of the creator's.
+
+    False for an item with nothing kept: one the creator brought in themselves.
+    """
+    draft = sample.get("ai_draft")
+    wanted = learning.spoken_key(opening)
+    if not isinstance(draft, dict) or not wanted:
+        return False
+    drafted, proposed = _lines(draft.get("lines")), [line["spoken_script_zh"] for line in _lines(draft.get("proposed"))]
+    if wanted in "".join(learning.spoken_key(line["spoken_script_zh"]) for line in drafted):
+        return True
+    if any(wanted in learning.spoken_key(text) for text in proposed):
+        return True
+    head = str(sample.get("text") or "")[:HEAD_CHARS].split("\n")      # the opening is read from the same stretch
+    taken = 0
+    for no, by_ai in learning.lines_by_ai(drafted, _lines(head), proposed):
+        if taken >= len(wanted):
+            break
+        if by_ai:
+            return True
+        taken += len(learning.spoken_key(head[no - 1]))
+    return False
+
+
 def library(samples: List[Dict[str, Any]]) -> Dict[str, Any]:
     """The creator's openings with their videos' results, and how each label has done.
 
@@ -121,22 +165,34 @@ def library(samples: List[Dict[str, Any]]) -> Dict[str, Any]:
 
     ``patterns``: for each label that occurs, ``{"pattern", "videos", "with_numbers", "middle_interactions",
     "times_usual"}``. The last two are None under MIN_FOR_PATTERN videos with numbers.
+
+    ``written_by_ai`` is present only when there is one: openings, in the same form and order as ``openers``,
+    of posted scripts that are still a sentence an AI wrote (``opening_by_ai``), whether or not the creator
+    has confirmed the rest of the item's wording. They are never in ``openers`` and are not counted in
+    ``patterns``; their videos' numbers count in ``usual_interactions`` like any video's.
     """
     organic = [s for s in samples if not s.get("is_sponsored")]
     totals = [float(total) for total in (corpus.interactions(s) for s in organic) if total is not None]
     usual = _middle(totals) or (sum(totals) / len(totals) if totals else None) or None
     openers = []
+    written_by_ai = []
     for sample in organic:
-        if sample.get("needs_review"):
+        posted_waiting = corpus.waits_as_posted_script(sample)
+        if sample.get("needs_review") and not posted_waiting:
             continue                            # a machine transcript nobody has read yet: the words may not be theirs
         found = describe(sample.get("text"))
         if not found["opening"]:
             continue
         total = corpus.interactions(sample)
-        openers.append({"sample_id": sample["id"], "title": sample["title"], "opening": found["opening"],
-                        "patterns": found["patterns"], "units": found["units"], "interactions": total,
-                        "times_usual": _times_usual(total, usual), "_at": sample.get("created_at") or 0})
-    openers.sort(key=lambda o: (o["interactions"] is not None, o["interactions"] or 0, o["_at"]), reverse=True)
+        opener = {"sample_id": sample["id"], "title": sample["title"], "opening": found["opening"],
+                  "patterns": found["patterns"], "units": found["units"], "interactions": total,
+                  "times_usual": _times_usual(total, usual), "_at": sample.get("created_at") or 0}
+        if sample.get("origin") == corpus.ORIGIN_SCRIPT and opening_by_ai(sample, found["opening"]):
+            written_by_ai.append(opener)        # the video's result is the creator's; the sentence is not
+        elif not posted_waiting:
+            openers.append(opener)              # a posted script still waiting: its wording is not yet said to be theirs
+    for found_openers in (openers, written_by_ai):
+        found_openers.sort(key=lambda o: (o["interactions"] is not None, o["interactions"] or 0, o["_at"]), reverse=True)
     patterns = []
     for label in PATTERNS:
         having = [o for o in openers if label in o["patterns"]]
@@ -146,9 +202,12 @@ def library(samples: List[Dict[str, Any]]) -> Dict[str, Any]:
         middle = _middle(numbered) if len(numbered) >= MIN_FOR_PATTERN else None
         patterns.append({"pattern": label, "videos": len(having), "with_numbers": len(numbered),
                          "middle_interactions": middle, "times_usual": _times_usual(middle, usual)})
-    for opener in openers:
+    for opener in openers + written_by_ai:
         del opener["_at"]
-    return {"openers": openers, "patterns": patterns, "usual_interactions": usual, "videos_with_numbers": len(totals)}
+    answer = {"openers": openers, "patterns": patterns, "usual_interactions": usual, "videos_with_numbers": len(totals)}
+    if written_by_ai:
+        answer["written_by_ai"] = written_by_ai
+    return answer
 
 
 def best(samples: List[Dict[str, Any]], limit: int = BEST_FOR_PROMPT) -> List[Dict[str, Any]]:

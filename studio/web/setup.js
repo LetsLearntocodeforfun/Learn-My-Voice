@@ -313,6 +313,7 @@ function transcriberHtml(tr) {
 
 /* The notice on a machine transcript the creator has not confirmed. Also used on the Library page. */
 function reviewNoteHtml(x, withButton) {
+  if (poWaits(x)) return poReviewNoteHtml(x, withButton);     // a posted script, not a transcript: posted.js says why it waits
   const n = x.timing && x.timing.unclear_dropped;
   const unclear = n ? ' ' + tf(countKey('rn_unclear', n), { n }) : '';
   const button = withButton === false ? '' : `<div class="row" style="margin-top:8px"><button type="button" class="btn" data-confirm>${esc(t('rn_confirm'))}</button></div>`;
@@ -325,9 +326,9 @@ function materialRowHtml(x) {
     ? ` · ${tf('mt_timed', { d: fmtSpan(x.timing.spoken_sec), r: x.timing.speaking_rate_cpm })}` : '';
   const review = x.needs_review ? `<div class="mat-review">${reviewNoteHtml(x, false)}
       <textarea data-review-text rows="5">${esc(x.text)}</textarea>
-      <div class="row" style="margin-top:8px"><button type="button" class="btn primary" data-confirm>${esc(t('rn_confirm'))}</button></div></div>` : '';
+      <div class="row" style="margin-top:8px"><button type="button" class="btn primary" data-confirm>${esc(poConfirmLabel(x))}</button></div></div>` : '';
   return `<div class="mat-wrap" data-id="${esc(x.id)}"><div class="mat">
-    <span class="tag ${kind === 'script' ? '' : 'ok'}">${esc(t('mt_kind_' + kind))}</span>
+    <span class="tag ${kind === 'script' ? '' : 'ok'}">${esc(t('mt_kind_' + kind))}</span>${poRowTag(x)}
     <span class="mat-title">${esc(x.title)}<small>${esc(tf('mt_units', { n: spokenUnits(x.text) }) + timed)}</small></span>
     <label class="check"><input type="checkbox" data-sponsored ${x.is_sponsored ? 'checked' : ''}> ${esc(t('mt_sponsored'))}</label>
     <button class="btn ghost" data-del aria-label="${esc(t('delete'))}">✕</button></div>${review}</div>`;
@@ -422,7 +423,7 @@ async function paintStepMaterial(el, s) {
         toast(t('rn_confirmed'));
         repaint();
       } else if (e.target.closest('[data-del]')) {
-        if (!confirm(t('mt_confirm_delete'))) return;
+        if (!confirm(poDeleteSampleText(row.dataset.id, 'mt_confirm_delete'))) return;
         await api('DELETE', '/api/samples/' + row.dataset.id);
         repaint();
       }

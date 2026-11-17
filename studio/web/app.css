@@ -307,3 +307,19 @@ h2.dv-h { font-size: 18px; margin: 28px 0 6px; }
 .ki-table tr.ki-off td { color: var(--muted); }
 .ki-table .tag { margin: 0 0 0 4px; font-size: 12px; }
 @media (max-width: 720px) { .ki-pickers { grid-template-columns: 1fr; } }
+
+/* ---- a posted script: the posting record on the script page, and its item in the library (posted.js) ---- */
+input[type=date] { border: 1px solid var(--line); border-radius: 10px; padding: 8px 12px; background: #fff; outline: none; font: inherit; }
+#po-card p { margin: 6px 0; }
+#po-card .banner { margin: 8px 0; }
+#po-card a, .po-item a { overflow-wrap: anywhere; }
+.po-item { margin: 4px 0 10px; padding: 10px 12px; background: var(--bg); border-radius: 12px; font-size: 14px; }
+.po-line { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.po-line .tag { margin: 0; }
+.po-note { margin-top: 6px; overflow-wrap: anywhere; }
+.po-fields { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px; margin: 10px 0 6px; }
+.po-fields label { font-size: 12px; color: var(--muted); }
+.po-fields input { display: block; width: 100%; margin-top: 2px; font-size: 14px; padding: 6px 8px; border-radius: 8px; }
+.po-fields .po-wide { grid-column: 1 / -1; }
+.po-item .hint { margin: 6px 0 0; }
+#po-ai-openings { margin: 12px 0; }

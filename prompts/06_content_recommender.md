@@ -61,7 +61,12 @@ You recommend what the creator should film next, based only on how the creator's
 <creator_video_history>
 <!-- One entry per past video. Numbers may be null when the creator has not entered them.
      `script_excerpt` is the start of the text. It is null, with `transcript_not_confirmed` true, for a video
-     transcript the creator has not confirmed yet: only its title and numbers are given. -->
+     transcript the creator has not confirmed yet: only its title and numbers are given.
+     `script_written_in_app_wording_not_confirmed` true marks a video made from a script written in this app,
+     possibly drafted by an AI: the excerpt says what the video was about, and is not evidence of how the creator words things.
+     `numbers_read_days_after_posting`, when present, is how many days after posting the numbers were read. Numbers
+     read a few days after posting are still growing and do not compare with numbers read weeks after: do not take
+     the lower number of such a pair as a sign that the video did worse, and do not estimate what it will become. -->
 {{video_history_json}}
 </creator_video_history>
 

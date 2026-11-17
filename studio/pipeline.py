@@ -324,6 +324,10 @@ def confirmed_samples(samples: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
     counts toward the measured speaking rate (``measured_rate``) and toward nothing that learns or checks
     wording: the measured habits, the corpus the voice is learned from, the examples a draft is
     anchored on, and the material a proposed profile's quotes are looked up in.
+
+    A script written in this app and then posted waits in the same way (``corpus.waits_as_posted_script``),
+    for another reason: it may have begun as an AI's draft, and a model that is shown its own sentences
+    as how the creator talks drifts towards itself. Its numbers count wherever numbers are used.
     """
     return [s for s in samples if not s.get("needs_review")]
 
@@ -728,15 +732,26 @@ def _history_entry(sample: Dict[str, Any]) -> Dict[str, Any]:
     transcript a machine wrote that is still waiting for the creator is said to be "used for nothing but
     the speaking rate until confirmed", so its words stay here: ``script_excerpt`` is null and
     ``transcript_not_confirmed`` says why.
+
+    A posted script that is still waiting (``corpus.waits_as_posted_script``) is the video's own script, so
+    its excerpt goes: this prompt asks what the video was about and how it did, and learns no wording.
+    ``script_written_in_app_wording_not_confirmed`` says that the words may be an AI's. For an item with
+    both days, ``numbers_read_days_after_posting`` says how old the numbers were when they were read.
     """
     entry: Dict[str, Any] = {
         "title": sample["title"], "is_sponsored": sample["is_sponsored"],
         "views": sample["views"], "likes": sample["likes"], "collects": sample["collects"], "comments": sample["comments"],
     }
-    if sample.get("needs_review"):
+    if corpus.waits_as_posted_script(sample):
+        entry.update({"script_excerpt": sample["text"][:RECOMMEND_EXCERPT_CHARS],
+                      "script_written_in_app_wording_not_confirmed": True})
+    elif sample.get("needs_review"):
         entry.update({"script_excerpt": None, "transcript_not_confirmed": True})
     else:
         entry["script_excerpt"] = sample["text"][:RECOMMEND_EXCERPT_CHARS]
+    days = corpus.read_after_days(sample)
+    if days is not None:
+        entry["numbers_read_days_after_posting"] = days
     return entry
 
 

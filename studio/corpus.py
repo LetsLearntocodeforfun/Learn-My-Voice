@@ -5,6 +5,7 @@ Everything here is deterministic. Model calls that use these results live in
 """
 from __future__ import annotations
 
+import datetime
 import html
 import io
 import re
@@ -19,6 +20,8 @@ from . import textstats
 FINAL_PARTICLES = "啦嘛哈喔呐诶呀呗啊呢吧哦哇"
 MAX_DOCX_XML_BYTES = 20 * 1024 * 1024
 METRIC_FIELDS = ("views", "likes", "collects", "comments")
+ORIGIN_SCRIPT = "script"     # ``origin`` of a library item made from a script of this app that was posted (store.ORIGIN_SCRIPT)
+_DAY = re.compile(r"([0-9]{4})-([0-9]{2})-([0-9]{2})")
 
 
 class ImportError_(Exception):
@@ -133,6 +136,39 @@ def voice_stats(texts: Iterable[str]) -> Dict[str, Any]:
         "particles_never_seen": [p for p in FINAL_PARTICLES if p not in particles],
         "top_english_tokens": [w for w, _ in english.most_common(25)],
     }
+
+
+def waits_as_posted_script(sample: Dict[str, Any]) -> bool:
+    """Whether this item is a posted script whose wording the creator has not yet said is theirs.
+
+    Such an item waits (``needs_review``) like a machine transcript nobody has read, and for a different
+    reason: its text began in this app, possibly as an AI's draft. Its numbers count wherever numbers are
+    used. Its wording is left out of everything that learns or checks how the creator talks
+    (``pipeline.confirmed_samples``) until they confirm it, or until the words of the posted video replace
+    it (a subtitle file, a transcript: the item's ``kind`` is then no longer ``script``).
+    """
+    return bool(sample.get("needs_review")) and sample.get("origin") == ORIGIN_SCRIPT and sample.get("kind", "script") == "script"
+
+
+def parse_day(value: Any) -> Optional[datetime.date]:
+    """A day written as ``YYYY-MM-DD``, or None for anything else: another form, or a day that does not exist."""
+    match = _DAY.fullmatch(value) if isinstance(value, str) else None
+    if not match:
+        return None
+    try:
+        return datetime.date(int(match.group(1)), int(match.group(2)), int(match.group(3)))
+    except ValueError:
+        return None
+
+
+def read_after_days(sample: Dict[str, Any]) -> Optional[int]:
+    """How many days after a video was posted its numbers were read; None when either day is not known.
+
+    Numbers keep changing for days, so numbers read after 2 days and numbers read after 60 do not compare.
+    This is stated next to the numbers and nothing more is done with it: no number is adjusted or projected.
+    """
+    posted, read = parse_day(sample.get("posted_on")), parse_day(sample.get("metrics_on"))
+    return (read - posted).days if (posted is not None and read is not None) else None
 
 
 def interactions(sample: Dict[str, Any]) -> Optional[int]:

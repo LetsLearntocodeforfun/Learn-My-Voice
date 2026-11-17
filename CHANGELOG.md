@@ -63,6 +63,14 @@ be read again then.
   nothing until Import is clicked. What is imported counts as the creator's own entry, like a paste. A file is
   treated as hostile input: sizes, rows, columns and unpacking are capped, a workbook is never written to
   disk, formulas are never worked out, and a workbook that declares entities is refused.
+- **Mark as posted.** A script written here and then posted becomes one library item, with the day it was
+  posted, an optional link kept as text, and its numbers, so everything that ranks by the creator's own
+  results sees what was made in the app. The day the numbers were read is kept beside them and shown as
+  days after posting; nothing is adjusted or projected. The wording waits: it is not learned from until the
+  creator confirms it, or until the words of the posted video take its place from a subtitle file or a
+  transcript. The page says how many lines are still exactly as an AI wrote them, counted in code. An
+  opening that is still an AI's sentence is kept apart from the creator's own openings and never reaches a
+  prompt as the creator's habit.
 - **Launchers for Windows and Linux.** `Start Learn My Voice.bat` and `start-learn-my-voice.sh` start the app
   with the Python the system has, and say what to install when there is none.
 - **A package to download, and the app says which build it is.** A release candidate comes with one zip that
