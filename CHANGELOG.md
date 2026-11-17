@@ -86,6 +86,10 @@ be read again then.
 
 - Saving the settings, the creator profile or a voice profile would have failed on Windows with a Python older
   than 3.13. Found by reading the code; not yet run on Windows.
+- On Windows, two saves at the same moment could fail with "Access is denied", and a second copy of the app
+  could start on a port the first was already using. Both were found by the tests on GitHub's Windows
+  machines on 17 November 2026. A save is now tried again for a moment where Windows refuses it, and the port
+  is asked for exclusively there.
 - On Windows the pages' scripts could be sent as plain text, which leaves the page empty. Also found by
   reading the code.
 - A `.docx` of 437 bytes held the server for 10 seconds, and one pasted trend line of 32,000 spaces for 7.5.
@@ -103,10 +107,13 @@ be read again then.
 - The automated tests pass on macOS with Python 3.9.6. One of them transcribes real audio and only runs where
   the transcriber is installed. Each release candidate's own notes say what GitHub's machines found for it on
   macOS, Windows and Linux.
-- Windows and Linux: no person has used the app there. On GitHub's machines (first run on 16 November 2026) the
-  tests pass on macOS and on Linux with Python 3.9, 3.13 and 3.15, and fail on Windows with all three; the
-  reasons were not yet known when this was written. Take Windows as not working until a release candidate's
-  notes say otherwise.
+- Windows and Linux: no person has used the app there. On GitHub's machines the tests pass on macOS and on
+  Linux. On Windows the package starts with its launcher and the app answers, but 18 of 642 tests failed on
+  17 November 2026: two were the faults listed under "Fixed", most of the rest test what only a Mac has
+  (transcription) or what Windows does not have (file modes that close the data folder to other accounts).
+  Each release candidate's notes say what was found for that build.
+- On Windows the app does not close its data folder to the other accounts on the computer. Who may read it is
+  decided by the folder the app was unpacked in.
 - A release candidate is published only when the tests pass on macOS and Linux and the package, started with
   its launcher, works on macOS. The tests on Windows and a trial of the package on Windows and Linux (unpack,
   start with the launcher, use, stop) run as well; when they fail the release candidate is still published,

@@ -254,7 +254,7 @@ class NotesTest(TempCase):
         ``said`` what a failed job reported about it."""
         out = []
         for runner in ("macos-latest", "windows-latest", "ubuntu-24.04"):
-            for kind, pythons in (("tests", ("3.9", "3.13", "3.15")), ("try", ("3.9", "3.15"))):
+            for kind, pythons in (("tests", ("3.9", "3.14", "3.15")), ("try", ("3.9", "3.15"))):
                 for python in pythons:
                     label = "%s / Python %s" % (runner, python)
                     ok = (kind, label) not in failing.get("failed", ())
@@ -271,7 +271,7 @@ class NotesTest(TempCase):
         self.assertEqual(problems, [])
         for said in ("A release candidate of 0.2.0-beta", "commit `cccccccccccc`", "on branch `beta/0.2.0`", "not the finished 0.2.0-beta",
                      "learn-my-voice-0.2.0-beta.rc.7.zip", "Start Learn My Voice.command", "Start Learn My Voice.bat",
-                     "sh start-learn-my-voice.sh", "unidentified developer", "No person has used this build on any system",
+                     "sh start-learn-my-voice.sh", "Privacy & Security", "Open Anyway", "No person has used this build on any system",
                      "f" * 64, "tools/build_release.py build --rc 7`", "https://example.test/run/1", "### What is in 0.2.0-beta",
                      "- Something new."):
             self.assertIn(said, text)
@@ -290,7 +290,7 @@ class NotesTest(TempCase):
         self.assertIn("should be taken as not working yet", text)
 
     def test_a_failure_on_a_required_system_stops_the_release(self):
-        for failed in ([("tests", "macos-latest / Python 3.13")], [("try", "macos-latest / Python 3.9")]):
+        for failed in ([("tests", "macos-latest / Python 3.14")], [("try", "macos-latest / Python 3.9")]):
             text, problems = self.notes(self.results(failed=failed))
             self.assertEqual(len(problems), 1, failed)
             self.assertIn("macos", problems[0])
@@ -319,14 +319,14 @@ class NotesTest(TempCase):
         same = "12 of 560 tests did not pass.\n12 x PermissionError: [WinError 32] in use: '<path>' (for one: tests.test_x.A.test_b)"
         nasty = "ended at once\n~~~~~~~~\n# not a heading\n<script>alert(1)</script> | a | b |\n" + "x" * 5000
         text, problems = self.notes(self.results(
-            failed=[("tests", "windows-latest / Python 3.9"), ("tests", "windows-latest / Python 3.13"), ("try", "windows-latest / Python 3.9"),
+            failed=[("tests", "windows-latest / Python 3.9"), ("tests", "windows-latest / Python 3.14"), ("try", "windows-latest / Python 3.9"),
                     ("try", "ubuntu-24.04 / Python 3.15")],
-            said={("tests", "windows-latest / Python 3.9"): same, ("tests", "windows-latest / Python 3.13"): same,
+            said={("tests", "windows-latest / Python 3.9"): same, ("tests", "windows-latest / Python 3.14"): same,
                   ("try", "windows-latest / Python 3.9"): nasty}))
         self.assertEqual(problems, [])
         self.assertIn("What those jobs reported:", text)
         self.assertEqual(text.count("12 of 560 tests did not pass."), 1)        # two jobs said the same: shown once, under both names
-        self.assertIn("windows-latest / Python 3.9; windows-latest / Python 3.13, the test suite:", text)
+        self.assertIn("windows-latest / Python 3.9; windows-latest / Python 3.14, the test suite:", text)
         self.assertIn("windows-latest / Python 3.9, starting the package:", text)
         self.assertNotIn("ubuntu-24.04 / Python 3.15, starting", text)          # it failed and said nothing: listed, not quoted
         self.assertIn("ubuntu-24.04 / Python 3.15", text.split("What those jobs reported:")[0])
@@ -357,12 +357,12 @@ class NotesTest(TempCase):
         build_release.write_result(folder / "tests-a.json", "tests", "macos-latest / Python 3.9", "success")
         build_release.write_result(folder / "tests-b.json", "tests", "windows-latest  /  Python 3.9\n", "failure")
         build_release.write_result(folder / "tests-c.json", "tests", "ubuntu-24.04 / Python 3.9", "")           # the step never ran
-        build_release.write_result(folder / "tests-d.json", "tests", "ubuntu-24.04 / Python 3.13", "cancelled")
+        build_release.write_result(folder / "tests-d.json", "tests", "ubuntu-24.04 / Python 3.14", "cancelled")
         (folder / "try-broken.json").write_text("{not json", encoding="utf-8")
         (folder / "try-other.json").write_text(json.dumps({"kind": "something else", "label": "x"}), encoding="utf-8")
         found = {r["label"]: r["ok"] for r in build_release.read_results(folder)}
         self.assertEqual(found, {"macos-latest / Python 3.9": True, "windows-latest / Python 3.9": False, "ubuntu-24.04 / Python 3.9": False,
-                                 "ubuntu-24.04 / Python 3.13": False, "try-broken": False, "try-other": False})
+                                 "ubuntu-24.04 / Python 3.14": False, "try-broken": False, "try-other": False})
         self.assertEqual(build_release.read_results(self.tmp / "nothing-here"), [])
         with self.assertRaises(SystemExit):
             build_release.write_result(folder / "x.json", "deploy", "macos-latest", "success")
@@ -495,7 +495,7 @@ class WorkflowsTest(unittest.TestCase):
         self.assertEqual(release.count("actions/checkout@"), release.count("persist-credentials: false"))
         # The numbers of jobs the notes are told to expect are the numbers the two matrices make.
         self.assertIn("--legs tests=3 --legs try=2", release)
-        self.assertIn('python: ["3.9", "3.13", "3.15"]', tests)
+        self.assertIn('python: ["3.9", "3.14", "3.15"]', tests)
         self.assertIn('python: ["3.9", "3.15"]', release)
 
     def test_a_failure_counts_where_the_suite_is_known_to_pass(self):
@@ -612,7 +612,7 @@ class RunTestsTest(TempCase):
         self.assertIn("Traceback", groups[0]["trace"])
         text = run_tests.detail(result.testsRun, groups)
         self.assertTrue(text.startswith("4 of 6 tests did not pass.\n2 x PermissionError: "), text)
-        self.assertIn("(for one: ", text)
+        self.assertIn("(for one: test_release.", text)                          # "tests." is left off: every name starts with it
         self.assertEqual(run_tests.detail(6, []), "")
         self.assertEqual(run_tests.detail(0, []), "No test ran.")
         long = run_tests.detail(900, [{"cause": "ValueError: %d %s" % (n, "y" * 200), "count": 1, "tests": ["tests.t.T.test_%d" % n], "trace": ""} for n in range(60)])
@@ -649,10 +649,19 @@ class RunTestsTest(TempCase):
             self.assertNotIn("\n", line)                                        # a command is one line, or GitHub reads the rest as text
             self.assertNotIn("\r", line)
             self.assertLessEqual(len(line), 200 * 3 + run_tests.MAX_MESSAGE * 3 + 20)
-        self.assertTrue(lines[0].startswith("::error title=Tests on windows-latest / Python 3.9%3A 4 of 6 did not pass::4 of 6 tests did not pass.%0A"), lines[0][:160])
-        self.assertIn("%0A%0AAll of them: ", lines[0])                          # in a message a colon stays a colon
-        self.assertIn("test_cannot_remove_a", lines[0])
-        self.assertIn("test_fails", lines[0])
+        self.assertTrue(lines[0].startswith("::error title=Tests on windows-latest / Python 3.9%3A 4 of 6 did not pass::4 of 6 tests did not pass.%0A%0AAll of them: "),
+                        lines[0][:160])                                         # in a message a colon stays a colon
+        names, _, causes = lines[0].partition("%0A%0ABy cause:%0A")
+        for test in ("test_cannot_remove_a", "test_cannot_remove_b", "test_fails", "test_was_expected_to_fail"):
+            self.assertIn(test, names)                                          # every test by name, before the causes
+        self.assertTrue(causes.startswith("2 x PermissionError: "), causes[:60])
+        long = [{"cause": "ValueError: %s" % ("y" * 900), "count": 1, "tests": ["tests.test_x.T.test_%d" % n],
+                 "trace": "Traceback (most recent call last):\n  File \"x.py\", line 1, in t\nValueError: %s\n" % ("y" * 900)} for n in range(3)]
+        cut = run_tests.annotations("x", 9, long)[0]
+        self.assertIn("test_x.T.test_0, test_x.T.test_1, test_x.T.test_2", cut)
+        self.assertNotIn("tests.test_x", cut.split("%0A%0ABy cause")[0])        # without the "tests." each name starts with
+        self.assertIn(long[0]["cause"][:run_tests.MAX_CAUSE] + "... (for one", cut)     # a long cause is cut in the list; its own annotation has more
+        self.assertIn("y" * 150, run_tests.annotations("x", 9, long)[1])
         self.assertTrue(lines[1].startswith("::error title=2 x PermissionError%3A "), lines[1][:80])
         self.assertIn("%0ATraceback (most recent call last):%0A", lines[1])
         self.assertIn("这周又去超市", "".join(lines))                              # text in a message is kept as written

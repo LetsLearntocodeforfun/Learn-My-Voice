@@ -38,7 +38,7 @@ Requirements: Python 3.9 or newer. No packages to install.
 
 | System | Start it with |
 | :--- | :--- |
-| macOS | double-click `启动工作台.command` or `Start Learn My Voice.command`. If macOS refuses to open it the first time, right-click the file and choose Open. |
+| macOS | double-click `启动工作台.command` or `Start Learn My Voice.command`. macOS refuses to open it the first time: on macOS 15 or newer, open System Settings, go to Privacy & Security and click Open Anyway; on older versions, right-click the file and choose Open. |
 | Windows | double-click `Start Learn My Voice.bat` |
 | Linux | `sh start-learn-my-voice.sh` in a terminal |
 

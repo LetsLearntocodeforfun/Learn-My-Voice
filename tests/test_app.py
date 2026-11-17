@@ -2,6 +2,7 @@
 import http.client
 import json
 import shutil
+import os
 import stat
 import tempfile
 import threading
@@ -181,7 +182,8 @@ class ServerTest(unittest.TestCase):
                                              "manual": False, "configured": True})
         _, _, raw_state = self.call("GET", "/api/state", raw=True)
         self.assertNotIn(b"SECRET-KEY", raw_state)
-        self.assertEqual(stat.S_IMODE(self.store.config_path.stat().st_mode), 0o600)
+        if os.name == "posix":            # Windows has no such modes: there the folder decides who may read the file
+            self.assertEqual(stat.S_IMODE(self.store.config_path.stat().st_mode), 0o600)
 
         self.assertEqual(self.call("POST", "/api/generate", {"notes": "  "})[2]["error"], "notes_required")
         status, _, script = self.call("POST", "/api/generate", {"notes": "去 Costco 补货", "target_sec": 30, "video_format": "COUPLE_VLOG"})

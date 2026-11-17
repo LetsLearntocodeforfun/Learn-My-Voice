@@ -29,8 +29,9 @@ from typing import Any, Dict, List, Optional
 ROOT = Path(__file__).resolve().parent.parent
 # GitHub shows at most ten error annotations for one step: one says how many did not pass, nine say why.
 MAX_ANNOTATIONS = 10
-MAX_MESSAGE = 3000
+MAX_MESSAGE = 6000
 MAX_DETAIL = 2000
+MAX_CAUSE = 140                         # of a cause, in a list of causes; the annotation for that cause holds it whole
 
 
 def cause_of(trace: str) -> str:
@@ -90,9 +91,15 @@ def detail(ran: int, groups: List[Dict[str, Any]]) -> str:
         return ""
     lines = ["%d of %d tests did not pass." % (failed, ran)]
     for group in groups:
-        lines.append("%d x %s (for one: %s)" % (group["count"], group["cause"], group["tests"][0]))
+        cause = group["cause"] if len(group["cause"]) <= MAX_CAUSE else group["cause"][:MAX_CAUSE] + "..."
+        lines.append("%d x %s (for one: %s)" % (group["count"], cause, _short(group["tests"][0])))
     text = "\n".join(lines)
     return text if len(text) <= MAX_DETAIL else text[:MAX_DETAIL - 20].rstrip() + "\n(and more)"
+
+
+def _short(test: str) -> str:
+    """The name of a test without the ``tests.`` every one of them starts with."""
+    return test[len("tests."):] if test.startswith("tests.") else test
 
 
 def _data(text: str) -> str:
@@ -116,8 +123,11 @@ def annotations(label: str, ran: int, groups: List[Dict[str, Any]]) -> List[str]
     if not ran:
         return [annotation("Tests%s: none ran" % where, "No test ran. Nothing was checked.")]
     failed = sum(group["count"] for group in groups)
-    names = ", ".join(name for group in groups for name in group["tests"])
-    out = [annotation("Tests%s: %d of %d did not pass" % (where, failed, ran), detail(ran, groups) + "\n\nAll of them: " + names)]
+    # Every test by name comes first: when the message is cut, it is the list of causes that loses its end,
+    # and each of the first causes has an annotation of its own below.
+    names = ", ".join(sorted(_short(name) for group in groups for name in group["tests"]))
+    head, _, causes = detail(ran, groups).partition("\n")
+    out = [annotation("Tests%s: %d of %d did not pass" % (where, failed, ran), "%s\n\nAll of them: %s\n\nBy cause:\n%s" % (head, names, causes))]
     for group in groups[:MAX_ANNOTATIONS - 1]:
         tail = "\n".join(group["trace"].rstrip().split("\n")[-30:])
         out.append(annotation("%d x %s" % (group["count"], group["cause"][:150]), "For one: %s\n\n%s" % (group["tests"][0], tail)))

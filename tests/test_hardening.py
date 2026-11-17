@@ -616,7 +616,8 @@ class FileWriteTest(StudioCase):
         stray.write_text("left behind")
         os.chmod(str(stray), 0o644)
         self.assertEqual(self.send("POST", "/api/settings", {"provider": "openai", "model": "m", "key": "sk-TEST-NOT-REAL"})[0], 200)
-        self.assertEqual(stat.S_IMODE(self.store.config_path.stat().st_mode), 0o600)
+        if os.name == "posix":            # Windows has no such modes: there the folder decides who may read the file
+            self.assertEqual(stat.S_IMODE(self.store.config_path.stat().st_mode), 0o600)
         self.assertEqual(self.store.load_config()["keys"], {"openai": "sk-TEST-NOT-REAL"})
         self.assertEqual(stray.read_text(), "left behind")                       # not this save's file: left alone
 
@@ -796,6 +797,8 @@ class StaleScriptTest(StudioCase):
 
 
 # ---------------------------------------------------------------------------------------------- 7. the data folder is the owner's only
+@unittest.skipUnless(os.name == "posix", "Windows has no file modes. There the app does not close its data folder to other accounts: "
+                                         "the folder it is in decides who may read it, as the README says")
 class OwnerOnlyTest(StudioCase):
     def setUp(self):
         previous = os.umask(0o022)      # the usual setting, under which a new file is readable by everyone

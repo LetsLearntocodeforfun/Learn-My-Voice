@@ -28,6 +28,11 @@ from unittest import mock
 
 from studio import timing, transcribe, whisper_worker
 
+# Transcription is for a Mac. What it is made of (opening a folder to learn where it really is, the programs it
+# starts) has no counterpart on Windows, where the app refuses to transcribe before any of that runs. The tests
+# that drive those parts with stand-ins are therefore not run there; the tests of the refusal are.
+mac_pipeline = unittest.skipIf(os.name == "nt", "the transcription pipeline is for a Mac and cannot run on Windows")
+
 ROOT = Path(__file__).resolve().parent.parent
 REPLY = {
     "segments": [{"start": 0.0, "end": 5.2, "text": "今天去超市买菜啦"},
@@ -281,6 +286,7 @@ class InstallTest(Sandbox):
         transcribe.install(lambda stage, fraction: seen.append((stage, fraction)))
         return seen
 
+    @mac_pipeline
     def test_install_from_nothing_then_again(self):
         with mock.patch.dict(os.environ, {"HF_TOKEN": "secret", "PIP_INDEX_URL": "http://elsewhere.example", "HTTPS_PROXY": "http://proxy:8080"}):
             seen = self.install()
@@ -452,6 +458,7 @@ class TranscribeFileTest(Sandbox):
         del self.tools.calls[:]
         del self.tools.seals[:]                                                   # kept in step with the calls
 
+    @mac_pipeline
     def test_transcript_with_timings_and_no_route_to_the_network(self):
         seen = []
         source = self.video()
@@ -476,11 +483,13 @@ class TranscribeFileTest(Sandbox):
         self.assertGreaterEqual(timeout, 900)
         self.assertFalse(Path(wav).parent.exists())                               # the temporary audio is gone
 
+    @mac_pipeline
     def test_long_audio_gets_a_longer_timeout(self):
         self.tools.wav_seconds = 600.0
         transcribe.transcribe_file(self.video())
         self.assertEqual(self.tools.of("worker")[0][2], 1800.0)
 
+    @mac_pipeline
     def test_avconvert_is_never_used_when_afconvert_cannot_read_the_container(self):
         """It used to be the second step. It follows a crafted video's pointer to a different file, so it is gone."""
         self.tools.readable = lambda source: source.endswith(".m4a")
@@ -490,6 +499,7 @@ class TranscribeFileTest(Sandbox):
         self.assertEqual((error.code, error.reason, self.tools.kinds()), ("no_audio", "no_audio", ["afconvert"]))
         self.assertFalse(hasattr(transcribe, "AVCONVERT"))
 
+    @mac_pipeline
     def test_no_sound_is_reported_and_ffmpeg_is_never_used(self):
         self.tools.readable = lambda source: False
         self.which.return_value = "/opt/tools/ffmpeg"                             # someone who already has ffmpeg
@@ -500,6 +510,7 @@ class TranscribeFileTest(Sandbox):
         scratch = Path(self.tools.calls[0][0][-1]).parent
         self.assertFalse(scratch.exists())                                        # cleaned up after a failure too
 
+    @mac_pipeline
     def test_every_program_is_started_under_the_seal(self):
         source = self.video()
         transcribe.transcribe_file(source)
@@ -538,6 +549,7 @@ class TranscribeFileTest(Sandbox):
         error = self.failure(transcribe.transcribe_file, self.video())
         self.assertEqual((error.code, error.reason, self.tools.calls), ("unsupported", "no_network_block", []))
 
+    @mac_pipeline
     def test_a_worker_that_finds_the_network_open_is_a_refusal_not_a_transcript(self):
         self.patch(transcribe, "_SEAL_STATE", {"at": None, "detail": ""})
         self.assertEqual(transcribe.WORKER_REFUSED, whisper_worker.REFUSED)
@@ -557,6 +569,7 @@ class TranscribeFileTest(Sandbox):
         error = self.failure(transcribe.transcribe_file, self.tmp / "gone.mp4")
         self.assertEqual((error.code, error.reason, self.tools.calls), ("failed", "file_missing", []))
 
+    @mac_pipeline
     def test_worker_problems_are_reported_in_plain_words(self):
         for exit_code, out, reason in ((1, '{"error": "ValueError: boom"}\n', "worker"), (0, "not json at all\n", "worker"),
                                        (0, '{"language": "zh"}\n', "worker"), (0, "", "worker"), (None, "", "timeout")):
@@ -566,6 +579,7 @@ class TranscribeFileTest(Sandbox):
         self.tools.worker_exit, self.tools.worker_out = 1, '{"error": "ValueError: boom"}\n'
         self.assertIn("ValueError: boom", self.failure(transcribe.transcribe_file, self.video()).detail)
 
+    @mac_pipeline
     def test_no_speech_is_an_empty_result_and_broken_segments_are_dropped(self):
         self.tools.reply = {"segments": [], "language": "en", "duration_sec": 12.0}
         result = transcribe.transcribe_file(self.video())

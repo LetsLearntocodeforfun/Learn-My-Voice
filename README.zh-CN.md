@@ -37,7 +37,7 @@
 
 | 系统 | 启动方法 |
 | :--- | :--- |
-| macOS | 双击 `启动工作台.command`（或 `Start Learn My Voice.command`）。如果第一次打不开，请右键点这个文件，选择「打开」。 |
+| macOS | 双击 `启动工作台.command`（或 `Start Learn My Voice.command`）。第一次 macOS 会拦住：macOS 15 或更新的版本，请打开「系统设置」→「隐私与安全性」，往下找到「仍要打开」；更早的版本，右键点这个文件，选择「打开」。 |
 | Windows | 双击 `Start Learn My Voice.bat` |
 | Linux | 在终端里运行 `sh start-learn-my-voice.sh` |
 

@@ -306,6 +306,28 @@ def _owner_only(root: Path) -> None:
             close(os.path.join(folder, name))
 
 
+# Windows does not let a file be replaced while anyone has it open: another save of the same file that is
+# just taking its place, or a reader in the middle of loading it. The refusal ends as soon as that one is
+# done, so there the replacement is tried again for a moment. Everywhere else a file can always be replaced,
+# and a refusal is a real one.
+_REPLACE_MAY_BE_REFUSED = os.name == "nt"
+_REPLACE_TRIES = 12                     # with the waits below, a little over half a second in all
+
+
+def _replace(tmp: str, target: str) -> None:
+    """``os.replace``, tried again where a refusal may only last a moment (see above)."""
+    wait = 0.002
+    for attempt in range(1, _REPLACE_TRIES + 1):
+        try:
+            os.replace(tmp, target)
+            return
+        except PermissionError:
+            if not _REPLACE_MAY_BE_REFUSED or attempt == _REPLACE_TRIES:
+                raise
+        time.sleep(wait)
+        wait = min(wait * 2, 0.1)
+
+
 def _sync_folder(folder: Path) -> None:
     """Ask the system to record a rename in ``folder`` on the disk. Best effort: not every system allows it."""
     try:
@@ -393,7 +415,7 @@ class Store:
                 fh.write(data)
                 fh.flush()
                 os.fsync(fh.fileno())
-            os.replace(tmp, str(path))
+            _replace(tmp, str(path))
         except BaseException:
             try:
                 os.unlink(tmp)

@@ -267,8 +267,9 @@ def release_notes(build: Dict[str, Any], sha256: str, file_name: str, results: L
         "| Windows | double-click `%s` | install Python from the Microsoft Store |" % LAUNCHERS["windows"],
         "| Linux | `sh %s` in a terminal | install `python3` with the system's package manager |" % LAUNCHERS["linux"],
         "",
-        "macOS will say the launcher is from an unidentified developer, because this project has no paid signing "
-        "certificate: right-click the file, choose Open, and confirm once.",
+        "macOS refuses to open the launcher the first time, because this project has no paid signing certificate. "
+        "On macOS 15 or newer: open System Settings, go to Privacy & Security, scroll down and click Open Anyway. "
+        "On older versions: right-click the file, choose Open, and confirm. This is needed once.",
         "",
         "### What was checked for this build",
         "",

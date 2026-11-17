@@ -1167,6 +1167,17 @@ class StudioServer(ThreadingHTTPServer):
     """The HTTP server, plus what its request handlers share (``app``)."""
 
     app: Optional[App] = None
+    # "Reuse the address" lets a server start again right after it was stopped. On Windows the same setting
+    # means something else: a second program may listen on a port that is already taken, and each of the two
+    # then gets some of the requests. There the port is asked for exclusively instead, so that a taken port
+    # fails as it does everywhere else and ``main`` goes on to the next one.
+    allow_reuse_address = os.name != "nt"
+
+    def server_bind(self) -> None:
+        exclusive = getattr(socket, "SO_EXCLUSIVEADDRUSE", None)        # Windows only
+        if os.name == "nt" and exclusive is not None:
+            self.socket.setsockopt(socket.SOL_SOCKET, exclusive, 1)
+        super().server_bind()
 
     def server_close(self) -> None:
         # Also reached from the constructor when the port is taken, before ``app`` exists.
@@ -1184,10 +1195,30 @@ def make_server(port: int, store: Store, transport: Optional[llm.Transport] = No
     return server
 
 
+def _stop_when_input_ends(server: StudioServer, stream: Any) -> None:
+    """Stop ``server`` once ``stream`` has ended.
+
+    The desktop app starts the core with its standard input held open, and never writes to it. However the
+    app goes away (its window is closed, it crashes, the system ends it), its end of that pipe closes, the
+    read below returns, and the core stops the way it does on Ctrl-C: uploads still waiting are removed and
+    the port is free again. So the core never outlives the window it belongs to. Nothing read is used.
+    """
+    try:
+        raw = getattr(stream, "buffer", stream)
+        while raw.read(4096):
+            pass
+    except (AttributeError, OSError, ValueError):
+        pass                              # no input at all, or it was closed under us: the same as its end
+    server.shutdown()
+
+
 def main(argv: Optional[List[str]] = None) -> int:
     parser = argparse.ArgumentParser(description="Learn My Voice script studio (local web app)")
-    parser.add_argument("--port", type=int, default=DEFAULT_PORT)
+    parser.add_argument("--port", type=int, default=DEFAULT_PORT,
+                        help="the first of ten ports to try; 0 takes any free port")
     parser.add_argument("--no-browser", action="store_true")
+    parser.add_argument("--exit-with-parent", action="store_true",
+                        help="stop when standard input ends. The desktop app starts the core like this, so that it never outlives its window")
     args = parser.parse_args(argv)
 
     # What is printed below is Chinese and English. Where the output cannot show Chinese (it is sent to a file or
@@ -1216,6 +1247,8 @@ def main(argv: Optional[List[str]] = None) -> int:
     print("工作台已启动 / Studio running: %s\n关闭这个窗口即可退出。/ Close this window to quit." % url, flush=True)
     if not args.no_browser:
         webbrowser.open(url)
+    if args.exit_with_parent:
+        threading.Thread(target=_stop_when_input_ends, args=(server, sys.stdin), name="exit-with-parent", daemon=True).start()
     try:
         server.serve_forever()
     except KeyboardInterrupt:

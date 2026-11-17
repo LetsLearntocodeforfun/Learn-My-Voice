@@ -1,11 +1,15 @@
 """Behaviour that must not depend on which system the app runs on.
 
-The app was built on macOS. These tests stand in, on any system, for two things Windows does differently:
+The app was built on macOS. These tests stand in, on any system, for things Windows does differently:
 
 - Before Python 3.13, Windows has no ``os.fchmod``.
 - On Windows, Python reads the type of a file from the registry, where ``.js`` is sometimes ``text/plain``.
+- Windows refuses to replace a file while anyone has it open. GitHub's Windows machines showed that: of eight
+  saves at the same moment, six failed with "Access is denied".
+- On Windows "reuse the address" lets a second program listen on a port that is taken. GitHub's Windows
+  machines showed that too: starting on a taken port did not fail.
 
-They show that the code no longer depends on either. They do not show that the app works on Windows:
+They show that the code no longer depends on these. They do not show that the app works on Windows:
 only running it there does.
 """
 import http.client
@@ -20,6 +24,7 @@ from pathlib import Path
 from unittest import mock
 
 from studio import server
+from studio import store as store_module
 from studio.store import Store
 
 
@@ -96,6 +101,91 @@ class FileTypeTest(unittest.TestCase):
         for path in sorted(server.WEB_DIR.iterdir()):
             if path.is_file() and not path.name.startswith("."):
                 self.assertIn(path.suffix.lower(), server.STATIC_TYPES, path.name)
+
+
+class ReplaceRefusedForAMomentTest(unittest.TestCase):
+    """Saving while Windows will not let the old file be replaced yet."""
+
+    def setUp(self):
+        self.tmp = Path(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, str(self.tmp), True)
+        self.store = Store(self.tmp)
+        self.real = os.replace
+        self.calls = 0
+
+    def refusing(self, times):
+        def replace(src, dst):
+            self.calls += 1
+            if self.calls <= times:
+                raise PermissionError(13, "Access is denied")
+            return self.real(src, dst)
+        return replace
+
+    def leftovers(self):
+        return sorted(path.name for path in self.tmp.iterdir() if path.name.endswith(".tmp"))
+
+    def test_where_a_refusal_may_pass_the_save_is_tried_again_and_goes_through(self):
+        self.store.save_recommendations({"n": 1})
+        with mock.patch.object(store_module, "_REPLACE_MAY_BE_REFUSED", True), mock.patch.object(store_module.time, "sleep") as waited, \
+                mock.patch.object(store_module.os, "replace", self.refusing(3)):
+            self.store.save_recommendations({"n": 2})
+        self.assertEqual((self.calls, waited.call_count), (4, 3))
+        self.assertEqual(self.store.load_recommendations(), {"n": 2})
+        self.assertEqual(self.leftovers(), [])
+        waits = [call.args[0] for call in waited.call_args_list]
+        self.assertEqual(waits, sorted(waits))                                   # it waits a little longer each time
+        self.assertLess(sum(waits), 0.1)
+
+    def test_a_refusal_that_does_not_pass_is_reported_and_leaves_the_old_file(self):
+        self.store.save_recommendations({"n": 1})
+        with mock.patch.object(store_module, "_REPLACE_MAY_BE_REFUSED", True), mock.patch.object(store_module.time, "sleep") as waited, \
+                mock.patch.object(store_module.os, "replace", self.refusing(10 ** 6)):
+            with self.assertRaises(PermissionError):
+                self.store.save_recommendations({"n": 2})
+        self.assertEqual(self.calls, store_module._REPLACE_TRIES)                # a fixed number of tries, then it gives up
+        self.assertLess(sum(call.args[0] for call in waited.call_args_list), 1.0)        # in under a second
+        self.assertEqual(self.store.load_recommendations(), {"n": 1})
+        self.assertEqual(self.leftovers(), [])
+
+    def test_where_a_file_can_always_be_replaced_a_refusal_is_raised_at_once(self):
+        with mock.patch.object(store_module, "_REPLACE_MAY_BE_REFUSED", False), mock.patch.object(store_module.time, "sleep") as waited, \
+                mock.patch.object(store_module.os, "replace", self.refusing(1)):
+            with self.assertRaises(PermissionError):
+                self.store.save_recommendations({"n": 2})
+        self.assertEqual((self.calls, waited.call_count), (1, 0))
+        self.assertEqual(store_module._REPLACE_MAY_BE_REFUSED, os.name == "nt")  # tried again on Windows, and only there
+
+
+class PortTakenTest(unittest.TestCase):
+    """Starting on a port another program is listening on has to fail, so that the next port is tried."""
+
+    def test_a_taken_port_is_refused_on_every_system(self):
+        tmp = Path(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, str(tmp), True)
+        first = server.make_server(0, Store(tmp / "one"))
+        self.addCleanup(first.server_close)
+        with self.assertRaises(OSError):
+            server.make_server(first.server_address[1], Store(tmp / "two"))
+
+    def test_only_windows_asks_for_the_port_exclusively(self):
+        # Elsewhere "reuse the address" is kept: it lets the app start again right after it was closed.
+        self.assertEqual(server.StudioServer.allow_reuse_address, os.name != "nt")
+        asked = []
+
+        class Socket:
+            def setsockopt(self, *args):
+                asked.append(args)
+
+        with mock.patch.object(server.ThreadingHTTPServer, "server_bind", lambda self: None):
+            stand_in = server.StudioServer.__new__(server.StudioServer)
+            stand_in.socket = Socket()
+            with mock.patch.object(server.os, "name", "nt"), mock.patch.object(server.socket, "SO_EXCLUSIVEADDRUSE", 0xFFFB, create=True):
+                stand_in.server_bind()
+            self.assertEqual(asked, [(server.socket.SOL_SOCKET, 0xFFFB, 1)])
+            del asked[:]
+            with mock.patch.object(server.os, "name", "posix"):
+                stand_in.server_bind()
+            self.assertEqual(asked, [])
 
 
 if __name__ == "__main__":
