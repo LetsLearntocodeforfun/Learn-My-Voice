@@ -97,7 +97,7 @@ Object.assign(I18N.zh, {
   cr_ask_hooks: '让 AI 照你的路子写几个开场', cr_ask: '让 AI 写', cr_ask_again: '再要一批',
   cr_instruction_ph: '想怎么改？可以不填。比如：更口语一点', cr_working: 'AI 正在写…',
   cr_use: '用这句', cr_used: '已换成 AI 的建议。', cr_undo: '撤销',
-  cr_checks_clean: '规则检查：没有问题', cr_checks_n: '规则检查：{n} 处要看', cr_was: '（现在这句 {n} 处）', cr_was_clean: '（现在这句也没有）',
+  cr_checks_clean: '规则检查：没有发现问题', cr_checks_n: '规则检查：{n} 处要看', cr_was: '（现在这句 {n} 处）', cr_was_clean: '（现在这句也没有）',
   cr_fit: '{inside}/{n} 口气在你平常的长度里', cr_fit_new: '你的素材里没出现过：{list}',
   cr_match: '像你的程度 {from} → {to}', cr_one_breath: '每口气都念得完', cr_not_one_breath: '还有一口气太长', cr_units: '{n} 字',
   cr_note: '这些句子是 AI 写的。程序只查了规则和说话习惯，好不好由你判断。你采用的句子不会被算成你自己的改法。',

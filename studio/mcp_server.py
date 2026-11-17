@@ -54,6 +54,7 @@ INSTRUCTIONS = (
     "disclaimer for those findings, the day the word list was reviewed, and how many of its entries the creator has "
     "switched off. The word list is the project's own and not legal advice: never say that a script with no finding "
     "is allowed or compliant. You cannot change the word list; the creator does that in the app's settings. "
+    "A check lists at most 500 findings about lines; `findings_left_out` in it says how many more there were. "
     "After saving, say that the script is in the app under 我的脚本. "
     "list_trends shows trend keywords scored against the creator's own results; pass the ones you choose as "
     "`keywords` to get_script_brief and save_script. Keywords must never bend the creator's voice."
