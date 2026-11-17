@@ -169,6 +169,27 @@ def describe(finding: guardrails.Finding, stats: Dict[str, Any], who: Any = None
     return out
 
 
+# The most findings about lines that one check hands out. A real script has a few dozen at most. A line made to
+# be flagged over and over (one flagged character 100,000 times) gave 200,000 of them, each saying in two
+# languages what it rests on: a request of 300 KB was answered with 234 MB. Beyond this number the answer says
+# how many were left out (``findings_left_out``), and the errors are the last to go.
+MAX_FINDINGS = 500
+
+
+def _within_limit(findings: List[guardrails.Finding]) -> List[guardrails.Finding]:
+    """At most MAX_FINDINGS findings about lines, in the order given, and every finding about the script as a whole.
+
+    When there are more, what must be fixed is kept before what asks for a second look, and that before hints
+    that a line may sound written; within each, the earlier ones are kept.
+    """
+    about_lines = [at for at, finding in enumerate(findings) if finding.line_no is not None]
+    if len(about_lines) <= MAX_FINDINGS:
+        return findings
+    about_lines.sort(key=lambda at: (findings[at].severity != guardrails.ERROR, findings[at].category == guardrails.AI_TELL, at))
+    kept = set(about_lines[:MAX_FINDINGS])
+    return [finding for at, finding in enumerate(findings) if finding.line_no is None or at in kept]
+
+
 def lint_payload(store: Store, lines: Any, target_sec: Optional[float], keywords: Any = None,
                  post: Any = None) -> Dict[str, Any]:
     """Stats, bilingual findings and target-keyword coverage for script lines, against the active voice profile.
@@ -184,6 +205,9 @@ def lint_payload(store: Store, lines: Any, target_sec: Optional[float], keywords
     they switched off, plus their own phrases. ``wordlist`` in the answer is what has to be said once wherever
     these findings are listed (``wordlist.notice``): the disclaimer, the day the list was reviewed, how many
     shipped entries are switched off, and whether what was stored could not be read.
+
+    ``findings`` holds at most MAX_FINDINGS findings about lines (``_within_limit``); ``findings_left_out`` is how
+    many more there were, 0 for any script a person writes.
     """
     stored, is_example = store.load_dna()
     who = store.load_creator()
@@ -193,9 +217,10 @@ def lint_payload(store: Store, lines: Any, target_sec: Optional[float], keywords
     lexicon = wordlist.effective(store)
     findings = guardrails.lint_script(script, dna, target_duration_sec=target_sec, lexicon=lexicon)
     own = creator.never_hits(script, who)
+    shown = _within_limit(findings)
     described = [describe(f, stats, who, f.category == guardrails.GENERIC_XHS_SLOP and (f.line_no, f.matched) in own, lexicon)
-                 for f in findings]
-    return {"stats": stats, "findings": described, "dna_is_example": is_example,
+                 for f in shown]
+    return {"stats": stats, "findings": described, "findings_left_out": len(findings) - len(shown), "dna_is_example": is_example,
             "keyword_coverage": trends.coverage(normalize_keywords(keywords), script["script_lines"], post),
             "voice_match": voicematch.score(script["script_lines"], voicematch.reference_for(store)),
             "wordlist": wordlist.notice(lexicon)}

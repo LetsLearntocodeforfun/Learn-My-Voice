@@ -8,6 +8,7 @@ import contextlib
 import http.client
 import io
 import json
+import os
 import random
 import re
 import shutil
@@ -35,6 +36,11 @@ LONG = 100000       # characters in a line made to take long
 # second here. The pattern that was corrected took about 9 seconds on such a line, and the overlap check as it
 # was took minutes.
 SLOW = 2.0
+# Seconds a whole check of such a line may take. It has more to do than one pattern: a line that is one flagged
+# character 100,000 times over gives 200,000 findings, and making them and saying what each rests on took one
+# second on the Mac this was written on and up to 2.5 on GitHub's Linux machines (17 November 2026), so 2 seconds
+# failed there for no fault of the code. What this bound is for is the overlap check as it was: minutes.
+SLOW_WHOLE_CHECK = 15.0
 ASSUMES = re.compile(r"\b(she|her|hers|herself|husband|wife|couple)\b", re.I)
 
 # The advertising-rule entries as they stood before this list replaced them (commit 658ac1d): pattern, severity, reason.
@@ -222,10 +228,10 @@ class HostileInputTest(unittest.TestCase):
         "100 ": "100 " * (LONG // 4), "第一": "第一" * (LONG // 2), "唯一的小": "唯一的小" * (LONG // 4),
     }
 
-    def timed(self, work, what):
+    def timed(self, work, what, within=SLOW):
         started = time.perf_counter()
         result = work()
-        self.assertLess(time.perf_counter() - started, SLOW, what)
+        self.assertLess(time.perf_counter() - started, within, what)
         return result
 
     def test_none_of_the_33_patterns_runs_long(self):
@@ -262,7 +268,7 @@ class HostileInputTest(unittest.TestCase):
         lexicon = dict(SHIPPED, own_phrases=own)
         texts = dict(self.GENERAL, mixed="最后 1 天见效不仅是随着进行" * (LONG // 16), aab="aab" * (LONG // 3))
         for label, text in texts.items():
-            self.timed(lambda: g.lint_script(script(text), DNA, lexicon=lexicon), label)
+            self.timed(lambda: g.lint_script(script(text), DNA, lexicon=lexicon), label, within=SLOW_WHOLE_CHECK)
 
     def test_a_check_through_the_app_of_such_a_line_is_bounded(self):
         tmp = Path(tempfile.mkdtemp())
@@ -270,10 +276,52 @@ class HostileInputTest(unittest.TestCase):
             store = Store(tmp)
             wordlist.save(store, {"phrases": ["最", "a"]})
             for text in ("最" * LONG, "a" * LONG, "不仅是随着的" * (LONG // 6)):
-                out = self.timed(lambda: checks.lint_payload(store, script(text)["script_lines"], 30), text[:6])
+                out = self.timed(lambda: checks.lint_payload(store, script(text)["script_lines"], 30), text[:6], within=SLOW_WHOLE_CHECK)
                 self.assertIn("wordlist", out)
+                # The answer is bounded too. Before a check had a limit, the first of these lines, 300 KB as it is
+                # sent, was answered with 200,002 findings: 234 MB.
+                self.assertLessEqual(len(out["findings"]), checks.MAX_FINDINGS + 1, text[:6])      # and one about the whole script
+                self.assertLess(len(json.dumps(out)), 5000000, text[:6])
         finally:
             shutil.rmtree(str(tmp), ignore_errors=True)
+
+    def test_a_check_lists_a_limited_number_of_findings_and_says_how_many_more_there_were(self):
+        tmp = Path(tempfile.mkdtemp())
+        try:
+            store = Store(tmp)
+            usual = checks.lint_payload(store, script("这个真的绝对好用", "今天去超市啦")["script_lines"], 30)
+            self.assertEqual(usual["findings_left_out"], 0)                     # nothing is left out of a script a person writes
+            self.assertTrue(usual["findings"])
+            # 600 times a word that asks for a second look, then a line with an error, then a line with a hint.
+            lines = script("绝对" * 600, "这个可以消炎", "堪称经典")["script_lines"]
+            with mock.patch.object(checks, "MAX_FINDINGS", 10 ** 6):
+                everything = checks.lint_payload(store, lines, 30)
+            self.assertEqual(everything["findings_left_out"], 0)
+            about_lines = [f for f in everything["findings"] if f["line_no"] is not None]
+            self.assertGreater(len(about_lines), checks.MAX_FINDINGS + 100)
+            self.assertTrue([f for f in about_lines if f["line_no"] == 3 and f["category"] == g.AI_TELL])
+
+            out = checks.lint_payload(store, lines, 30)
+            shown = [f for f in out["findings"] if f["line_no"] is not None]
+            self.assertEqual(len(shown), checks.MAX_FINDINGS)
+            self.assertEqual(out["findings_left_out"], len(about_lines) - checks.MAX_FINDINGS)       # what is not listed is counted
+            # What must be fixed is the last to go: every error is still there, on the long line and after it.
+            errors = [(f["line_no"], f["category"], f["matched"]) for f in about_lines if f["severity"] == g.ERROR]
+            self.assertEqual([(f["line_no"], f["category"], f["matched"]) for f in shown if f["severity"] == g.ERROR], errors)
+            self.assertIn((2, g.COMPLIANCE_RISK, "消炎"), errors)
+            # A hint is the first to go, and the finding about the script as a whole always stays.
+            self.assertEqual([f for f in shown if f["category"] == g.AI_TELL], [])
+            self.assertEqual([f for f in out["findings"] if f["line_no"] is None], [f for f in everything["findings"] if f["line_no"] is None])
+            self.assertTrue([f for f in out["findings"] if f["line_no"] is None])
+            # What is listed stands in the order it had: line by line, and on the long line the earlier findings.
+            self.assertEqual([f["line_no"] for f in shown], sorted(f["line_no"] for f in shown))
+            self.assertEqual(shown[:400], about_lines[:400])
+        finally:
+            shutil.rmtree(str(tmp), ignore_errors=True)
+        # The editor says how many are not listed, in both languages.
+        page = (WEB / "app.js").read_text(encoding="utf-8")
+        self.assertIn("lint.findings_left_out", page)
+        self.assertEqual(page.count("issues_more: '"), 2)
 
     def test_the_overlap_check_keeps_what_it_kept_and_no_longer_compares_every_hit_with_every_other(self):
         def as_it_was(hits):
@@ -504,7 +552,7 @@ class OwnPhrasesTest(StoreCase):
         started = time.perf_counter()
         with mock.patch.object(g.re, "compile", recording):
             found = g.lint_script(script("a" * LONG, "(a+)+$ 和 ["), DNA, lexicon=dict(SHIPPED, own_phrases=phrases))
-        self.assertLess(time.perf_counter() - started, SLOW)
+        self.assertLess(time.perf_counter() - started, SLOW_WHOLE_CHECK)
         self.assertEqual([f.matched for f in found if f.detail == g.OWN_PHRASE_DETAIL], ["(a+)+$", "["])
         self.assertGreater(len(compiled), 30)                                    # the shipped patterns were compiled, as always
         shipped = ([entry["pattern"] for group in ("compliance", "ai_tells", "translationese") for entry in SHIPPED[group]]
@@ -668,7 +716,8 @@ class SwitchTest(StoreCase):
         stored = self.stored()
         self.assertEqual(stored.pop(wordlist.KEY), {"off": [], "phrases": ["包邮"]})
         self.assertEqual(stored, others)
-        self.assertEqual(stat.S_IMODE(self.store.config_path.stat().st_mode), 0o600)
+        if os.name == "posix":            # Windows has no such modes: there the folder decides who may read the file
+            self.assertEqual(stat.S_IMODE(self.store.config_path.stat().st_mode), 0o600)
         self.assertEqual(self.store.public_settings()["provider"], "gemini")
         self.assertNotIn("SECRET-KEY", json.dumps(wordlist.payload(self.store)))
 

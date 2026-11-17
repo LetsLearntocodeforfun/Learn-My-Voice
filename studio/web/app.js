@@ -20,7 +20,7 @@ const I18N = {
     prompter: '提词器', export: '导出', delete: '删除', confirm_delete: '确定删除这篇脚本吗？删除后无法恢复。',
     exp_voice: '口播文稿', exp_voice_d: '一口气一行，可用于提词或字幕文稿',
     exp_shots: '拍摄清单', exp_shots_d: '每一句对应的画面', exp_flower: '花字清单', exp_flower_d: '剪辑时要加的花字',
-    all_good: '这些检查没有发现问题', issues_n: '处需要看一下',
+    all_good: '这些检查没有发现问题', issues_n: '处需要看一下', issues_more: '另有 {n} 处没有列出',
     close: '关闭',
     voice_title: '我的声音', voice_sub: 'AI 写稿和检查时参照的说话习惯。',
     v_essence: '整体感觉', v_rate: '语速', v_rate_u: '字/分钟', v_clause: '每口气字数', v_particles: '常用语气词',
@@ -52,7 +52,7 @@ const I18N = {
     prompter: 'Teleprompter', export: 'Export', delete: 'Delete', confirm_delete: 'Delete this script? This cannot be undone.',
     exp_voice: 'Voiceover text', exp_voice_d: 'One breath per line, for prompting or subtitle text',
     exp_shots: 'Shot list', exp_shots_d: 'What to film for each line', exp_flower: 'On-screen text list', exp_flower_d: 'Text overlays to add when editing',
-    all_good: 'These checks found nothing', issues_n: 'things to check',
+    all_good: 'These checks found nothing', issues_n: 'things to check', issues_more: '{n} more are not listed',
     close: 'Close',
     voice_title: '{@Names} voice', voice_sub: 'The speech habits used for drafting and checking.',
     v_essence: 'Overall feel', v_rate: 'Speaking rate', v_rate_u: 'units/min', v_clause: 'Units per breath', v_particles: 'Particles',
@@ -269,7 +269,7 @@ function renderNew() {
 }
 
 /* ---------- script workspace ---------- */
-let cur = null;          // { script, findings, stats, coverage, voice, wordlist }
+let cur = null;          // { script, findings, leftOut, stats, coverage, voice, wordlist }
 let saveTimer = null;
 let dirty = false;
 let lintSeq = 0;
@@ -298,6 +298,7 @@ async function saveNow() {
     const lint = await api('POST', '/api/lint', lintBody(s));
     if (seq !== lintSeq || !cur || cur.script.id !== s.id) return;
     cur.findings = lint.findings;
+    cur.leftOut = lint.findings_left_out || 0;
     cur.stats = lint.stats;
     cur.coverage = lint.keyword_coverage;
     cur.voice = lint.voice_match;
@@ -347,6 +348,8 @@ function paintChecks() {
   const whole = cur.findings.filter((f) => f.line_no === null);
   const hints = cur.findings.filter(wlIsHint).length;      // a hint that a line may sound written is not a thing to fix
   const lineIssues = cur.findings.length - whole.length - hints;
+  /* The server lists at most 500 findings about lines and says how many more there were (studio/checks.py). */
+  const leftOut = cur.leftOut ? ` · <span id="issues-more">${esc(tf('issues_more', { n: cur.leftOut }))}</span>` : '';
   const ratio = st.budget ? st.units / st.budget : 0;
   const cls = ratio > 1.1 ? 'over' : (ratio < 0.9 ? 'under' : '');
   const el = document.getElementById('summary');
@@ -355,7 +358,7 @@ function paintChecks() {
       <span>${esc(t('written'))} <b>${st.units || 0}</b> ${esc(t('chars'))}${st.budget ? ` / ${esc(t('budget'))} ${st.budget}` : ''}</span>
       ${st.estimated_sec ? `<span>${esc(t('est'))} ${st.estimated_sec}${esc(t('sec'))}</span>` : ''}
       <span class="spacer"></span>
-      <span>${lineIssues ? `${lineIssues} ${esc(t('issues_n'))}` : esc(t('all_good'))}${wlHintsNote(hints)}</span></div>
+      <span>${lineIssues ? `${lineIssues} ${esc(t('issues_n'))}` : esc(t('all_good'))}${wlHintsNote(hints)}${leftOut}</span></div>
     <div class="meter"><i class="${cls}" style="width:${Math.min(100, Math.round(ratio * 100))}%"></i></div>
     <div class="issues" style="margin-top:8px">${whole.map(chip).join('')}</div>`;
   paintVoiceMatch(document.getElementById('vm-box'), cur.voice);   // craft.js
@@ -425,6 +428,7 @@ function paintScript() {
       const tmp = s.lines[i]; s.lines[i] = s.lines[j]; s.lines[j] = tmp;
     }
     cur.findings = [];  // line numbers changed; fresh results arrive after save
+    cur.leftOut = 0;
     paintScript(); scheduleSave();
   };
   const $pop = document.getElementById('export-pop');
@@ -449,7 +453,8 @@ function paintScript() {
 async function renderScript(id) {
   const script = await api('GET', '/api/scripts/' + id);
   const lint = await api('POST', '/api/lint', lintBody(script));
-  cur = { script, findings: lint.findings, stats: lint.stats, coverage: lint.keyword_coverage, voice: lint.voice_match, wordlist: lint.wordlist };
+  cur = { script, findings: lint.findings, leftOut: lint.findings_left_out || 0, stats: lint.stats, coverage: lint.keyword_coverage,
+    voice: lint.voice_match, wordlist: lint.wordlist };
   paintScript();
 }
 

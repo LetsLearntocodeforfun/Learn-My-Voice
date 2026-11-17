@@ -124,6 +124,10 @@ be read again then.
 - On Windows the pages' scripts could be sent as plain text, which leaves the page empty. Also found by
   reading the code.
 - A `.docx` of 437 bytes held the server for 10 seconds, and one pasted trend line of 32,000 spaces for 7.5.
+- A check of one very long line that is flagged at every character took four times as long for each doubling
+  of its length: 5 seconds for 20,000 characters, which makes about two minutes for 100,000. It now grows with
+  the length. A check also lists at most 500 findings about lines and says how many more there were, so that
+  the answer to a small request stays small.
 - A pasted trend lookup in which one source link had a stray bracket (`http://[...`) failed with "internal
   error". Such a keyword now counts as one without a source.
 - Answers and stored files never contain `NaN` or `Infinity`, which used to make a page show nothing.
