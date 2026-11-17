@@ -120,6 +120,12 @@ Tools: `get_script_brief`, `save_script`, `update_script`, `check_script`, `list
 The setups below follow each vendor's documentation as of November 2026. None has been verified by the maintainers yet.
 Use an absolute path; a path without spaces avoids quoting problems.
 
+The Settings page shows the Codex configuration with the real paths of the app that is running: its Python, its
+`run_mcp.py`, and after `--data-dir` the data folder it is using. Copy the paths from there. For the desktop app
+this matters: its Python and its script are inside the app, and its data is in the system's folder for
+application data, which `--data-dir` names. Without `--data-dir` the server uses the `data` folder next to
+`run_mcp.py`, which is right for the zip and for a copy of the source.
+
 **Codex (signed in with a ChatGPT plan)**: add to `~/.codex/config.toml`:
 
 ```toml

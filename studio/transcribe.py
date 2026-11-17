@@ -60,6 +60,8 @@ import wave
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional, Sequence, Tuple
 
+from . import buildinfo
+
 try:
     import fcntl                        # not on every system this module can be imported on; only a Mac uses it
 except ImportError:                     # pragma: no cover
@@ -170,6 +172,11 @@ _TEXT: Dict[str, Tuple[str, str]] = {
     "python_version": ("On-device transcription has only been proven with the Python that comes with Apple's "
                        "Command Line Tools (3.9). Start the app by double-clicking \"Start Learn My Voice.command\".",
                        "在本机转写目前只在苹果命令行工具自带的 Python（3.9）上验证过。请双击「启动工作台.command」来打开应用。"),
+    "desktop_app": ("Transcribing videos is not part of the desktop app yet. Subtitle files (.srt or .vtt) and "
+                    "pasted words work here. A video can be transcribed on this Mac with the zip of the same "
+                    "release, which keeps a library of its own.",
+                    "桌面应用里暂时还不能转写视频。字幕文件（.srt 或 .vtt）和粘贴文字在这里都可以用。"
+                    "想在这台 Mac 上转写视频，可以用同一版本的压缩包；它有自己单独的素材库。"),
     "no_audio_tool": ("The macOS audio converter (afconvert) is missing on this Mac, so sound cannot be read "
                       "from videos." + _USE_SUBTITLES[0],
                       "这台 Mac 上找不到系统自带的音频转换工具（afconvert），无法从视频里读出声音。" + _USE_SUBTITLES[1]),
@@ -473,7 +480,10 @@ def _platform_problem() -> Optional[str]:
     if version < MIN_MACOS:
         return "macos_too_old"
     if tuple(sys.version_info[:2]) != PYTHON_VERSION:
-        return "python_version"
+        # Inside the desktop app the Python is the app's own, which the transcription software has not been
+        # tried with, and the app folder is no place for what setup downloads. That is said as what it is:
+        # the advice to start the app with its launcher means nothing to someone who installed the desktop app.
+        return "desktop_app" if buildinfo.desktop() else "python_version"
     return None
 
 
@@ -508,7 +518,7 @@ def status() -> Dict[str, Any]:
     - ``supported``: this computer can run it (Apple-chip Mac, recent macOS, the audio tool, and
       macOS enforcing the seal).
     - ``reason``: why not, as a code (``not_macos``, ``not_apple_silicon``, ``macos_too_old``,
-      ``python_version``, ``no_audio_tool``, ``no_network_block``), else ``None``.
+      ``python_version``, ``desktop_app``, ``no_audio_tool``, ``no_network_block``), else ``None``.
       ``reason_en`` / ``reason_zh`` say it plainly.
     - ``network_block``: ``"enforced"`` when macOS was seen, on this Mac and in this run of the app,
       refusing the network (and other personal files) to a program started the way transcription

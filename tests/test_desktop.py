@@ -31,7 +31,7 @@ import zipfile
 from pathlib import Path
 from unittest import mock
 
-from studio import server
+from studio import buildinfo, server, transcribe
 from studio.store import Store
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -226,6 +226,87 @@ class ShellFilesTest(unittest.TestCase):
             text = path.read_text(encoding="utf-8")
             self.assertIsNone(re.search(r"https?://|//[a-z]", text), path.name)
             self.assertNotIn("innerHTML", text, path.name)                      # the reason for a failed start is shown as text
+
+
+class KnowsItIsTheDesktopAppTest(TempCase):
+    """Inside the desktop app the core knows where it is, from the file the desktop build writes next to the app
+    folder. Two things depend on it: what is said about transcription, and what an AI app is told to start."""
+
+    RUNTIME = {"python": "3.14.10", "from": "https://example.test/python.tar.gz", "sha256": "a" * 64}
+
+    def runtime(self, content=None):
+        path = self.tmp / "runtime.json"
+        path.write_text(json.dumps(self.RUNTIME if content is None else content), encoding="utf-8")
+        return path
+
+    def test_the_file_the_build_writes_is_the_file_the_core_reads(self):
+        self.assertEqual(buildinfo.RUNTIME_FILE, ROOT.parent / "runtime.json")   # beside the app folder: core/runtime.json, core/app
+        text = (DESKTOP / "build.py").read_text(encoding="utf-8")
+        self.assertIn('build = put_app(package, CORE / "app")', text)
+        self.assertIn('(CORE / "runtime.json").write_bytes((json.dumps({"python": PYTHON, "from": runtime["python"], "sha256": runtime["sha256"]}', text)
+        for system, runtime in build.SYSTEMS.items():
+            written = {"python": build.PYTHON, "from": runtime["python"], "sha256": runtime["sha256"]}
+            self.assertEqual(buildinfo.desktop(self.runtime(written)), {"python": build.PYTHON}, system)
+
+    def test_a_file_that_is_not_that_one_is_not_taken_for_it(self):
+        self.assertIsNone(buildinfo.desktop(self.tmp / "none.json"))             # from the zip or the source there is none
+        self.assertIsNone(buildinfo.desktop(self.tmp))                           # a folder where the file would be
+        for wrong in ([], "text", {}, {"python": "3.14.10"}, dict(self.RUNTIME, python="3.14"), dict(self.RUNTIME, python=314),
+                      dict(self.RUNTIME, sha256="a" * 63), dict(self.RUNTIME, **{"from": "http://example.test/python"}),
+                      dict(self.RUNTIME, more="x" * 3000)):
+            self.assertIsNone(buildinfo.desktop(self.runtime(wrong)), str(wrong)[:80])
+        self.runtime().write_bytes(b"{not json")
+        self.assertIsNone(buildinfo.desktop(self.tmp / "runtime.json"))
+
+    def test_what_the_trial_asks_only_of_the_desktop_app(self):
+        store = Store(self.tmp / "data")
+        httpd = server.make_server(0, store)
+        serving = threading.Thread(target=httpd.serve_forever, daemon=True)
+        serving.start()
+        self.addCleanup(lambda: (httpd.shutdown(), httpd.server_close(), serving.join(5)))
+        base = "http://127.0.0.1:%d" % httpd.server_address[1]
+        data = self.tmp / "data"
+
+        def state():
+            conn = http.client.HTTPConnection("127.0.0.1", httpd.server_address[1], timeout=10)
+            conn.request("GET", "/api/state")
+            out = json.loads(conn.getresponse().read().decode("utf-8"))
+            conn.close()
+            return out
+
+        # Started from the source the core does not claim to be the desktop app, and the trial fails on exactly that.
+        self.assertIsNone(state()["desktop"])
+        with self.assertRaises(try_installer.Failed) as refused:
+            try_installer.as_the_desktop_app(base, data, "3.14.10", [])
+        self.assertIn("does not say that it is the desktop app", str(refused.exception))
+
+        with mock.patch.object(buildinfo, "RUNTIME_FILE", self.runtime()):
+            self.assertEqual(state()["desktop"], {"python": "3.14.10"})
+            # An AI app is told the data folder in use, so that it does not open one inside the app.
+            mcp = state()["mcp"]
+            self.assertEqual(os.path.realpath(mcp["data_dir"]), os.path.realpath(str(data)))
+            self.assertEqual(Path(mcp["script"]), ROOT / "run_mcp.py")
+            # A core that still sends people to the launcher fails the trial.
+            with mock.patch.object(transcribe, "_platform_problem", lambda: "python_version"):
+                with self.assertRaises(try_installer.Failed) as refused:
+                    try_installer.as_the_desktop_app(base, data, "3.14.10", [])
+            self.assertIn("without naming a launcher", str(refused.exception))
+            with mock.patch.object(transcribe, "_platform_problem", lambda: "desktop_app"):
+                # Another data folder than the one the window uses is noticed.
+                with self.assertRaises(try_installer.Failed) as refused:
+                    try_installer.as_the_desktop_app(base, self.tmp / "elsewhere", "3.14.10", [])
+                self.assertIn("data folder it gives an AI app", str(refused.exception))
+                checks = []
+                try_installer.as_the_desktop_app(base, data, "3.14.10", checks)
+        self.assertEqual(checks, ["the app knows it is the desktop app, with its own Python 3.14.10",
+                                  "about transcription it says: desktop_app",
+                                  "an AI app started as the settings page says reaches the same data, through the Python inside the app"])
+        self.assertEqual(store.list_scripts(), [])                               # the script it saved to show that is gone again
+        # The settings page says it is the desktop app, and gives the AI app the data folder.
+        page = (ROOT / "studio" / "web" / "pages.js").read_text(encoding="utf-8")
+        self.assertEqual(page.count("build_desktop: '"), 2)
+        self.assertIn("appState.desktop.python", page)
+        self.assertIn("['--data-dir', mcp.data_dir]", page)
 
 
 class CoreForTheAppTest(TempCase):

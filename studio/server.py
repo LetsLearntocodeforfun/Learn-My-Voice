@@ -647,7 +647,13 @@ class Handler(BaseHTTPRequestHandler):
                 "setup_next": setup_status.status(store)["next"],
                 # Which build this is: a version from a release package, or "from source". Shown on the settings page.
                 "build": buildinfo.current(),
-                "mcp": {"python": sys.executable or "python3", "script": str(ROOT / "run_mcp.py")},
+                # {"python": version} inside the desktop app, where the Python is the app's own; else null.
+                "desktop": buildinfo.desktop(),
+                # How an AI app starts the MCP server so that it works on the data this app is showing: the same
+                # Python, the script, and the data folder in use. Without the folder it would open the one next to
+                # the script, which inside the desktop app is not where the data is.
+                "mcp": {"python": sys.executable or "python3", "script": str(ROOT / "run_mcp.py"),
+                        "data_dir": str(Path(store.data_dir).resolve())},
             }
             if store.dna_unreadable():
                 state["dna_unreadable"] = True

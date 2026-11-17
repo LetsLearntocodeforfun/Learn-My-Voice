@@ -10,7 +10,9 @@ On whatever system it runs on (macOS or Windows):
    Windows the setup program is run without questions, for this user only;
 2. starts the installed app with a data folder of its own, and waits until it says where its core listens;
 3. uses the core exactly as tools/try_release.py uses a package (page, scripts, a script in Chinese saved,
-   checked, exported, deleted), and waits until the window has finished loading the app's page;
+   checked, exported, deleted), asks it what only the desktop app has to get right (that it knows it is the
+   desktop app, what it says about transcription, and that an AI app started as its settings page says reaches
+   the same data), and waits until the window has finished loading the app's page;
 4. takes a picture of the screen, so that a person can look at what was on it;
 5. ends the app abruptly and checks that its core stops by itself, then starts it once more without naming a
    data folder and checks that it keeps its data in the system's folder for application data;
@@ -143,6 +145,64 @@ def python_inside(core: Path, checks: List[str]) -> None:
     checks.append("the Python inside the app runs by itself: %s" % said[:120])
 
 
+def as_the_desktop_app(base: str, data: Path, python: Any, checks: List[str]) -> None:
+    """What only the desktop app has to get right, asked of the running app.
+
+    It knows that it is the desktop app. About transcription it says why that is not there, and does not send
+    people to a launcher they do not have. And what its settings page gives an AI app to start (the Python
+    inside the app, the script, the data folder) starts, from another folder, a server that works on the data
+    the window is showing: a script saved through the window is listed by it.
+    """
+    status, state, _ = trial.ask(base, "GET", "/api/state")
+    state = state if status == 200 and isinstance(state, dict) else {}
+    inside = state.get("desktop")
+    if not (isinstance(inside, dict) and inside.get("python") == python):
+        raise Failed("the app does not say that it is the desktop app with Python %s (it says %r)" % (python, inside))
+    checks.append("the app knows it is the desktop app, with its own Python %s" % python)
+
+    status, ears, _ = trial.ask(base, "GET", "/api/transcriber")
+    ears = ears if status == 200 and isinstance(ears, dict) else {}
+    reason = ears.get("reason")
+    if ears.get("supported") is not False or reason in (None, "python_version"):
+        raise Failed("about transcription the desktop app has to say why it is not there, without naming a launcher "
+                     "(it says %r)" % ({key: ears.get(key) for key in ("supported", "reason", "reason_en")},))
+    checks.append("about transcription it says: %s" % reason)
+
+    mcp = state.get("mcp") if isinstance(state.get("mcp"), dict) else {}
+    command = [str(mcp.get("python")), str(mcp.get("script")), "--data-dir", str(mcp.get("data_dir"))]
+    if os.path.realpath(command[3]) != os.path.realpath(str(data)):
+        raise Failed("the data folder it gives an AI app is %s, and its data is in %s" % (command[3], data))
+    title = "written in the window"
+    status, made, _ = trial.ask(base, "POST", "/api/scripts", {"title": title, "lines": [{"spoken_script_zh": "今天去超市啦"}]})
+    if status != 201 or not isinstance(made, dict):
+        raise Failed("a script could not be saved before the AI app's way in was tried (status %s)" % status)
+    messages = [
+        {"jsonrpc": "2.0", "id": 1, "method": "initialize",
+         "params": {"protocolVersion": "2025-06-18", "capabilities": {}, "clientInfo": {"name": "trial", "version": "0"}}},
+        {"jsonrpc": "2.0", "method": "notifications/initialized"},
+        {"jsonrpc": "2.0", "id": 2, "method": "tools/call", "params": {"name": "list_scripts", "arguments": {}}},
+    ]
+    try:
+        done = subprocess.run(command, input="".join(json.dumps(message) + "\n" for message in messages).encode("ascii"),
+                              capture_output=True, timeout=120, cwd=tempfile.gettempdir())
+    except (OSError, subprocess.SubprocessError) as problem:
+        raise Failed("the MCP server could not be started as the settings page says: %s: %s\n%s"
+                     % (type(problem).__name__, problem, " ".join(command)))
+    said = done.stdout.decode("utf-8", "replace")
+    try:
+        replies = [json.loads(line) for line in said.splitlines() if line.strip()]
+        listed = json.loads(replies[1]["result"]["content"][0]["text"])["scripts"]
+        titles = [script.get("title") for script in listed]
+    except (ValueError, LookupError, TypeError, AttributeError):
+        raise Failed("started as the settings page says, the MCP server did not answer as expected (code %s): %s\n%s"
+                     % (done.returncode, said[-500:], done.stderr.decode("utf-8", "replace")[-500:]))
+    if title not in titles:
+        raise Failed("the MCP server does not list the script just saved through the window (it lists %r): it is not "
+                     "working on the same data" % (titles[:5],))
+    trial.ask(base, "DELETE", "/api/scripts/" + str(made.get("id")))
+    checks.append("an AI app started as the settings page says reaches the same data, through the Python inside the app")
+
+
 def picture(target: Path) -> bool:
     """A picture of the whole screen, for a person to look at. Not having one fails nothing."""
     try:
@@ -251,6 +311,7 @@ def try_installer(installer: Path, shots: Optional[Path], label: str) -> Dict[st
         if not base.startswith("http://127.0.0.1:"):
             raise Failed("the core listens at %s, not on 127.0.0.1" % base)
         trial.use(base, version, checks)
+        as_the_desktop_app(base, data, runtime.get("python"), checks)
         wait_for(data / RUNNING_FILE, process, True, "the installed app")
         checks.append("its window finished loading the app's page")
         time.sleep(3)                                        # let the page draw before the picture is taken

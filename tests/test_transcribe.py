@@ -251,6 +251,34 @@ class StatusTest(Sandbox):
                     self.assertEqual((error.code, error.reason, str(error)), ("unsupported", reason, state["reason_en"]))
         self.assertEqual(self.tools.calls, [])
 
+    def test_inside_the_desktop_app_it_says_so_and_names_no_launcher(self):
+        # The desktop app carries a Python of its own, not the one transcription was proven with. What is said
+        # there must not be "start the app with its launcher": the desktop app has none.
+        mock.patch.stopall()
+        self.patch(transcribe, "_run", self.tools)
+        runtime = self.tmp / "runtime.json"                                       # what the desktop build writes next to the app folder
+        runtime.write_text(json.dumps({"python": "3.14.10", "from": "https://example.test/python.tar.gz", "sha256": "a" * 64}),
+                           encoding="utf-8")
+        mac = [mock.patch.object(transcribe.sys, "platform", "darwin"),
+               mock.patch.object(transcribe.platform, "machine", lambda: "arm64"),
+               mock.patch.object(transcribe.platform, "mac_ver", lambda: ("15.1", ("", "", ""), "arm64")),
+               mock.patch.object(transcribe, "PYTHON_VERSION", (3, 8))]           # not the Python this runs on, as inside the app
+        with contextlib.ExitStack() as stack:
+            for p in mac:
+                stack.enter_context(p)
+            self.assertEqual(transcribe.status()["reason"], "python_version")       # from the zip or the source: as before
+            stack.enter_context(mock.patch.object(transcribe.buildinfo, "RUNTIME_FILE", runtime))
+            state = transcribe.status()
+            self.assertEqual((state["supported"], state["reason"]), (False, "desktop_app"))
+            self.assertIn("desktop app", state["reason_en"])
+            self.assertIn("桌面应用", state["reason_zh"])
+            for text in (state["reason_en"], state["reason_zh"]):
+                self.assertNotIn(".command", text)
+                self.assertIn(".srt", text)                                       # what does work there is named
+            error = self.failure(transcribe.install)
+            self.assertEqual((error.code, error.reason, str(error)), ("unsupported", "desktop_app", state["reason_en"]))
+        self.assertEqual(self.tools.calls, [])                                    # nothing was started to find that out
+
     def test_audio_tool_detection(self):
         self.assertEqual(transcribe.status()["audio_tool"], "afconvert")
         self.patch(transcribe, "AFCONVERT", str(self.tmp / "missing"))

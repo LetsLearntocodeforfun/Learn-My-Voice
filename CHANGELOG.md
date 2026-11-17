@@ -95,7 +95,8 @@ be read again then.
   when the window is closed; it gives the page no abilities of its own. The installers are not signed,
   because this project has no paid certificates: the system has to be told once that the app may run, and
   each release candidate's notes say how, in English and Chinese. Transcribing videos is not in the desktop
-  app yet; the zip does that.
+  app yet; the zip does that, and the app says so where a video would be added. The settings page says that it
+  is the desktop app and which Python it carries.
 
 **Changed**
 
@@ -109,6 +110,9 @@ be read again then.
   Before, the app never started a web lookup itself. The lookup prompt is the one already used by copy and
   paste: niches, up to 20 titles, tracked keywords and the line typed, and nothing else about the creator.
 - Through MCP, `get_topic_ideas_brief` and `save_topic_ideas` take an optional `focus`.
+- The MCP configuration shown on the settings page now names the data folder the app is using (`--data-dir`),
+  so an AI app works on the data the app shows, also inside the desktop app and when the app was started with
+  another data folder. Before, it opened the folder next to the script.
 - A script with no finding now says "These checks found nothing" where it said "No issues found" with a
   thumbs-up, and through MCP a saved script with no must-fix finding is no longer called free of problems:
   the checks are this project's own lists, and passing them does not make wording allowed.
