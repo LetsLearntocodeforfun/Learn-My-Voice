@@ -87,6 +87,15 @@ be read again then.
 - **A package to download, and the app says which build it is.** A release candidate comes with one zip that
   holds what is needed to run the app and nothing else, built so that the same commit always gives the same
   bytes, with its SHA-256 published next to it. Settings shows the version and commit of the build in use.
+- **A desktop app, with installers.** The same app in a window of its own, installed like any other program:
+  a `.dmg` for Macs with an Apple chip, one for Macs with an Intel chip, and a setup program for 64-bit
+  Windows. It needs no Python on the computer: Python 3.14 is inside it. What it keeps (scripts, library,
+  settings) is in the system's folder for application data, so installing a newer version keeps it. The
+  window is a small program written with Tauri 2 that starts the app on this computer, shows it, and ends it
+  when the window is closed; it gives the page no abilities of its own. The installers are not signed,
+  because this project has no paid certificates: the system has to be told once that the app may run, and
+  each release candidate's notes say how, in English and Chinese. Transcribing videos is not in the desktop
+  app yet; the zip does that.
 
 **Changed**
 
@@ -107,7 +116,7 @@ be read again then.
 **Fixed**
 
 - Saving the settings, the creator profile or a voice profile would have failed on Windows with a Python older
-  than 3.13. Found by reading the code; not yet run on Windows.
+  than 3.13. Found by reading the code. The tests now pass on GitHub's Windows machines with Python 3.9.
 - On Windows, two saves at the same moment could fail with "Access is denied", and a second copy of the app
   could start on a port the first was already using. Both were found by the tests on GitHub's Windows
   machines on 17 November 2026. A save is now tried again for a moment where Windows refuses it, and the port
@@ -126,20 +135,26 @@ be read again then.
 
 **State of this release**
 
-- The automated tests pass on macOS with Python 3.9.6. One of them transcribes real audio and only runs where
-  the transcriber is installed. Each release candidate's own notes say what GitHub's machines found for it on
-  macOS, Windows and Linux.
-- Windows and Linux: no person has used the app there. On GitHub's machines the tests pass on macOS and on
-  Linux. On Windows the package starts with its launcher and the app answers, but 18 of 642 tests failed on
-  17 November 2026: two were the faults listed under "Fixed", most of the rest test what only a Mac has
-  (transcription) or what Windows does not have (file modes that close the data folder to other accounts).
-  Each release candidate's notes say what was found for that build.
+- The automated tests pass on one Mac with Python 3.9.6, and on GitHub's machines on macOS, Windows and Linux
+  with Python 3.9, 3.14 and 3.15. They first passed on all three systems on 17 November 2026; that morning 18
+  of 642 failed on Windows, two of them the faults listed under "Fixed". One test transcribes real audio and
+  only runs where the transcriber is installed. Each release candidate's own notes say what GitHub's machines
+  found for that build.
+- Windows and Linux: no person has used the app there. On GitHub's machines the package starts with its
+  launcher and the app answers on all three systems.
+- The desktop app: no person has installed it. On GitHub's machines each of the three installers was
+  installed and the app opened, used and ended, first on 17 November 2026. The installers are not signed. On
+  a computer managed by an employer or a school the app may be refused whatever is clicked. Transcription
+  does not work inside the desktop app yet, a microphone has not been tried in it, and there is no build for
+  Linux.
 - On Windows the app does not close its data folder to the other accounts on the computer. Who may read it is
-  decided by the folder the app was unpacked in.
-- A release candidate is published only when the tests pass on macOS and Linux and the package, started with
-  its launcher, works on macOS. The tests on Windows and a trial of the package on Windows and Linux (unpack,
-  start with the launcher, use, stop) run as well; when they fail the release candidate is still published,
-  and its notes say so with what those jobs reported.
+  decided by the folder the app was unpacked in; the desktop app keeps its data in the user's own folder for
+  application data.
+- A release candidate is published only when the tests pass on macOS, Linux and Windows and the package,
+  started with its launcher, works on macOS. A trial of the package on Windows and Linux (unpack, start with
+  the launcher, use, stop) and the build and trial of each installer run as well; when one of them fails the
+  release candidate is still published, its notes say so with what that job reported, and an installer whose
+  trial did not pass is not attached.
 - Voice match, openings, proposals for a line and the teleprompter were run in headless Chrome against the
   real server with stand-in AI replies and invented material. None has been tried on the creator's real
   material, and no real model has written a proposal. The teleprompter file has not been opened on a phone;

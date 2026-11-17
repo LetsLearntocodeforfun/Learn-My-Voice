@@ -6,7 +6,7 @@ A local, bilingual (中文 / English) script studio for Xiaohongshu (RedNote) an
 It learns how one creator actually talks from her own past scripts, drafts new scripts in that voice,
 checks them, and hands the result to 剪映 (Jianying) / CapCut for editing.
 
-It runs on your own computer with nothing to install except Python. On macOS, Python comes with Apple's free Command Line Tools, and the launcher offers to install them if they are missing.
+It runs on your own computer. It comes in two forms: a desktop app with an installer for macOS and Windows, which needs nothing else, and a zip that needs only Python. On macOS, Python comes with Apple's free Command Line Tools, and the zip's launcher offers to install them if they are missing.
 
 ![Script editor with live checks](docs/images/script-zh.png)
 
@@ -26,14 +26,25 @@ This is an early version. Read this before relying on it.
 | One line to ideas | New. Typing or saying one line on 选题建议 looks current keywords up and then suggests ideas. Covered by automated tests, and the pages were run with the server in headless Chrome against stand-in AI replies. The web lookup through a Gemini or OpenAI key is written from those services' documentation and has **not** been run against either. Speaking was tested with the Whisper on one Mac and a sound stream in place of the microphone; a real microphone has **not** been tried. |
 | 剪映 / CapCut | Exports standard files to import. Importing them has **not** been verified inside 剪映 or CapCut by the maintainers. It does not write 剪映 project drafts. |
 | MCP server | Tested at protocol level (JSON-RPC over stdio). **Not** yet verified with ChatGPT, Codex or Claude Desktop. |
-| Platforms | Developed on macOS with Python 3.9. Nobody has used it on Windows or Linux yet. The automated tests run on all three systems on GitHub's machines: they pass on macOS and Linux and, as of 16 November 2026, fail on Windows. Each release candidate's notes say what was found for that build, per system. |
+| Platforms | Developed on macOS with Python 3.9. Nobody has used it on Windows or Linux yet. The automated tests run on all three systems on GitHub's machines with Python 3.9, 3.14 and 3.15; as of 17 November 2026 they pass on all three, and the zip starts with its launcher on all three. Each release candidate's notes say what was found for that build, per system. |
+| Desktop app | New. Installers for macOS (Apple chip and Intel chip) and 64-bit Windows are built on GitHub's machines, where each one is installed and the app is opened, used and ended before it is attached to a release candidate. **No person has installed one yet.** The installers are not signed, so the system has to be told once that the app may run. Transcribing videos does not work inside the desktop app yet, a microphone has not been tried in it, and there is no build for Linux. |
 
 ## Quick start
 
-Requirements: Python 3.9 or newer. No packages to install.
+Release candidates are on the repository's
+[Releases page](https://github.com/LetsLearntocodeforfun/Learn-My-Voice/releases). Each offers the app in two forms.
 
-**From a download.** Release candidates are on the repository's
-[Releases page](https://github.com/LetsLearntocodeforfun/Learn-My-Voice/releases). Download
+**As a desktop app.** Nothing else is needed: Python is inside it. Download the installer for your system:
+
+| System | File | The first time |
+| :--- | :--- | :--- |
+| macOS, Apple chip | `learn-my-voice-<version>-macos-arm64.dmg` | Open the `.dmg` and drag Learn My Voice to Applications. Open it; macOS refuses. Then open System Settings, go to Privacy & Security, scroll down and click Open Anyway. |
+| macOS, Intel chip | `learn-my-voice-<version>-macos-x64.dmg` | The same. |
+| Windows, 64-bit | `learn-my-voice-<version>-windows-x64-setup.exe` | Run it. When "Windows protected your PC" appears, click More info, then Run anyway. |
+
+The system objects because the installers are not signed: this project has no paid certificates. This is needed once. On a computer managed by an employer or a school it may not be allowed at all; the zip below, which runs with a Python the system already has, may still work there. Which chip a Mac has is shown under the Apple menu, About This Mac. The app opens in a window of its own. What it keeps (scripts, library, settings) is in the system's folder for application data, so installing a newer version keeps it. Transcribing videos is not in the desktop app yet. No person has installed it yet: the notes of each release candidate say what GitHub's machines found when they installed and used that build.
+
+**As a zip.** Requirements: Python 3.9 or newer. No packages to install. Download
 `learn-my-voice-<version>.zip`, unpack it, and start it:
 
 | System | Start it with |
@@ -53,7 +64,7 @@ cd Learn-My-Voice
 python3 -m studio.server
 ```
 
-Either way the studio opens in your browser at `http://127.0.0.1:8765`. Settings shows which build is running.
+From the zip or the source, the studio opens in your browser at `http://127.0.0.1:8765`. Settings shows which build is running.
 
 The interface starts in Chinese. Use the **English** button at the bottom of the sidebar to switch.
 
