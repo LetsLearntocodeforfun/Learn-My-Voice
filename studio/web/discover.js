@@ -457,8 +457,13 @@ async function renderIdeas() {
   const shown = [latest && latest.lookup, waiting, result && result.lookup]
     .filter((x) => x && x.status === 'done' && (x.keywords || []).length);
   const byKey = {};
+  let listNote = '';      // wordlist.js: said once on this page when a keyword is shown as the word list marks it
   if (shown.length) {
-    try { (await api('GET', '/api/trends')).trends.forEach((x) => { byKey[kwKey(x.keyword)] = x; }); }
+    try {
+      const tracked = await api('GET', '/api/trends');
+      tracked.trends.forEach((x) => { byKey[kwKey(x.keyword)] = x; });
+      if (shown.some((x) => x.keywords.some((k) => byKey[kwKey(k)]))) listNote = wlNoteHtml(tracked.wordlist);
+    }
     catch (e) { /* the keywords are optional here; the ideas still show */ }
   }
 
@@ -491,6 +496,7 @@ async function renderIdeas() {
     ${dvLatestHtml(latest, byKey, !!result)}
     ${waiting ? dvLookupHtml(waiting, byKey) : ''}
     ${saved}${empty}
+    ${listNote}
     ${table || few}</div>`;
   dvPaintBox(document.getElementById('dv-box'), false);
 

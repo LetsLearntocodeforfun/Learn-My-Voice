@@ -26,7 +26,7 @@ import re
 import time
 from typing import Any, Dict, List, Optional, Sequence, Tuple
 
-from . import corpus, creator, guardrails, textstats
+from . import corpus, creator, guardrails, textstats, wordlist
 from .store import MAX_KEYWORD_CHARS, clean_keyword, keyword_key
 
 HALF_LIFE_DAYS = 14.0    # a trend counts half as much two weeks after it was last seen
@@ -173,11 +173,15 @@ def _flags(keyword: str, dna: Dict[str, Any], lexicon: Dict[str, Any]) -> List[s
 
 
 def score_trends(trend_rows: List[Dict[str, Any]], samples: List[Dict[str, Any]], dna: Optional[Dict[str, Any]] = None,
-                 weight: str = "balanced", now: Optional[float] = None) -> Dict[str, Any]:
+                 weight: str = "balanced", now: Optional[float] = None,
+                 lexicon: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
     """Rank trend keywords by how hot they are and how her own videos on the topic performed.
 
     Only non-sponsored videos count as her evidence. Keywords that clash with
     her voice profile stay in the list but are marked ``usable: False``.
+
+    ``lexicon`` is the word list each keyword is checked with. The app passes the one the creator keeps
+    (``payload`` does); given none, the shipped list is read as it stands.
     """
     now = time.time() if now is None else now
     weight = weight if weight in WEIGHTS else "balanced"
@@ -197,7 +201,8 @@ def score_trends(trend_rows: List[Dict[str, Any]], samples: List[Dict[str, Any]]
 
     known = sorted(s for s in (strength_of(t) for t in trend_rows) if s is not None)
     default_strength = _median(known) if known else 1.0
-    lexicon = guardrails.load_lexicon() if dna else None
+    if dna and lexicon is None:
+        lexicon = wordlist.shipped()
 
     scored = []
     for row in trend_rows:
@@ -247,11 +252,18 @@ def payload(store: Any, now: Optional[float] = None) -> Dict[str, Any]:
     """Scored trends for the active library, voice profile and weighting preference.
 
     A keyword containing a phrase the creator refuses to say clashes with their voice like any other banned phrase.
+
+    Keywords are checked with the word list as the creator keeps it (``wordlist.effective``), so an entry they
+    switched off no longer marks a keyword. ``wordlist`` in the answer says how many are switched off, with the
+    list's disclaimer (``wordlist.notice``).
     """
     dna, _ = store.load_dna()
     dna = creator.apply_never(dna, store.load_creator())
     weight = store.load_config().get("trend_weight") or "balanced"
-    return score_trends(store.list_trends(), store.list_samples(), dna, weight, now)
+    lexicon = wordlist.effective(store)
+    scored = score_trends(store.list_trends(), store.list_samples(), dna, weight, now, lexicon)
+    scored["wordlist"] = wordlist.notice(lexicon)
+    return scored
 
 
 # ---- did a script use its keywords? -----------------------------------------

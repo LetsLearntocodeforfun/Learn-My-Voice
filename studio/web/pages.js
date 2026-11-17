@@ -306,8 +306,10 @@ function renderSettings() {
        <span class="hint">· ${esc(status(k))}</span></button>`).join('')}</div>
     ${access}${modelPart}
     <div class="row" style="margin-top:24px"><button class="btn primary big" id="save">${esc(t('save'))}</button></div>
+    <div id="wl-box"></div>
     ${mcpCard}
     <p class="hint" id="build-line" style="margin-top:28px">${esc(buildLine())}</p></div>`;
+  wlPaintSettings(document.getElementById('wl-box'));     // wordlist.js: the word list behind the wording findings
 
   if (mcp) {
     document.getElementById('mcp-snippet').value =
@@ -691,7 +693,7 @@ async function renderTrends(data) {
     </details>
     ${ranking}
     <div id="trends">${p.trends.map(trendHtml).join('') || `<div class="empty">${esc(t('tr_empty'))}</div>`}</div>
-    ${p.trends.length ? `<p class="hint">${esc(tf('tr_how', { d: p.half_life_days }))}</p><p class="hint">${esc(baseline)}</p>` : ''}
+    ${p.trends.length ? `<p class="hint">${esc(tf('tr_how', { d: p.half_life_days }))}</p><p class="hint">${esc(baseline)}</p>${wlNoteHtml(p.wordlist)}` : ''}
   </div>`;
 
   const $text = document.getElementById('tr-text');

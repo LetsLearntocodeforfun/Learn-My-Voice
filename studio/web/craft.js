@@ -288,8 +288,7 @@ function craftChecksHtml(item, result) {
     chips.push(`<span class="tag ${item.voice_match < result.voice_match_now ? 'warn' : ''}" data-check="match">${esc(tf('cr_match', { from: result.voice_match_now, to: item.voice_match }))}</span>`);
   }
   (item.patterns || []).forEach((p) => chips.push(`<span class="tag">${esc(t('pat_' + p))}</span>`));
-  const said = (f) => (lang === 'zh' ? f.message_zh : f.message_en);
-  const issues = item.findings.map((f) => `<div class="issue ${f.severity === 'error' ? 'error' : ''}">${esc(said(f))}</div>`).join('');
+  const issues = item.findings.map(wlIssueHtml).join('');      // wordlist.js: drawn as in the editor, hints set apart
   return `<div class="craft-checks">${chips.join('')}</div>${issues ? `<div class="issues">${issues}</div>` : ''}`;
 }
 

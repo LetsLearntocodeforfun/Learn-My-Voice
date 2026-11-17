@@ -71,6 +71,17 @@ be read again then.
   transcript. The page says how many lines are still exactly as an AI wrote them, counted in code. An
   opening that is still an AI's sentence is kept apart from the creator's own openings and never reaches a
   prompt as the creator's habit.
+- **A word list that says what it rests on.** A finding about advertising wording now says what its entry
+  rests on: the article of the Advertising Law that was read (as published on Wikisource, read on 16
+  November 2026) and whether the wording is named there or listed by analogy, or that no source was checked.
+  The list has more entries than before. On Settings any entry can be switched off and the creator can add
+  phrases of their own, which are looked for exactly as written. Every page that lists such findings says
+  once that the list is this project's own, not legal advice and not a statement of any platform's rules,
+  the day it was reviewed, and how many entries are switched off.
+- **Hints that a line sounds written.** A new kind of finding, drawn apart and labelled "hint only", for
+  wording that tends to make a spoken line sound written or machine-made. The clues follow the Humanizer-zh
+  checklist (MIT), which says of itself that it gives clues and not a blacklist. A hint is never an error,
+  is not counted among the things to fix, and stops nothing.
 - **Launchers for Windows and Linux.** `Start Learn My Voice.bat` and `start-learn-my-voice.sh` start the app
   with the Python the system has, and say what to install when there is none.
 - **A package to download, and the app says which build it is.** A release candidate comes with one zip that
@@ -89,6 +100,9 @@ be read again then.
   Before, the app never started a web lookup itself. The lookup prompt is the one already used by copy and
   paste: niches, up to 20 titles, tracked keywords and the line typed, and nothing else about the creator.
 - Through MCP, `get_topic_ideas_brief` and `save_topic_ideas` take an optional `focus`.
+- A script with no finding now says "These checks found nothing" where it said "No issues found" with a
+  thumbs-up, and through MCP a saved script with no must-fix finding is no longer called free of problems:
+  the checks are this project's own lists, and passing them does not make wording allowed.
 
 **Fixed**
 

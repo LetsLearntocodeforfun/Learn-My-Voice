@@ -6,8 +6,16 @@ gate a draft before and after the Stage 5A critic:
 - clause length against ``ideal_clause_length_chars.hard_max``
 - phrases banned by the creator's ``voice_dna.json``
 - generic clichés, translationese and compliance terms from ``lexicon.json``
+- wording that makes a spoken line sound written by a machine (the ``ai_tells`` group of the same file):
+  a hint in a category of its own (``AI_TELL``), never an error
+- phrases the creator added to the word list themselves (``own_phrases``), looked for as they stand
 - audience address terms and English tokens not attested in the Voice DNA
 - total spoken units against the duration budget
+
+Which word list is read. ``lint_script`` reads the list it is given (``lexicon=``). The app gives it
+``wordlist.effective(store)``: the shipped list without the entries the creator switched off, plus their
+own phrases. Given none, it reads ``lexicon.json`` as it ships; that is for code that has no data folder
+(the tests, and the command line below without ``--data-dir``).
 
 How a phrase rule reads text. Before a phrase is looked for, the phrase and the
 line are both folded (``fold``): full-width and other compatibility forms become
@@ -28,8 +36,10 @@ as written.
 Usage::
 
     python3 -m studio.guardrails draft.json --dna schemas/voice_dna.example.json
+    python3 -m studio.guardrails draft.json --dna data/voice_dna.json --data-dir data
 
-Exit status is 1 when any ``error`` finding exists, otherwise 0.
+``--data-dir`` names the app's data folder: the word list is then read as the creator changed it there.
+Nothing in that folder is created or changed. Exit status is 1 when any ``error`` finding exists, otherwise 0.
 """
 from __future__ import annotations
 
@@ -53,7 +63,7 @@ ERROR = "error"
 REVIEW = "review"
 _SEVERITY_RANK = {ERROR: 0, REVIEW: 1}
 
-# Categories reuse the issue_category enum of prompts/05 (5A), plus DURATION_OFF_BUDGET.
+# Categories reuse the issue_category enum of prompts/05 (5A), plus DURATION_OFF_BUDGET and AI_TELL.
 CADENCE_TOO_LONG = "CADENCE_TOO_LONG"
 GENERIC_XHS_SLOP = "GENERIC_XHS_SLOP"
 BOOKISH_MANDARIN = "BOOKISH_MANDARIN"
@@ -61,6 +71,14 @@ TRANSLATIONESE = "TRANSLATIONESE"
 UNNATURAL_CODESWITCH = "UNNATURAL_CODESWITCH"
 COMPLIANCE_RISK = "COMPLIANCE_RISK"
 DURATION_OFF_BUDGET = "DURATION_OFF_BUDGET"
+# Wording that makes a spoken line sound written by a machine. Always REVIEW, the gentlest severity there is:
+# a hint, not a rule. Nothing treats it as a rule being broken, and it never hides or replaces another finding.
+AI_TELL = "AI_TELL"
+
+# What ``Finding.detail`` holds for a finding that comes from the word list, so that ``checks.describe`` can find
+# the entry and say what it rests on. A compliance entry is named by its ``reason_en``, which is unique in the list.
+AI_TELL_DETAIL = "Lexicon AI tell: %s"                 # filled with the id of the entry
+OWN_PHRASE_DETAIL = "Creator's own word list"          # a phrase the creator added; flagged as COMPLIANCE_RISK, REVIEW
 
 _CLAUSE_END_PUNCT = "，,。！!？?；;～~… "
 
@@ -175,6 +193,16 @@ def fold(text: str, positions: Optional[Iterable[int]] = None) -> Tuple[str, Lis
     return "".join(chars), origin
 
 
+def fold_literal(phrase: str) -> str:
+    """A phrase that is looked for as it stands, as ``fold`` reads a line: its folded characters, side by side.
+
+    This is how a phrase the creator added to the word list is compared. Nothing in it has a special meaning
+    (no gap, no placeholder, no note in brackets), and it is never made into a pattern. ``""`` for a phrase
+    made only of characters that draw nothing: there is nothing to look for.
+    """
+    return fold(phrase)[0]
+
+
 def _letters(part: str) -> str:
     """The letters and digits of one piece of a ban entry, folded: the only thing a ban is matched on."""
     return "".join(c for ch in part for c in fold_char(ch) if c.isalnum())
@@ -264,11 +292,20 @@ def _is_pure_live_clip(line: Dict[str, Any]) -> bool:
 
 
 def _dedupe_overlaps(hits: List[Tuple[int, int, Finding]]) -> List[Finding]:
-    """Keep the most severe / longest finding for each overlapping span."""
+    """Keep the most severe / longest finding for each overlapping span.
+
+    Every hit covers at least one position (``start < end``). Which positions the kept findings cover is noted
+    in one byte per position, and a hit is kept when none of its positions is covered yet. Comparing each hit
+    with every kept one gave the same answer, but the work grew with the square of the number of hits: a line
+    that is one flagged character 200,000 times over, or a phrase of the creator's own list that is one letter
+    long, held a check for minutes. Now it grows with the number of hits and the length of the line.
+    """
     hits.sort(key=lambda h: (_SEVERITY_RANK[h[2].severity], -(h[1] - h[0]), h[0]))
+    covered = bytearray(max((end for _, end, _ in hits), default=0))
     kept: List[Tuple[int, int, Finding]] = []
     for start, end, finding in hits:
-        if all(end <= ks or start >= ke for ks, ke, _ in kept):
+        if covered.find(1, start, end) == -1:
+            covered[start:end] = b"\x01" * (end - start)
             kept.append((start, end, finding))
     kept.sort(key=lambda h: h[0])
     return [f for _, _, f in kept]
@@ -341,6 +378,11 @@ def lint_script(
     ``punctuation_breaks`` treats commas and sentence punctuation as breath
     breaks in addition to ``/``. ``extra_allowed_english`` is for sponsor brand
     names that the Voice DNA cannot know about.
+
+    ``lexicon`` is the word list to check with; the app passes ``wordlist.effective(store)``. Given none,
+    ``lexicon.json`` is read as it ships. Two of its groups are looked for on their own, after the rules:
+    ``own_phrases`` (the creator's own phrases, as they stand) and ``ai_tells`` (hints that a line may sound
+    written). A finding from either never takes a finding of the rules away and is never taken away by one.
     """
     lexicon = lexicon if lexicon is not None else load_lexicon()
     lines = _script_lines(script)
@@ -357,6 +399,7 @@ def lint_script(
     bans: List[_Rule] = []        # the profile's ban lists: folded, on every line, cue brackets included
     phrases: List[_Rule] = []     # the built-in phrase lists: folded, on what a voiced line says aloud
     patterns: List[_Rule] = []    # the built-in patterns: what a voiced line says aloud, as written
+    tells: List[_Rule] = []       # hints that a line may sound written: read like the patterns, kept apart from them
     # Compared as written apart from letter case. Folding is never used here: it must not make a cliché count as hers.
     attested_lower = attested_text.lower()
 
@@ -380,6 +423,13 @@ def lint_script(
         patterns.append((re.compile(entry["pattern"]), TRANSLATIONESE, entry.get("severity", ERROR), "Lexicon translationese / bookish pattern"))
     for entry in lexicon.get("compliance", []):
         patterns.append((re.compile(entry["pattern"]), COMPLIANCE_RISK, entry.get("severity", REVIEW), entry.get("reason_en", "Lexicon compliance term")))
+    for entry in lexicon.get("ai_tells", []):
+        tells.append((re.compile(entry["pattern"]), AI_TELL, REVIEW, AI_TELL_DETAIL % entry.get("id", "")))
+    # The creator's own phrases, folded as a line is. They are looked for with str.find: nothing the creator
+    # typed is ever compiled as a pattern, so nothing typed there can make a check run long or match more than itself.
+    own_phrases = lexicon.get("own_phrases", [])
+    own = [needle for needle in (fold_literal(phrase) for phrase in (own_phrases if isinstance(own_phrases, (list, tuple)) else [])
+                                 if isinstance(phrase, str)) if needle]
 
     rare = _get(dna, "lexical_fingerprint.modal_particles.rare_or_zero", [])
     rare_particles = [p for p in (rare if isinstance(rare, (list, tuple)) else []) if isinstance(p, str) and p]
@@ -455,12 +505,31 @@ def lint_script(
                     hits.append((start, end, Finding(line_no, category, severity, aloud(start, end), detail)))
         findings.extend(_dedupe_overlaps(hits))
 
+        # The creator's own phrases: on what the line says aloud, folded, each occurrence once.
+        mine: List[Tuple[int, int, Finding]] = []
+        for needle in own:
+            at = said.find(needle)
+            while at != -1:
+                start, end = said_at[at], said_at[at + len(needle) - 1] + 1
+                mine.append((start, end, Finding(line_no, COMPLIANCE_RISK, REVIEW, aloud(start, end), OWN_PHRASE_DETAIL)))
+                at = said.find(needle, at + len(needle))
+        findings.extend(_dedupe_overlaps(mine))
+
         seen = set()
         for word in textstats.english_words(voiced):
             key = word.lower()
             if key not in attested_english and key not in seen:
                 seen.add(key)
                 findings.append(Finding(line_no, UNNATURAL_CODESWITCH, REVIEW, word, "English token not attested in Voice DNA code-switching evidence"))
+
+        # Hints come last for a line, and are weighed against each other only (see AI_TELL).
+        hints: List[Tuple[int, int, Finding]] = []
+        for rx, category, severity, detail in tells:
+            for m in rx.finditer(visible):
+                if m.end() > m.start():
+                    start, end = seen_at[m.start()], seen_at[m.end() - 1] + 1
+                    hints.append((start, end, Finding(line_no, category, severity, aloud(start, end), detail)))
+        findings.extend(_dedupe_overlaps(hints))
 
     duration = _number(target_duration_sec if target_duration_sec is not None else last_end_sec)
     if duration is not None and cpm is not None and lines:
@@ -512,14 +581,24 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     parser.add_argument("--target-sec", type=float, default=None, help="Target duration; defaults to the last time_range end")
     parser.add_argument("--slash-only", action="store_true", help="Only '/' counts as a breath break")
     parser.add_argument("--allow-english", action="append", default=[], help="Extra allowed English (e.g. sponsor brand); repeatable")
+    parser.add_argument("--data-dir", type=Path, default=None,
+                        help="The app's data folder: check with the word list as the creator changed it there (entries "
+                             "switched off, own phrases). Nothing in the folder is created or changed. Without this the "
+                             "shipped list is used as it stands")
     parser.add_argument("--json", action="store_true", help="Emit findings as JSON")
     args = parser.parse_args(argv)
 
     script = json.loads(args.script.read_text(encoding="utf-8"))
     dna = json.loads(args.dna.read_text(encoding="utf-8"))
+    if args.data_dir is not None:
+        from . import wordlist      # here and not at the top of the file: wordlist imports this module
+        lexicon = wordlist.effective_in(args.data_dir)
+    else:
+        lexicon = load_lexicon()    # no data folder was named, so there is nothing of the creator's to apply
     findings = lint_script(
         script, dna,
         target_duration_sec=args.target_sec,
+        lexicon=lexicon,
         punctuation_breaks=not args.slash_only,
         extra_allowed_english=args.allow_english,
     )
@@ -530,7 +609,20 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
             where = "L%s" % f.line_no if f.line_no is not None else "script"
             print("%-6s %-7s %-22s %s  (%s)" % (where, f.severity, f.category, f.matched, f.detail))
         errors = sum(1 for f in findings if f.severity == ERROR)
-        print("%d error(s), %d to review" % (errors, len(findings) - errors))
+        hints = sum(1 for f in findings if f.category == AI_TELL)
+        print("%d error(s), %d to review, %d hint(s) that a line may sound written" % (errors, len(findings) - errors - hints, hints))
+        # Said once below the findings: which list was read, and that it is not a statement of any rule.
+        reviewed = lexicon.get("_reviewed_on") or "an unknown day"
+        if args.data_dir is None:
+            print("Word list: as shipped (last reviewed %s). Entries the creator switched off in the app and phrases "
+                  "they added are not applied; name the data folder with --data-dir to apply them." % reviewed)
+        else:
+            state = lexicon.get("_wordlist") or {}
+            print("Word list: as changed in %s (shipped list last reviewed %s): %d shipped entries switched off, %d own "
+                  "phrases.%s" % (args.data_dir, reviewed, len(state.get("switched_off") or []), len(lexicon.get("own_phrases") or []),
+                                  " What is stored there could not be read, so the shipped list was used." if state.get("unreadable") else ""))
+        if lexicon.get("_disclaimer_en"):
+            print(lexicon["_disclaimer_en"])
     return 1 if any(f.severity == ERROR for f in findings) else 0
 
 

@@ -323,3 +323,23 @@ input[type=date] { border: 1px solid var(--line); border-radius: 10px; padding: 
 .po-fields .po-wide { grid-column: 1 / -1; }
 .po-item .hint { margin: 6px 0 0; }
 #po-ai-openings { margin: 12px 0; }
+
+/* the word list (wordlist.js): what a finding rests on, hints that a line sounds written, the Settings section */
+.issue small { display: block; margin-top: 2px; font-size: 12px; opacity: .85; }
+/* A hint is not a rule: no warning colour, a dashed outline, and a label that says so. */
+.issue.tell { background: #eef1f6; color: #46536b; border: 1px dashed #b3bdd0; }
+.issue-kind { display: inline-block; margin-right: 8px; padding: 0 8px; border-radius: 6px; background: #fff; font-size: 12px; font-weight: 600; }
+.wl-note { margin: 0 0 10px; }
+.wl-note b { font-weight: 600; color: #7a5410; }
+#wl-box { margin-top: 36px; }
+#wl-box h2 { font-size: 20px; margin: 0 0 4px; }
+#wl-box > .hint { margin-bottom: 10px; }
+#wl-box .banner { margin: 10px 0; }
+.wl-group > .hint { margin: 8px 0 10px; overflow-wrap: anywhere; }
+.wl-entry { display: grid; grid-template-columns: 1fr auto; gap: 12px; align-items: start; padding: 10px 0; border-top: 1px solid var(--line); }
+.wl-shows { font-size: 15px; overflow-wrap: anywhere; }
+.wl-shows .tag { margin: 0 0 0 6px; font-size: 12px; }
+.wl-entry .btn { font-size: 13px; padding: 5px 14px; }
+.wl-entry.off .wl-text { opacity: .55; }
+.wl-own h3 { font-size: 15px; }
+@media (max-width: 720px) { .wl-entry { grid-template-columns: 1fr; } }

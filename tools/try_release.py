@@ -120,7 +120,8 @@ def use(base: str, version: str, checks: List[str]) -> None:
     status, page, headers = ask(base, "GET", "/", raw=True)
     expect("the page loads", status == 200 and b'<main id="view">' in page, status)
     expect("every answer carries the content security policy", "default-src" in headers.get("Content-Security-Policy", ""), headers)
-    for name in ("app.js", "setup.js", "discover.js", "craft.js", "prompter.js", "kwimport.js", "posted.js", "pages.js", "app.css"):
+    for name in ("app.js", "setup.js", "discover.js", "craft.js", "prompter.js", "kwimport.js", "posted.js", "wordlist.js", "pages.js",
+                 "app.css"):
         status, body, headers = ask(base, "GET", "/" + name, raw=True)
         kind = "text/css" if name.endswith(".css") else "text/javascript"
         expect("/%s is served as %s" % (name, kind), status == 200 and len(body) > 500 and headers.get("Content-Type", "").startswith(kind),

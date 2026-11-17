@@ -50,7 +50,7 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
 from . import checks, corpus, creator, exports, keyword_import, llm, pipeline, textstats, timing, transcribe, trends
-from . import buildinfo, hooks, posted, suggest
+from . import buildinfo, hooks, posted, suggest, wordlist
 from . import setup as setup_status
 from .jobs import JobError, Jobs, Progress
 from .store import HISTORY_ID, MANUAL_PROVIDER, PROVIDERS, ROOT, StaleScript, Store, TextTooLong, clean_file_name
@@ -733,6 +733,17 @@ class Handler(BaseHTTPRequestHandler):
 
                 store.update_config(choose)
             return self._json({"settings": store.public_settings()})
+        if route == ("GET", "/api/wordlist"):
+            # The word list behind the wording findings, as the Settings page shows it: what each entry rests on,
+            # whether it is on, the creator's own phrases and the limits on them.
+            return self._json(wordlist.payload(store))
+        if route == ("PUT", "/api/wordlist"):
+            # {"off": [ids of the shipped entries that are to be off], "phrases": [the creator's own phrases]}.
+            # Either may be left out and then stays as stored. The answer is the list as it then is.
+            try:
+                return self._json(wordlist.save(store, self._read_json()))
+            except wordlist.Refused as exc:
+                raise ApiError(400, exc.code, exc.message, exc.message_zh, extra=exc.extra)
 
         if route == ("GET", "/api/samples"):
             samples = store.list_samples()

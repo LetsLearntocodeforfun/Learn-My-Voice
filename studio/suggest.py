@@ -3,8 +3,10 @@
 A model writes the proposals (``prompts/08_line_editor.md``). Everything else here is code:
 
 - each proposal is checked as if it stood in the script: the same findings any line gets (breath length,
-  refused phrases, written-style and translated wording, advertising claims), next to the findings of the
-  line as it stands, so the creator sees whether it is cleaner or not;
+  refused phrases, written-style and translated wording, advertising claims, with the word list as the
+  creator keeps it), next to the findings of the line as it stands, so the creator sees whether it is
+  cleaner or not. A hint that a line may sound written is shown with the proposal but is not counted
+  among its problems;
 - each is compared with the creator's counted speech habits (``voicematch.line_fit``), and the whole
   script's voice-match number with the proposal in place is given next to the number now;
 - proposals are put in order by those checks, not by the order the model gave them;
@@ -124,9 +126,16 @@ def _line_findings(payload: Dict[str, Any], line_no: int) -> List[Dict[str, Any]
     return [f for f in payload["findings"] if f["line_no"] == line_no]
 
 
+def _hints(findings: List[Dict[str, Any]]) -> int:
+    """How many of ``findings`` are only hints that the line may sound written (``guardrails.AI_TELL``)."""
+    return sum(1 for f in findings if f["category"] == guardrails.AI_TELL)
+
+
 def _counts(findings: List[Dict[str, Any]]) -> Dict[str, int]:
-    errors = sum(1 for f in findings if f["severity"] == guardrails.ERROR)
-    return {"errors": errors, "reviews": len(findings) - errors}
+    """How many findings are errors and how many ask for a second look. A hint that the line may sound written is neither."""
+    rules = [f for f in findings if f["category"] != guardrails.AI_TELL]
+    errors = sum(1 for f in rules if f["severity"] == guardrails.ERROR)
+    return {"errors": errors, "reviews": len(rules) - errors}
 
 
 def _match_score(payload: Dict[str, Any]) -> Optional[int]:
@@ -147,6 +156,7 @@ def _checked(store: Store, script: Dict[str, Any], index: int, proposal: Dict[st
         "why_zh": proposal["why_zh"], "why_en": proposal["why_en"],
         "units": textstats.spoken_units(textstats.strip_cues(proposal["text"])),
         "findings": findings, "problems": _counts(findings), "problems_now": _counts(_line_findings(now, index + 1)),
+        "hints": _hints(findings),
         "fit": voicematch.line_fit(proposal["text"], reference),
         "voice_match": _match_score(after), "estimated_sec": after["stats"].get("estimated_sec"),
     }
@@ -157,12 +167,12 @@ def _checked(store: Store, script: Dict[str, Any], index: int, proposal: Dict[st
     return out
 
 
-def _order(item: Dict[str, Any]) -> Tuple[int, int, float, int]:
-    """Fewest findings first; then the one with more of its breaths inside the creator's usual length, and
-    fewer words their material never has."""
+def _order(item: Dict[str, Any]) -> Tuple[int, int, int, float, int]:
+    """Fewest findings first; then the one with fewer hints that it sounds written; then the one with more of
+    its breaths inside the creator's usual length, and fewer words their material never has."""
     fit = item["fit"] or {"breaths": 0, "inside": 0, "unfamiliar": []}
     outside = 1.0 - (fit["inside"] / fit["breaths"] if fit["breaths"] else 0.0)
-    return item["problems"]["errors"], item["problems"]["reviews"], outside, len(fit["unfamiliar"])
+    return item["problems"]["errors"], item["problems"]["reviews"], item["hints"], outside, len(fit["unfamiliar"])
 
 
 def apply_suggest(store: Store, result: Any, script_id: Any, kind: Any, line_index: Any = None) -> Dict[str, Any]:
@@ -171,7 +181,8 @@ def apply_suggest(store: Store, result: Any, script_id: Any, kind: Any, line_ind
     ``{"kind", "line_index", "suggestions", "voice_match_now", "left_out"}``. Each suggestion:
     ``line_index``, ``original`` (the line as stored now), ``text``, ``english``, ``why_zh``, ``why_en``,
     ``units``, ``findings`` (what the checks say about the line with the proposal in it), ``problems`` and
-    ``problems_now`` (``{"errors", "reviews"}`` with the proposal, and for the line as it stands), ``fit``
+    ``problems_now`` (``{"errors", "reviews"}`` with the proposal, and for the line as it stands), ``hints``
+    (how many of the findings only say that the proposal may sound written; they are in neither count), ``fit``
     (``voicematch.line_fit``), ``voice_match`` (the whole script's number with the proposal in place, None
     when there is none) and ``estimated_sec``. Openings also carry ``patterns``; cuts carry ``one_breath``.
 
