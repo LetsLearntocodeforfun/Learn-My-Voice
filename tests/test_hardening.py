@@ -1246,6 +1246,37 @@ class IdleConnectionTest(StudioCase):
 OLD_TRAILING_HEAT = re.compile(r"^(.+?)(\s*[\t,，;；|｜]\s*|\s+)(\d[\d,]*(?:\.\d+)?)\s*(万|亿|[wWkK])?\+?\s*$")
 
 
+class BurstTest(StudioCase):
+    """Connections that arrive at the same moment. A browser opens six to one address at once, a page of the
+    app is twelve files, and a second window or a script that tries the app adds its own."""
+
+    def test_more_connections_may_wait_than_python_allows_by_itself(self):
+        self.assertGreaterEqual(server.StudioServer.request_queue_size, 64)        # Python's own choice is 5
+        self.assertEqual(self.httpd.request_queue_size, server.StudioServer.request_queue_size)
+
+    def test_connections_made_at_the_same_moment_are_all_answered(self):
+        """With Python's own queue of 5, close to half of twelve such connections were lost on one Mac."""
+        at_once, rounds, lost = 24, 6, []
+        for _ in range(rounds):
+            gate = threading.Barrier(at_once)
+
+            def one():
+                try:
+                    gate.wait(timeout=30)
+                    status, body, _ = self.send("GET", "/app.css", timeout=30)
+                    if status != 200 or not body:
+                        lost.append("answered %s with %d bytes" % (status, len(body)))
+                except Exception as problem:                 # noqa: BLE001 - every way of not being answered counts
+                    lost.append("%s: %s" % (type(problem).__name__, problem))
+
+            threads = [threading.Thread(target=one) for _ in range(at_once)]
+            for thread in threads:
+                thread.start()
+            for thread in threads:
+                thread.join(60)
+        self.assertEqual(lost, [])
+
+
 class SlowPatternTest(unittest.TestCase):
     def test_a_timestamp_cannot_carry_a_number_that_takes_seconds_to_read(self):
         digits = "9" * 2000000

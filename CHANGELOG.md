@@ -117,8 +117,8 @@ be read again then.
   `desktop-<system>-trial.txt`. The page does this only when the app was started for such a trial.
   Every step has a time limit, the page asks the system nothing a person would have to answer, and it tells
   the app how far it has come after each step, so that a trial in which the window stops says where it stopped.
-  The first such trial, on 18 November 2026, passed in the Mac app on an Apple chip and on Intel, and stopped
-  without a word in the Windows app; see "State of this release".
+  The first such trial, on 18 November 2026, passed in the Mac app on an Apple chip and on Intel and stopped
+  without a word in the Windows app; the second passed there too. See "State of this release".
 
 **Changed**
 
@@ -146,6 +146,13 @@ be read again then.
 
 **Fixed**
 
+- Connections that reached the app at the same moment could be turned away, because only five could wait
+  their turn. A browser opens six at once and a page of the app is twelve files, so a page could lose one of
+  its files and stay empty or half-working until it was loaded again. Up to 128 now wait. Measured on one Mac
+  on 18 November 2026, with twelve connections opened at the same moment, 150 times: before, 802 of 1,800 were
+  lost; now none. This is the likely cause of a page that stayed empty and of requests that failed for no
+  visible reason, each seen a few times on that Mac while two programs were using the app; that it was the
+  cause of each of those is not shown.
 - Saving the settings, the creator profile or a voice profile would have failed on Windows with a Python older
   than 3.13. Found by reading the code. The tests now pass on GitHub's Windows machines with Python 3.9.
 - On Windows, two saves at the same moment could fail with "Access is denied", and a second copy of the app
@@ -194,11 +201,14 @@ be read again then.
   18 November 2026. In the Mac app, on an Apple chip and on Intel, it passed: the page in the app's window
   opened a script, exported it, asked for the file to be shown, followed a link and deleted the script, and
   the exported file was on the disk. In the Windows app the page reported nothing within 150 seconds, and no
-  release candidate was published from that build. Why is not known; the log of GitHub's machine cannot be
-  read without an account. The one thing in the page's check that had no time limit was a write to the
-  clipboard without a click, which a web view may answer with a question on the screen. It was taken out, and
-  every step got a limit. Whether the Windows trial passes since then is in the notes of the release
-  candidates after number 9; this file is not changed for each of them. Showing a file in its folder and
+  release candidate was published from that build. The one thing in the page's check that had no time limit
+  was a write to the clipboard without a click. It was taken out and every step got a limit, and in the next
+  trial, the same day, the page did all of it in the Windows app as well (WebView2, Edge 156), with the
+  export in that machine's Downloads folder. Why the first trial stopped is not known: the log of GitHub's
+  machine cannot be read without an account, WebView2 says a page may write to the clipboard, so it was not
+  waiting for a person's answer, and one trial each way does not show that the write was the cause. What each
+  later trial found is in the notes of its release candidate; this file is not changed for each of them.
+  Showing a file in its folder and
   opening a link in the browser were not run for real anywhere: in the trial the core writes them down and
   opens nothing, because nobody is there to close what would open.
 - On Windows the app does not close its data folder to the other accounts on the computer. Who may read it is
