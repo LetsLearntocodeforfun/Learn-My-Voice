@@ -46,8 +46,34 @@ ORIGIN_SCRIPT = "script"
 # What a posted item carries beside its numbers, as columns ``update_sample`` can set: the day it was posted, the
 # link to the note, and the day the numbers were read. Days are text, ``YYYY-MM-DD``.
 POSTED_COLUMNS = ("posted_on", "note_url", "metrics_on")
+# What the page asks the core to keep for it from one run of the app to the next: the language, the look, and how
+# the teleprompter was last set. A page can keep such things for itself, but only for one address, and inside
+# the desktop app the page's address has a different port at every start. Kept here, a choice is still there
+# the next time the app is opened. PAGE_WORDS: each name with the words it may be. PAGE_NUMBERS: names that hold
+# a whole number of at most four digits (the page checks the range each one may have; see tpRecall in prompter.js).
+PAGE_WORDS = {
+    "lang": ("zh", "en"),
+    "theme": ("auto", "light", "dark"),
+    "accent": ("blue", "purple", "pink", "orange", "green", "graphite"),
+}
+PAGE_NUMBERS = ("tp-pace", "tp-size", "tp-mirror")
 
 _CONFIG_LOCK = threading.RLock()    # one read-change-save of the settings at a time (Store.update_config)
+
+
+def kept_value(name: Any, value: Any) -> Optional[str]:
+    """``value`` as the text kept for the page under ``name``; None when the page may not keep that name or that value.
+
+    Both are text, as a page keeps them (``PAGE_WORDS``, ``PAGE_NUMBERS``). A number is returned in its plain form.
+    """
+    if not isinstance(name, str) or not isinstance(value, str):
+        return None
+    if name in PAGE_WORDS:
+        return value if value in PAGE_WORDS[name] else None
+    if name in PAGE_NUMBERS and re.fullmatch(r"-?[0-9]{1,4}", value, re.ASCII):
+        return str(int(value))
+    return None
+
 _DNA_LOCK = threading.RLock()       # one replacement of the active voice profile at a time
 # Copies of earlier voice profiles: voice_dna-<date>-<time>[-<n>].json, or .unreadable for one that could not be read.
 _HISTORY_FILE = re.compile(r"voice_dna-([0-9]{8}-[0-9]{6})(?:-([0-9]{1,6}))?\.(json|unreadable)")
@@ -496,6 +522,26 @@ class Store:
             change(config)
             self.save_config(config)
             return config
+
+    def load_page_keeps(self) -> Dict[str, str]:
+        """What is kept for the page (``PAGE_WORDS``, ``PAGE_NUMBERS``). Anything else found in the file is left out."""
+        held = self.load_config().get("page")
+        kept: Dict[str, str] = {}
+        if isinstance(held, dict):
+            for name, value in held.items():
+                text = kept_value(name, value)
+                if text is not None:
+                    kept[name] = text
+        return kept
+
+    def keep_for_page(self, changes: Dict[str, str]) -> Dict[str, str]:
+        """Keep ``changes`` (names and values that ``kept_value`` passed) with what is kept already. Returns all of it."""
+        def change(config: Dict[str, Any]) -> None:
+            held = config.get("page")
+            config["page"] = dict(held if isinstance(held, dict) else {}, **changes)
+
+        self.update_config(change)
+        return self.load_page_keeps()
 
     def public_settings(self) -> Dict[str, Any]:
         """Settings safe to send to the browser: no key material."""

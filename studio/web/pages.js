@@ -302,6 +302,19 @@ function renderSettings() {
   const mcpCard = mcp ? `<details class="card" style="margin-top:32px"><summary>${esc(t('mcp_title'))}</summary>
       <p class="hint">${esc(t('mcp_explain'))}</p>
       <textarea id="mcp-snippet" class="mono" rows="6" readonly></textarea></details>` : '';
+  /* Light or dark or as the system has it, and the accent colour. A choice shows at once; nothing here needs Save. */
+  const look = lookNow();
+  const pick = (name, value, on, cls, body, label) => `<button type="button" class="${cls}${on ? ' on' : ''}" data-pick="${name}:${value}"` +
+    ` aria-pressed="${on ? 'true' : 'false'}"${label ? ` title="${esc(label)}" aria-label="${esc(label)}"` : ''}>${body}</button>`;
+  const lookCard = `<h2 class="sec-h">${esc(t('look_title'))}</h2>
+    <div class="card" id="look-card">
+      <div class="look-row"><span>${esc(t('look_theme'))}</span>
+        <div class="seg" role="group" aria-label="${esc(t('look_theme'))}">${THEMES.map((k) =>
+          pick('theme', k, k === look.theme, '', esc(t('look_' + k)))).join('')}</div></div>
+      <div class="look-row"><span>${esc(t('look_accent'))}</span>
+        <div class="swatches" role="group" aria-label="${esc(t('look_accent'))}">${ACCENTS.map((k) =>
+          pick('accent', k, k === look.accent, 'swatch', '', t('accent_' + k))).join('')}</div></div>
+    </div>`;
   $view.innerHTML = `<div class="wrap"><h1>${esc(t('settings_title'))}</h1><p class="sub">${esc(t('settings_sub'))}</p>
     ${current}
     <label class="field">${esc(t('provider'))}</label>
@@ -310,10 +323,21 @@ function renderSettings() {
        <span class="hint">· ${esc(status(k))}</span></button>`).join('')}</div>
     ${access}${modelPart}
     <div class="row" style="margin-top:24px"><button class="btn primary big" id="save">${esc(t('save'))}</button></div>
+    ${lookCard}
     <div id="wl-box"></div>
     ${mcpCard}
     <p class="hint" id="build-line" style="margin-top:28px">${esc(buildLine())}</p></div>`;
   wlPaintSettings(document.getElementById('wl-box'));     // wordlist.js: the word list behind the wording findings
+  document.querySelectorAll('#look-card [data-pick]').forEach((button) => {
+    button.onclick = () => {
+      const name = button.dataset.pick.split(':')[0];
+      setLook(name, button.dataset.pick.split(':')[1]);
+      document.querySelectorAll(`#look-card [data-pick^="${name}:"]`).forEach((other) => {
+        other.classList.toggle('on', other === button);
+        other.setAttribute('aria-pressed', other === button ? 'true' : 'false');
+      });
+    };
+  });
 
   if (mcp) {
     document.getElementById('mcp-snippet').value =

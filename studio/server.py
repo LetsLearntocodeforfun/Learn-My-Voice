@@ -31,6 +31,7 @@ from __future__ import annotations
 import argparse
 import base64
 import binascii
+import html
 import json
 import math
 import mimetypes
@@ -53,7 +54,7 @@ from . import checks, corpus, creator, exports, keyword_import, llm, pipeline, t
 from . import buildinfo, hooks, outside, posted, suggest, wordlist
 from . import setup as setup_status
 from .jobs import JobError, Jobs, Progress
-from .store import HISTORY_ID, MANUAL_PROVIDER, PROVIDERS, ROOT, StaleScript, Store, TextTooLong, clean_file_name
+from .store import HISTORY_ID, MANUAL_PROVIDER, PROVIDERS, ROOT, StaleScript, Store, TextTooLong, clean_file_name, kept_value
 
 WEB_DIR = Path(__file__).with_name("web")
 MAX_BODY = 12 * 1024 * 1024  # room for a base64 .docx
@@ -101,6 +102,9 @@ STATIC_TYPES = {
     ".woff2": "font/woff2",
 }
 
+# How the app's page (web/index.html) begins. ``page_with_keeps`` writes what the core keeps for the page onto it.
+PAGE_OPENING = b'<html lang="zh-CN">'
+
 MAX_UPLOAD_BYTES = 8 * 1024 ** 3        # one video or recording; streamed to disk, never held in memory
 UPLOAD_CHUNK = 1024 * 1024
 UPLOAD_IDLE_SEC = 120                   # an upload that sends nothing for this long is abandoned
@@ -129,6 +133,26 @@ class ApiError(Exception):
         super().__init__(message or code)
         self.status, self.code, self.message, self.message_zh = status, code, message or code, message_zh
         self.extra = dict(extra or {})
+
+
+def page_with_keeps(page: bytes, kept: Dict[str, str]) -> bytes:
+    """The app's page with what the core keeps for it (``Store.load_page_keeps``) written onto its ``<html>`` element.
+
+    ``data-kept`` holds all of it as JSON; app.js reads it before it draws anything, so the language and the
+    look are the chosen ones from the first moment, also at an address the page has never been opened at
+    (inside the desktop app the port differs at every start). The look is written out as ``data-theme`` and
+    ``data-accent`` too, which the stylesheet reads: the window is not white for a moment for somebody who chose
+    dark. With nothing kept, or a page that does not begin as expected, the page is sent as it is.
+    """
+    if not kept or page.count(PAGE_OPENING) != 1:
+        return page
+    opening = '<html lang="%s" data-kept="%s"' % (
+        "en" if kept.get("lang") == "en" else "zh-CN", html.escape(json.dumps(kept, ensure_ascii=True, sort_keys=True), quote=True))
+    if kept.get("theme") in ("light", "dark"):
+        opening += ' data-theme="%s"' % kept["theme"]
+    if kept.get("accent", "blue") != "blue":
+        opening += ' data-accent="%s"' % html.escape(kept["accent"], quote=True)
+    return page.replace(PAGE_OPENING, (opening + ">").encode("ascii"))
 
 
 def _remove(path: Path) -> None:
@@ -617,7 +641,10 @@ class Handler(BaseHTTPRequestHandler):
             ctype = mimetypes.guess_type(target.name)[0] or "application/octet-stream"
             if ctype.startswith("text/") or ctype.endswith("javascript"):
                 ctype += "; charset=utf-8"
-        self._send(200, target.read_bytes(), ctype)
+        body = target.read_bytes()
+        if name == "index.html":
+            body = page_with_keeps(body, self.app.store.load_page_keeps())
+        self._send(200, body, ctype)
 
     # ---- copy-and-paste mode ------------------------------------------------
     def _manual_prompt(self, body: Dict[str, Any]) -> Dict[str, Any]:
@@ -701,6 +728,17 @@ class Handler(BaseHTTPRequestHandler):
             if app.window_check is not None:        # a script is trying the desktop app: the page loads windowcheck.js
                 state["window_check"] = True
             return self._json(state)
+
+        if route == ("POST", "/api/kept"):
+            # {name: value, ...}: what the page wants kept until the next run (``store.PAGE_WORDS``, ``PAGE_NUMBERS``).
+            # One name or value the page may not keep refuses the whole request, and nothing is kept.
+            changes: Dict[str, str] = {}
+            for name, value in self._read_json().items():
+                text = kept_value(name, value)
+                if text is None:
+                    raise ApiError(400, "bad_value", "This cannot be kept: %s" % str(name)[:40])
+                changes[name] = text
+            return self._json({"kept": store.keep_for_page(changes) if changes else store.load_page_keeps()})
 
         # ---- outside the app: the file manager and the browser (see ``studio.outside``) ----
         if route == ("POST", "/api/outside/show"):

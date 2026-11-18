@@ -500,6 +500,7 @@ function openPrompter() {
       document.removeEventListener('keydown', onTab);
       window.removeEventListener('hashchange', leave);
       if (tpOpen === view) tpOpen = null;
+      keepWithCore();     /* app.js: the pace, the size and the mirror as she left them are kept by the core as well */
       /* Back to the button that opens it. It is looked up now: a click does not give a button the focus in
          every browser, and the editor may have drawn its buttons anew since. */
       const opener = document.getElementById('prompter-btn');

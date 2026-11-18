@@ -67,6 +67,8 @@ python3 -m studio.server
 From the zip or the source, the studio opens in your browser at `http://127.0.0.1:8765`. Settings shows which build is running.
 
 The interface starts in Chinese. Use the **English** button at the bottom of the sidebar to switch.
+It follows your computer's light or dark appearance; **Settings → Appearance** has light, dark and a choice of
+accent colour. The language and the look are remembered, also the next time the desktop app is opened.
 
 ## First 10 minutes
 

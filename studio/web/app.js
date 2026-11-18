@@ -1,6 +1,106 @@
 'use strict';
 /* Chinese-first single-page UI. No build step, no dependencies. */
 
+/* ---------- what is kept between runs: the language, the look, how the teleprompter was set ----------
+   The page keeps these for itself (localStorage), and the core keeps them as well (POST /api/kept). Inside the
+   desktop app the page's address has a different port at every start, and what a page keeps for itself belongs
+   to one address: there, the core's copy is the one that lasts. It arrives with the page, on <html data-kept>,
+   and is put into the page's own memory here, before anything is drawn. After that, what changes in the page
+   is sent to the core (keepWithCore). */
+const THEMES = ['auto', 'light', 'dark'];
+const ACCENTS = ['blue', 'purple', 'pink', 'orange', 'green', 'graphite'];
+/* Each name with the words it may be; null for a whole number (the teleprompter's, which it checks itself).
+   Must match PAGE_WORDS and PAGE_NUMBERS in studio/store.py: the core refuses anything else. */
+const KEPT = { lang: ['zh', 'en'], theme: THEMES, accent: ACCENTS, 'tp-pace': null, 'tp-size': null, 'tp-mirror': null };
+const KEPT_NAMES = Object.keys(KEPT);
+const keepable = (name, value) => (KEPT[name] ? KEPT[name].includes(value) : /^-?[0-9]{1,4}$/.test(value));
+const keptByCore = {};          // what the core is known to hold
+const pageMemory = {};          // stands in where the browser lets a page keep nothing (private browsing)
+function recall(name) {
+  try {
+    const held = localStorage.getItem(name);
+    if (held !== null) return held;
+  } catch (e) { /* not readable: the stand-in below */ }
+  return pageMemory[name] !== undefined ? pageMemory[name] : null;
+}
+function remember(name, value) {
+  pageMemory[name] = value;
+  try { localStorage.setItem(name, value); } catch (e) { /* kept for as long as the page is open */ }
+}
+(function () {
+  let kept = {};
+  try { kept = JSON.parse(document.documentElement.getAttribute('data-kept') || '{}') || {}; } catch (e) { kept = {}; }
+  KEPT_NAMES.forEach((name) => {
+    if (typeof kept[name] !== 'string' || !keepable(name, kept[name])) return;
+    keptByCore[name] = kept[name];
+    remember(name, kept[name]);
+  });
+})();
+/* Sends the core whatever differs from its copy. Called when something was chosen and whenever a page of the
+   app is opened; it asks for nothing when nothing differs. Something this page would not accept itself is not
+   sent, and what the core refuses all the same is not offered again. */
+function keepWithCore() {
+  if (keepWithCore.busy) { keepWithCore.again = true; return; }     // one request at a time; what changed meanwhile goes next
+  const changed = {};
+  KEPT_NAMES.forEach((name) => {
+    const held = recall(name);
+    if (held !== null && held !== keptByCore[name] && keepable(name, held)) changed[name] = held;
+  });
+  if (!Object.keys(changed).length) return;
+  keepWithCore.busy = true;
+  api('POST', '/api/kept', changed)
+    .then((answer) => { Object.assign(keptByCore, changed, answer.kept || {}); })
+    .catch((e) => { if (e.code === 'bad_value') Object.assign(keptByCore, changed); })
+    .then(() => {
+      keepWithCore.busy = false;
+      if (keepWithCore.again) { keepWithCore.again = false; keepWithCore(); }
+    });
+}
+
+/* ---------- the look: light or dark, and the accent colour ----------
+   app.css reads both from <html>: data-theme is "light" or "dark", data-accent is absent for blue. "auto" is
+   what the system has, and follows the system when that changes while the app is open. */
+const systemDark = window.matchMedia ? window.matchMedia('(prefers-color-scheme: dark)') : null;
+function lookNow() {
+  const theme = recall('theme');
+  const accent = recall('accent');
+  return { theme: THEMES.includes(theme) ? theme : 'auto', accent: ACCENTS.includes(accent) ? accent : 'blue' };
+}
+function applyLook() {
+  const look = lookNow();
+  const dark = look.theme === 'dark' || (look.theme === 'auto' && !!systemDark && systemDark.matches);
+  const root = document.documentElement;
+  root.setAttribute('data-theme', dark ? 'dark' : 'light');
+  if (look.accent === 'blue') root.removeAttribute('data-accent');
+  else root.setAttribute('data-accent', look.accent);
+}
+function setLook(name, value) {
+  remember(name, value);
+  applyLook();
+  keepWithCore();
+}
+applyLook();
+if (systemDark) {
+  if (systemDark.addEventListener) systemDark.addEventListener('change', applyLook);
+  else if (systemDark.addListener) systemDark.addListener(applyLook);      // web views from before 2020
+}
+
+/* Line icons, drawn here so that nothing is loaded: 24 units square, a line of 1.5 (the .ic rule in app.css). */
+const ICONS = {
+  start: '<path d="M5.5 21V4"/><path d="M5.5 4.5h12l-2.5 4 2.5 4h-12"/>',
+  scripts: '<path d="M6.5 3h7.5l4.5 4.5V21h-12z"/><path d="M14 3v4.5h4.5"/><path d="M9.5 12.5h6M9.5 16.5h6"/>',
+  ideas: '<path d="M9.5 18.2h5M10.5 21h3"/><path d="M12 3a6 6 0 0 0-3.8 10.6c.8.7 1.3 1.5 1.3 2.4h5c0-.9.5-1.7 1.3-2.4A6 6 0 0 0 12 3z"/>',
+  trends: '<path d="M3.5 17l5.5-5.5 3.5 3.5L20 7.5"/><path d="M14.5 7.5H20V13"/>',
+  library: '<path d="M4 4.5h16v4H4z"/><path d="M5.5 8.5v11h13v-11"/><path d="M10 12.5h4"/>',
+  voice: '<path d="M4 10.5v3M8 7v10M12 4v16M16 7v10M20 10.5v3"/>',
+  settings: '<path d="M4 7.5h9M18 7.5h2M4 16.5h2M11 16.5h9"/><circle cx="15.5" cy="7.5" r="2.5"/><circle cx="8.5" cy="16.5" r="2.5"/>',
+  globe: '<circle cx="12" cy="12" r="8.5"/><path d="M3.5 12h17M12 3.5c2.7 2.8 2.7 14.2 0 17M12 3.5c-2.7 2.8-2.7 14.2 0 17"/>',
+};
+const icon = (name) => `<svg class="ic" viewBox="0 0 24 24" width="20" height="20" aria-hidden="true">${ICONS[name] || ''}</svg>`;
+/* The app's mark beside its name: a voice, as a wave, in the colours of the app's icon (the .mark rules in app.css). */
+const BRAND_MARK = '<svg class="mark" viewBox="0 0 28 28" width="28" height="28" aria-hidden="true"><rect width="28" height="28" rx="7"/>' +
+  '<path d="M8 12v4M11 9.5v9M14 7v14M17 9.5v9M20 12v4"/></svg>';
+
 const I18N = {
   zh: {
     brand: '脚本工作台', nav_scripts: '我的脚本', nav_voice: '我的声音', nav_settings: '设置', lang_btn: 'English',
@@ -30,6 +130,8 @@ const I18N = {
     v_openers: '常用开头', v_connectors: '常用连接词',
     v_praise: '夸东西的说法', v_never: '从来不说',
     settings_title: '设置', settings_sub: '连接一次就好。密钥只保存在这台电脑上。',
+    look_title: '外观', look_theme: '明暗', look_auto: '跟随系统', look_light: '浅色', look_dark: '深色', look_accent: '强调色',
+    accent_blue: '蓝色', accent_purple: '紫色', accent_pink: '粉色', accent_orange: '橙色', accent_green: '绿色', accent_graphite: '石墨色',
     provider: 'AI 服务', api_key: '密钥（API Key）', key_saved_ph: '已保存，留空则继续使用', key_ph: '粘贴密钥',
     connect: '连接并读取模型', model: '模型', pick_model: '请选择模型', save: '保存', connected: '已连接',
     not_connected: '未连接', settings_saved: '已保存', current: '当前使用',
@@ -65,6 +167,8 @@ const I18N = {
     v_openers: 'Typical openers', v_connectors: 'Connectors',
     v_praise: 'How {@name} praises things', v_never: 'Never says',
     settings_title: 'Settings', settings_sub: 'Connect once. The key stays on this computer.',
+    look_title: 'Appearance', look_theme: 'Mode', look_auto: 'Auto', look_light: 'Light', look_dark: 'Dark', look_accent: 'Accent colour',
+    accent_blue: 'Blue', accent_purple: 'Purple', accent_pink: 'Pink', accent_orange: 'Orange', accent_green: 'Green', accent_graphite: 'Graphite',
     provider: 'AI service', api_key: 'API key', key_saved_ph: 'Saved; leave blank to keep it', key_ph: 'Paste key',
     connect: 'Connect and list models', model: 'Model', pick_model: 'Choose a model', save: 'Save', connected: 'connected',
     not_connected: 'not connected', settings_saved: 'Saved', current: 'In use',
@@ -73,7 +177,7 @@ const I18N = {
   },
 };
 
-let lang = localStorage.getItem('lang') === 'en' ? 'en' : 'zh';
+let lang = recall('lang') === 'en' ? 'en' : 'zh';
 let appState = { settings: { configured: false, keys: {} }, dna_is_example: true, creator: null, video_formats: [], sample_count: 0, trend_count: 0, lookup_available: false };
 const $view = document.getElementById('view');
 const $nav = document.getElementById('nav');
@@ -250,19 +354,21 @@ function fmtDate(ts) {
 
 /* ---------- navigation ---------- */
 function renderNav(route) {
-  const item = (hash, key, on, mark) => `<a href="${hash}" class="${on ? 'on' : ''}">${esc(t(key))}${mark ? '<i class="dot"></i>' : ''}</a>`;
-  $nav.innerHTML = `<div class="brand">${esc(t('brand'))}</div>` +
-    item('#/start', 'nav_start', route === 'start', appState.setup_next && appState.setup_next !== 'done') +
-    item('#/', 'nav_scripts', route === 'home' || route === 'new' || route === 'script') +
-    item('#/ideas', 'nav_ideas', route === 'ideas') +
-    item('#/trends', 'nav_trends', route === 'trends') +
-    item('#/library', 'nav_library', route === 'library') +
-    item('#/voice', 'nav_voice', route === 'voice') +
-    item('#/settings', 'nav_settings', route === 'settings') +
-    `<div class="grow"></div><button class="lang" id="lang-btn">${esc(t('lang_btn'))}</button>`;
+  const item = (hash, key, glyph, on, mark) => `<a href="${hash}" class="${on ? 'on' : ''}"${on ? ' aria-current="page"' : ''}>` +
+    `${icon(glyph)}<span>${esc(t(key))}</span>${mark ? '<i class="dot"></i>' : ''}</a>`;
+  $nav.innerHTML = `<div class="brand">${BRAND_MARK}<span>${esc(t('brand'))}</span></div>` +
+    item('#/start', 'nav_start', 'start', route === 'start', appState.setup_next && appState.setup_next !== 'done') +
+    item('#/', 'nav_scripts', 'scripts', route === 'home' || route === 'new' || route === 'script') +
+    item('#/ideas', 'nav_ideas', 'ideas', route === 'ideas') +
+    item('#/trends', 'nav_trends', 'trends', route === 'trends') +
+    item('#/library', 'nav_library', 'library', route === 'library') +
+    item('#/voice', 'nav_voice', 'voice', route === 'voice') +
+    item('#/settings', 'nav_settings', 'settings', route === 'settings') +
+    `<div class="grow"></div><button type="button" class="lang" id="lang-btn">${icon('globe')}<span>${esc(t('lang_btn'))}</span></button>`;
   document.getElementById('lang-btn').onclick = () => {
     lang = lang === 'zh' ? 'en' : 'zh';
-    localStorage.setItem('lang', lang);
+    remember('lang', lang);
+    keepWithCore();
     router();
   };
   document.documentElement.lang = lang === 'zh' ? 'zh-CN' : 'en';
@@ -275,6 +381,7 @@ async function router() {
   const m = hash.match(/^#\/s\/([0-9a-f]{12})$/);
   try {
     appState = await api('GET', '/api/state');
+    keepWithCore();       // what was set since the last page was opened (in the teleprompter, say) goes to the core
     /* The core was started by a script that is trying an installer of the desktop app: the page checks its own
        window (windowcheck.js) and reports to the core. Never set when a person starts the app. */
     if (appState.window_check && !router.checking) {

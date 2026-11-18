@@ -624,7 +624,10 @@ class PageTest(unittest.TestCase):
 
     def test_every_new_text_is_there_in_both_languages(self):
         app = self.sources["app.js"]
-        chinese, english = app[app.index("  zh: {"):app.index("  en: {")], app[app.index("  en: {"):app.index("\n};")]
+        # The English texts end where the list of texts ends: the first "};" after they begin (other lists stand before them).
+        chinese, english = app[app.index("  zh: {"):app.index("  en: {")], app[app.index("  en: {"):app.index("\n};", app.index("  en: {"))]
+        self.assertGreater(len(chinese), 2000)
+        self.assertGreater(len(english), 2000)
         for key in ("ask_ok", "ask_cancel", "exp_saved", "exp_saved_else", "exp_show", "link_not_opened", "link_copy"):
             self.assertRegex(chinese, r"\b%s: '[^']*[\u4e00-\u9fff]" % key, key)
             self.assertRegex(english, r"\b%s: '[A-Z][^'\u4e00-\u9fff]*'" % key, key)

@@ -120,6 +120,23 @@ be read again then.
   The first such trial, on 18 November 2026, passed in the Mac app on an Apple chip and on Intel and stopped
   without a word in the Windows app; the second passed there too. See "State of this release".
 
+- **A new look, with a dark appearance.** The app now looks at home beside Apple's own apps: the system's
+  typeface, a grey window with white grouped cards, a sidebar with line icons, one accent colour for what can
+  be acted on, and hairlines in place of boxes. It follows the computer's light or dark appearance, also when
+  that changes while the app is open; Settings → Appearance has light, dark and six accent colours, and a
+  choice shows at once. Blue marks what can be acted on and what is selected; green, orange and red keep one
+  meaning each (fine, wants a look, a problem), whatever the accent. Every text colour has a contrast of at
+  least 4.5 to 1 against each surface it stands on, in both appearances and all six accents: a test works
+  that out from the colour values for a list of 41 pairings of text and surface, and for the label on a
+  button and for a link it was also measured in the page. The hint inside an empty field is lighter than
+  that on purpose. The teleprompter stays black. The README's pictures were taken again.
+- **The language, the look and the teleprompter's settings are remembered by the app itself.** Until now the
+  page kept the language and how the teleprompter was last set for itself, which a browser does for one
+  address. The desktop app's page has a different address at every start, so there they would have been
+  forgotten each time the app was closed; that follows from how the app starts its core and was not seen. The
+  app now keeps these with its settings, and the page arrives with them, so a dark choice is dark from the
+  first moment.
+
 **Changed**
 
 - Through MCP, `save_voice_profile` stores a proposal only, and `update_script` only revises an AI draft the
