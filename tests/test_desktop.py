@@ -12,6 +12,7 @@ the core serves, and goes away. Covered here, on any system and without building
 The shell itself cannot be compiled or run by these tests. Whether it works is seen where it is built and
 tried, on GitHub's machines (desktop/try_installer.py).
 """
+import contextlib
 import hashlib
 import http.client
 import importlib.util
@@ -495,8 +496,7 @@ class WindowTrialTest(TempCase):
                 time.sleep(0.02)
             saved = self.ask("POST", "/api/scripts/%s/export/voiceover/save" % self.script["id"], {"lang": "zh"})[1]
             report = {"agent": "a web view", "facts": {"secure_context": True, "clipboard": False}, "errors": [], "saved": saved,
-                      "steps": [{"name": name, "ok": True, "said": "done"} for name in try_installer.WINDOW_STEPS]
-                      + [{"name": "copying without a click", "ok": True, "said": "refused"}]}
+                      "steps": [{"name": name, "ok": True, "said": "done"} for name in try_installer.WINDOW_STEPS]}
             if change:
                 change(report)
             self.ask("POST", "/api/window-check", report)
@@ -522,7 +522,8 @@ class WindowTrialTest(TempCase):
         words = try_installer.in_words("macos-arm64", dict(record, ok=True, checks=checks, system="Darwin", version="0.2.0", python="3.14.10",
                                                            seconds=12.5, signature="flags=0x10002(adhoc,runtime)"))
         for said in ("Trial of the desktop app on macos-arm64", "Result: passed after 12.5 seconds", "  ok    in its own window: a script opens in the editor",
-                     "web view: a web view", "  clipboard: False", "  secure_context: True", "  ok    copying without a click: refused",
+                     "web view: a web view", "  clipboard: False", "  secure_context: True",
+                     "  ok    a script is deleted through the question the page asks: done",
                      "Signature: flags=0x10002(adhoc,runtime)", "the export was saved as: "):
             self.assertIn(said, words)
 
@@ -568,13 +569,111 @@ class WindowTrialTest(TempCase):
             with self.assertRaises(try_installer.Failed) as refused:
                 try_installer.through_the_window(self.base, [], {})
         self.assertIn("reported nothing within 1 seconds", str(refused.exception))
+        self.assertIn("It never said that it had begun", str(refused.exception))
         self.assertIs(self.httpd.app.window_check["start"], True)               # it was asked
+
+    def test_a_window_that_stops_on_the_way_fails_it_and_the_trial_says_how_far_it_came(self):
+        """What happened on GitHub's Windows machine on 18 November 2026 said nothing about where. Now it would."""
+        names = list(try_installer.WINDOW_STEPS)
+        begun = {"unfinished": True, "agent": "a web view", "facts": {"secure_context": True}, "steps": [], "errors": []}
+        two = dict(begun, steps=[{"name": names[0], "ok": True, "said": "窗口"}, {"name": names[1], "ok": False, "said": "no answer within 30 s: " + names[1]}],
+                   errors=["TypeError: x is not a function"])
+        for so_far, said in ((begun, ["It had begun, so the page's scripts run in this web view, and it did not get through its first step"]),
+                             (two, ["It had begun and got through 2 of 5 steps; the last was: " + names[1] + " (FAILED: no answer within 30 s",
+                                    "Errors the page logged: TypeError: x is not a function"]),
+                             (dict(begun, steps=[{"name": names[0], "ok": True, "said": ""}]), ["got through 1 of 5 steps; the last was: " + names[0] + " (done)"])):
+            self.httpd.app.window_check = None
+            self.httpd.app.start_window_check()
+            self.assertEqual(self.ask("POST", "/api/window-check", so_far)[0], 200)
+            record = {}
+            with mock.patch.object(try_installer, "WINDOW_CHECK_SEC", 1):
+                with self.assertRaises(try_installer.Failed) as refused:
+                    try_installer.through_the_window(self.base, [], record)
+            for part in ["reported nothing within 1 seconds"] + said:
+                self.assertIn(part, str(refused.exception))
+            self.assertNotIn("never said that it had begun", str(refused.exception))
+            self.assertEqual(record["window"], so_far)                           # and it goes into the trial's text
+            words = try_installer.in_words("windows-x64", dict(record, ok=False, checks=[], system="Windows", error=str(refused.exception)))
+            self.assertIn("What the page reported from the app's own window (while at work; it never finished)", words)
+        self.assertEqual(try_installer.how_far(None), try_installer.how_far("x"))
+        self.assertEqual(try_installer.how_far({}), try_installer.how_far(begun))
+
+    def test_what_the_page_says_while_at_work_is_never_taken_for_its_report(self):
+        self.httpd.app.start_window_check()
+        done = {"unfinished": True, "agent": "a web view", "facts": {}, "errors": [], "saved": None,
+                "steps": [{"name": name, "ok": True, "said": "done"} for name in try_installer.WINDOW_STEPS]}
+        self.ask("POST", "/api/window-check", done)
+        with mock.patch.object(try_installer, "WINDOW_CHECK_SEC", 1):
+            with self.assertRaises(try_installer.Failed) as refused:
+                try_installer.through_the_window(self.base, [], {})
+        self.assertIn("reported nothing within 1 seconds", str(refused.exception))
+        self.assertIn("got through 5 of 5 steps", str(refused.exception))
+
+    def test_on_github_what_the_window_reported_is_put_where_anybody_can_read_it(self):
+        """The trial's text is only attached to a release candidate that is published; a run's annotations are public."""
+        installer = self.tmp / "Learn.My.Voice_0.2.0_x64-setup.exe"
+        installer.write_bytes(b"not run by this test")
+        window = {"agent": "a web view", "facts": {"clipboard_write": "prompt", "desktop": True}, "errors": [],
+                  "steps": [{"name": try_installer.WINDOW_STEPS[0], "ok": True, "said": "窗口, 100% of it"}],
+                  "saved": {"path": "C:\\Users\\x\\Downloads\\a.txt"}}
+        passed = {"ok": True, "checks": ["one", "two"], "seconds": 3.0, "system": "Windows", "error": "", "window": window}
+        failed = dict(passed, ok=False, error="in the app's own window: it stopped", window=dict(window, unfinished=True))
+
+        def run(record, on_github):
+            said = io.StringIO()
+            with mock.patch.object(try_installer, "try_installer", lambda *args: record), \
+                    mock.patch.dict(os.environ, {"GITHUB_ACTIONS": "true" if on_github else "false"}), contextlib.redirect_stdout(said):
+                code = try_installer.main([str(installer), "--label", "windows-x64", "--shots", str(self.tmp / "shots")])
+            return code, said.getvalue().splitlines()
+
+        code, lines = run(passed, True)
+        notices = [line for line in lines if line.startswith("::notice ")]
+        self.assertEqual((code, len(notices), [line for line in lines if line.startswith("::error ")]), (0, 1, []))
+        self.assertTrue(notices[0].startswith("::notice title=The desktop app's own window on windows-x64::What the page reported from the app's own window%0A"))
+        for part in ("  web view: a web view", "  clipboard_write: prompt", "  ok    " + try_installer.WINDOW_STEPS[0] + ": 窗口, 100%25 of it",
+                     "the export was saved as: C:\\Users\\x\\Downloads\\a.txt"):
+            self.assertIn(part, notices[0])
+        self.assertNotIn("\n", notices[0])                                        # one line, or GitHub reads the rest as output
+        self.assertIn("clipboard_write: prompt", (self.tmp / "shots" / "desktop-windows-x64-trial.txt").read_text(encoding="utf-8"))
+
+        code, lines = run(failed, True)                                           # a trial that failed says both: why, and what the window said
+        self.assertEqual(code, 1)
+        self.assertEqual(len([line for line in lines if line.startswith("::error title=Trying the desktop app on windows-x64 failed::")]), 1)
+        notices = [line for line in lines if line.startswith("::notice ")]
+        self.assertEqual(len(notices), 1)
+        self.assertIn("(while at work; it never finished)", notices[0])
+
+        for record in (passed, failed):                                           # on somebody's own computer nothing of the kind is printed
+            self.assertEqual([line for line in run(record, False)[1] if line.startswith("::")], [])
+        self.assertEqual([line for line in run(dict(passed, window=None), True)[1] if line.startswith("::")], [])
+
+    def test_nothing_in_the_page_s_check_waits_for_ever_or_asks_the_system_a_question(self):
+        page = (ROOT / "studio" / "web" / "windowcheck.js").read_text(encoding="utf-8")
+        code = re.sub(r"/\*.*?\*/", "", page, flags=re.S)                     # what is done, without what is said about it
+        code = re.sub(r"//[^\n]*", "", code)
+        # A page may ask whether it may write to the clipboard; trying it can put a question on the screen.
+        # (That a thing is there may be looked at: `navigator.clipboard.writeText` without brackets calls nothing.)
+        for asks_somebody in ("writeText(", "clipboard.write(", "clipboard.read", "getUserMedia(", "requestPermission", "wakeLock.request",
+                              "confirm(", "alert(", "prompt(", "window.open("):
+            self.assertNotIn(asks_somebody, code, asks_somebody)
+        self.assertIn("navigator.permissions.query({ name: 'clipboard-write' })", code)
+        # Every step runs inside a limit, and so does everything else that waits for an answer from outside the page.
+        step = code[code.index("async function step("):]
+        step = step[:step.index("\n  }") + 4]
+        self.assertIn("await within(STEP_MS, name, run())", step)
+        self.assertIn("await soFar();", step)
+        limit = int(re.search(r"const STEP_MS = (\d+);", code).group(1))
+        self.assertLessEqual(len(try_installer.WINDOW_STEPS) * limit / 1000 + 30, try_installer.WINDOW_CHECK_SEC)
+        for line in code.splitlines():
+            if "await " in line and ("navigator." in line or "api('POST', '/api/window-check'" in line):
+                self.assertIn("within(", line, line.strip())
+        self.assertEqual(code.count("for (;;)"), 2)                               # the two loops: one ends at a deadline, one asks the core
+        self.assertIn("if (Date.now() > end) throw new Error('waited in vain for ' + what);", code)
 
     def test_the_steps_it_waits_for_are_the_steps_the_page_reports(self):
         page = (ROOT / "studio" / "web" / "windowcheck.js").read_text(encoding="utf-8")
         reported = re.findall(r"await step\('([^']+)'", page)
-        self.assertEqual(reported[:len(try_installer.WINDOW_STEPS)], list(try_installer.WINDOW_STEPS))
-        self.assertEqual(reported[len(try_installer.WINDOW_STEPS):], ["copying without a click"])        # told, and not required
+        self.assertEqual(reported, list(try_installer.WINDOW_STEPS))
         self.assertEqual(try_installer.WINDOW_CHECK_ENV, server.WINDOW_CHECK_ENV)
         rust = (SHELL / "src" / "main.rs").read_text(encoding="utf-8")
         self.assertNotIn("env_clear", rust)                                     # the shell hands its environment on to the core

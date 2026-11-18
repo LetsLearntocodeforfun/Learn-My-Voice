@@ -815,6 +815,8 @@ class RunTestsTest(TempCase):
         # Signs that mean something to GitHub in a command are written as their codes.
         self.assertEqual(run_tests.annotation("a: b, c", "100% sure\r\nnext ::warning::x"), "::error title=a%3A b%2C c::100%25 sure%0D%0Anext ::warning::x")
         self.assertEqual(try_release.annotation("a: b, c", "100% sure\r\nnext"), "::error title=a%3A b%2C c::100%25 sure%0D%0Anext")
+        self.assertEqual(try_release.annotation("a: b", "fine\nnext", level="notice"), "::notice title=a%3A b::fine%0Anext")
+        self.assertEqual(try_release.annotation("a", "b", level="warning::x"), "::error title=a::b")        # no third kind, and no way to write one in
 
 
 if __name__ == "__main__":

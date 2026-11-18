@@ -241,11 +241,15 @@ def try_package(package: Path, sha256: str = "") -> Dict[str, Any]:
     return record
 
 
-def annotation(title: str, message: str) -> str:
-    """A GitHub workflow command that shows ``message`` at the top of the run's page. It has to stay on one line."""
+def annotation(title: str, message: str, level: str = "error") -> str:
+    """A GitHub workflow command that shows ``message`` at the top of the run's page. It has to stay on one line.
+
+    ``level`` is "error", or "notice" for something worth reading that is not a failure.
+    """
     def data(text: str) -> str:
         return text.replace("%", "%25").replace("\r", "%0D").replace("\n", "%0A")
-    return "::error title=%s::%s" % (data(title[:200]).replace(":", "%3A").replace(",", "%2C"), data(message[:3000]))
+    return "::%s title=%s::%s" % ("notice" if level == "notice" else "error",
+                                  data(title[:200]).replace(":", "%3A").replace(",", "%2C"), data(message[:3000]))
 
 
 def main(argv: Optional[List[str]] = None) -> int:

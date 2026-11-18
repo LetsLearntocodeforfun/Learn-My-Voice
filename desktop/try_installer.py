@@ -53,7 +53,10 @@ RUNNING_FILE = "desktop-running.json"                              # as in src-t
 PROBLEM_FILE = "desktop-problem.txt"                               # as in src-tauri/src/main.rs
 START_TIMEOUT_SEC = 180
 WINDOW_CHECK_ENV = "LEARN_MY_VOICE_WINDOW_CHECK"                   # as in studio/server.py
-WINDOW_CHECK_SEC = 150
+# How long the page in the window has for its check. Each of its steps gives up after 30 seconds
+# (STEP_MS in studio/web/windowcheck.js), so within this time even a check in which every step waited in vain
+# has reported.
+WINDOW_CHECK_SEC = 240
 # What the page in the window has to have done, under the names studio/web/windowcheck.js gives its steps.
 WINDOW_STEPS = (
     "a script opens in the editor",
@@ -230,6 +233,23 @@ def as_the_desktop_app(base: str, data: Path, python: Any, checks: List[str]) ->
     checks.append("an AI app started as the settings page says reaches the same data, through the Python inside the app")
 
 
+def how_far(so_far: Any) -> str:
+    """In words, how far a check of the window came that never reported, from what the page said while at work."""
+    if not isinstance(so_far, dict):
+        return ("It never said that it had begun: the page's scripts do not run in this web view, or the page did "
+                "not learn that a check was wanted")
+    steps = [step for step in so_far.get("steps") or [] if isinstance(step, dict)]
+    if steps:
+        last = steps[-1]
+        text = "It had begun and got through %d of %d steps; the last was: %s (%s%s)" % (
+            len(steps), len(WINDOW_STEPS), last.get("name"), "done" if last.get("ok") is True else "FAILED",
+            ": " + str(last.get("said"))[:300] if last.get("said") else "")
+    else:
+        text = "It had begun, so the page's scripts run in this web view, and it did not get through its first step"
+    errors = "; ".join(str(error) for error in so_far.get("errors") or [])[:1000]
+    return text + (". Errors the page logged: " + errors if errors else "")
+
+
 def through_the_window(base: str, checks: List[str], record: Dict[str, Any]) -> None:
     """Have the page in the app's own window use itself, and read what it reports (studio/web/windowcheck.js).
 
@@ -250,9 +270,11 @@ def through_the_window(base: str, checks: List[str], record: Dict[str, Any]) -> 
         report = check.get("report") if status == 200 and isinstance(check, dict) else None
         if not isinstance(report, dict):
             if time.time() > deadline:
+                so_far = check.get("so_far") if status == 200 and isinstance(check, dict) else None
+                if isinstance(so_far, dict):
+                    record["window"] = so_far                # what it said while at work goes into the trial's text
                 raise Failed("the page in the app's window reported nothing within %d seconds of being asked to check "
-                             "itself: its scripts do not run in this web view, or stopped before they could say why"
-                             % WINDOW_CHECK_SEC)
+                             "itself. %s" % (WINDOW_CHECK_SEC, how_far(so_far)))
             time.sleep(1)
     record["window"] = report
     errors = "; ".join(str(error) for error in report.get("errors") or [])[:1500]
@@ -488,18 +510,26 @@ def in_words(label: str, record: Dict[str, Any]) -> str:
         lines += ["  FAIL  " + str(record["error"])]
     if record.get("signature"):
         lines += ["", "Signature: " + str(record["signature"])]
-    window = record.get("window")
-    if isinstance(window, dict):
-        lines += ["", "What the page reported from the app's own window", "  web view: " + str(window.get("agent", ""))]
-        facts = window.get("facts") if isinstance(window.get("facts"), dict) else {}
-        lines += ["  %s: %s" % (key, facts[key]) for key in sorted(facts)]
-        for step in window.get("steps") or []:
-            if isinstance(step, dict):
-                lines.append("  %s  %s: %s" % ("ok  " if step.get("ok") is True else "FAIL", step.get("name"), step.get("said")))
-        lines += ["  error logged by the page: " + str(error) for error in window.get("errors") or []]
-        if isinstance(window.get("saved"), dict):
-            lines.append("  the export was saved as: " + str(window["saved"].get("path")))
+    if isinstance(record.get("window"), dict):
+        lines += [""] + window_in_words(record["window"])
     return "\n".join(lines) + "\n"
+
+
+def window_in_words(window: Dict[str, Any]) -> List[str]:
+    """What the page reported from the app's own window, as lines of text: the web view, what it offers, each
+    step, the errors the page logged, and where the export went."""
+    lines = ["What the page reported from the app's own window" + (
+        " (while at work; it never finished)" if window.get("unfinished") is True else ""),
+             "  web view: " + str(window.get("agent", ""))]
+    facts = window.get("facts") if isinstance(window.get("facts"), dict) else {}
+    lines += ["  %s: %s" % (key, facts[key]) for key in sorted(facts)]
+    for step in window.get("steps") or []:
+        if isinstance(step, dict):
+            lines.append("  %s  %s: %s" % ("ok  " if step.get("ok") is True else "FAIL", step.get("name"), step.get("said")))
+    lines += ["  error logged by the page: " + str(error) for error in window.get("errors") or []]
+    if isinstance(window.get("saved"), dict):
+        lines.append("  the export was saved as: " + str(window["saved"].get("path")))
+    return lines
 
 
 def main(argv: Optional[List[str]] = None) -> int:
@@ -545,6 +575,11 @@ def main(argv: Optional[List[str]] = None) -> int:
     if not record["ok"] and os.environ.get("GITHUB_ACTIONS") == "true":
         done = "After %d checks that passed (the last: %s).\n\n" % (len(record["checks"]), record["checks"][-1]) if record["checks"] else ""
         print(trial.annotation("Trying the desktop app on %s failed" % label, done + record["error"]), flush=True)
+    if isinstance(record.get("window"), dict) and os.environ.get("GITHUB_ACTIONS") == "true":
+        # Also when the trial passed. What the page found in this system's web view is then on the run's page, which
+        # anybody can read; the trial's text is only attached to a release candidate, and only when one is published.
+        print(trial.annotation("The desktop app's own window on %s" % label, "\n".join(window_in_words(record["window"])), level="notice"),
+              flush=True)
     return 0 if record["ok"] else 1
 
 

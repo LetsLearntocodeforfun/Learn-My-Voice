@@ -115,6 +115,10 @@ be read again then.
   afterwards, and the page must have logged no error; otherwise the installer is not attached. What each trial
   did and what the page reported about its web view is attached to the release candidate as
   `desktop-<system>-trial.txt`. The page does this only when the app was started for such a trial.
+  Every step has a time limit, the page asks the system nothing a person would have to answer, and it tells
+  the app how far it has come after each step, so that a trial in which the window stops says where it stopped.
+  The first such trial, on 18 November 2026, passed in the Mac app on an Apple chip and on Intel, and stopped
+  without a word in the Windows app; see "State of this release".
 
 **Changed**
 
@@ -186,7 +190,15 @@ be read again then.
   concluded from how the web views are documented to behave, not seen. The new way was run in headless Chrome
   on one Mac with the core told that it is the desktop app. What it does inside the installed apps is what
   the trial on GitHub's machines now finds out for each installer; a release candidate's notes and its
-  `desktop-<system>-trial.txt` files say what was found for that build. Showing a file in its folder and
+  `desktop-<system>-trial.txt` files say what was found for that build. The first such trial ran on
+  18 November 2026. In the Mac app, on an Apple chip and on Intel, it passed: the page in the app's window
+  opened a script, exported it, asked for the file to be shown, followed a link and deleted the script, and
+  the exported file was on the disk. In the Windows app the page reported nothing within 150 seconds, and no
+  release candidate was published from that build. Why is not known; the log of GitHub's machine cannot be
+  read without an account. The one thing in the page's check that had no time limit was a write to the
+  clipboard without a click, which a web view may answer with a question on the screen. It was taken out, and
+  every step got a limit. Whether the Windows trial passes since then is in the notes of the release
+  candidates after number 9; this file is not changed for each of them. Showing a file in its folder and
   opening a link in the browser were not run for real anywhere: in the trial the core writes them down and
   opens nothing, because nobody is there to close what would open.
 - On Windows the app does not close its data folder to the other accounts on the computer. Who may read it is

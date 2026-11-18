@@ -503,10 +503,23 @@ class WindowCheckTest(ServerCase):
     def test_started_for_it_the_page_is_told_and_the_trial_reads_what_the_page_reports(self):
         self.httpd.app.start_window_check()
         self.assertIs(self.send("GET", "/api/state")[1]["window_check"], True)
-        self.assertEqual(self.send("GET", "/api/window-check")[1], {"start": False, "report": None, "opened": [], "shown": []})
+        self.assertEqual(self.send("GET", "/api/window-check")[1],
+                         {"start": False, "report": None, "so_far": None, "opened": [], "shown": []})
         self.assertEqual(self.send("POST", "/api/window-check/start", {}), (200, {"start": True}))
         self.assertIs(self.send("GET", "/api/window-check")[1]["start"], True)
         report = {"agent": "a web view", "steps": [{"name": "一步", "ok": True, "said": "好"}], "errors": [], "facts": {"secure_context": True}}
+        # While at work the page says how far it has come. That is not the report, and does not become one.
+        begun = dict(report, unfinished=True, steps=[])
+        self.assertEqual(self.send("POST", "/api/window-check", begun), (200, {"received": True}))
+        check = self.send("GET", "/api/window-check")[1]
+        self.assertEqual((check["report"], check["so_far"]), (None, begun))
+        self.assertEqual(self.send("POST", "/api/window-check", dict(report, unfinished=True)), (200, {"received": True}))
+        self.assertEqual(self.send("GET", "/api/window-check")[1]["so_far"]["steps"], report["steps"])
+        for not_true in ("yes", 1, None, False):                                         # only the plain word counts
+            self.send("POST", "/api/window-check/start", {})
+            self.httpd.app.window_check["report"] = None
+            self.send("POST", "/api/window-check", dict(report, unfinished=not_true))
+            self.assertEqual(self.send("GET", "/api/window-check")[1]["report"]["unfinished"], not_true)
         self.assertEqual(self.send("POST", "/api/window-check", report), (200, {"received": True}))
         self.assertEqual(self.send("GET", "/api/window-check")[1]["report"], report)
         status, refused = self.send("POST", "/api/window-check", {"steps": ["x" * 1000] * 300})

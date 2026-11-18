@@ -8,13 +8,36 @@
    way a person would, through the same buttons: it opens a script in the editor, exports it through the menu,
    follows a link to another site, and deletes the script through the question the page asks. It writes down
    what happened at each step, what this web view offers, and every error the page logged, and sends that to the
-   core, where the script reads it. During such a trial the core writes links and folders down without opening them. */
+   core, where the script reads it. During such a trial the core writes links and folders down without opening them.
+
+   Nothing here waits for ever, and nothing here asks the system for anything a person would have to answer.
+   The first time this ran in WebView2, on one of GitHub's Windows machines on 18 November 2026, the page never
+   reported. The one thing in it without a time limit was a write to the clipboard without a click, done to see
+   what the web view says to that. That this was where it stopped is concluded from reading this file, not seen:
+   the log of that machine cannot be read without an account. Since then every step has a limit, the clipboard
+   is only asked about and never written to, and after each step the core is told how far the check has come. */
 (function () {
   const report = { agent: navigator.userAgent, facts: {}, steps: [], errors: [], saved: null, href: '' };
   window.addEventListener('error', (e) => report.errors.push(String(e.message || e)));
   window.addEventListener('unhandledrejection', (e) => report.errors.push('promise: ' + String((e.reason && e.reason.message) || e.reason)));
 
+  const STEP_MS = 30000;        // the most one step may take; each takes a second or two when all is well
   const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+  /* `promise`, or an error when it has not settled after `ms`: a web view can leave a request of a page unanswered. */
+  function within(ms, what, promise) {
+    let timer = null;
+    const late = new Promise((resolve, reject) => {
+      timer = setTimeout(() => reject(new Error('no answer within ' + (ms / 1000) + ' s: ' + what)), ms);
+    });
+    return Promise.race([promise, late]).then(
+      (value) => { clearTimeout(timer); return value; },
+      (problem) => { clearTimeout(timer); throw problem; });
+  }
+  /* Tells the core how far the check has come. Should the page stop for good after this, the trial can still say where. */
+  async function soFar() {
+    try { await within(5000, 'the core', api('POST', '/api/window-check', Object.assign({ unfinished: true }, report))); }
+    catch (e) { /* only a trace: the report at the end is what counts, and that is tried several times */ }
+  }
   async function until(what, test, ms) {
     const end = Date.now() + (ms || 20000);
     for (;;) {
@@ -26,8 +49,9 @@
     }
   }
   async function step(name, run) {
-    try { report.steps.push({ name, ok: true, said: String((await run()) || '') }); }
+    try { report.steps.push({ name, ok: true, said: String((await within(STEP_MS, name, run())) || '') }); }
     catch (e) { report.steps.push({ name, ok: false, said: String((e && e.message) || e) }); }
+    await soFar();
   }
   /* Still this app's page, with its parts in place: what a download or a link must never change. */
   function stillTheApp(after) {
@@ -51,6 +75,15 @@
       width: window.innerWidth, height: window.innerHeight, pixel_ratio: window.devicePixelRatio,
       language: navigator.language, desktop: !!appState.desktop,
     };
+    /* Whether a page may write to the clipboard here without a click. Asked about, never tried: the app itself
+       copies only when a button is clicked, and a web view may answer a try with a question on the screen. */
+    try {
+      const answer = await within(3000, 'the clipboard permission', navigator.permissions.query({ name: 'clipboard-write' }));
+      report.facts.clipboard_write = String(answer && answer.state);
+    } catch (e) {
+      report.facts.clipboard_write = 'not told (' + String((e && e.name) || e) + ')';
+    }
+    await soFar();              // "begun": from here on the trial knows that the page's scripts run in this window
 
     let id = '';
     await step('a script opens in the editor', async () => {
@@ -118,12 +151,6 @@
       return asked;
     });
 
-    await step('copying without a click', async () => {
-      if (!(navigator.clipboard && navigator.clipboard.writeText)) return 'this window has no clipboard for pages';
-      try { await navigator.clipboard.writeText('window check'); return 'written'; }
-      catch (e) { return 'refused, as browsers do without a click: ' + ((e && e.name) || e); }
-    });
-
     report.href = location.href;
   }
 
@@ -138,7 +165,7 @@
     }
     try { await run(); } catch (e) { report.errors.push('the check itself: ' + String((e && e.message) || e)); }
     for (let tries = 0; tries < 5; tries++) {
-      try { await api('POST', '/api/window-check', report); return; } catch (e) { await sleep(500); }
+      try { await within(10000, 'the core', api('POST', '/api/window-check', report)); return; } catch (e) { await sleep(500); }
     }
   })();
 })();

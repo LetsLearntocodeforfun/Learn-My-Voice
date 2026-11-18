@@ -300,7 +300,7 @@ class App:
         the system's web view does with the real page, short of a person looking. While it is on, a link or a
         folder is written down and not opened (``outside.Recorded``). Never on unless the app was started so.
         """
-        self.window_check = {"start": False, "report": None, "opened": [], "shown": []}
+        self.window_check = {"start": False, "report": None, "so_far": None, "opened": [], "shown": []}
         self.outside = outside.Recorded(self.window_check, self.outside)
 
 
@@ -732,7 +732,9 @@ class Handler(BaseHTTPRequestHandler):
                 report = self._read_json()
                 if len(json.dumps(report, ensure_ascii=False)) > MAX_WINDOW_REPORT:
                     raise ApiError(413, "too_large")
-                check["report"] = report
+                # While it is at work the page says how far it has come ({"unfinished": true, ...}). That is kept
+                # apart: the trial must not take it for the report, and reads it when no report ever comes.
+                check["so_far" if report.get("unfinished") is True else "report"] = report
                 return self._json({"received": True})
             raise ApiError(405, "method_not_allowed")
         if route == ("GET", "/api/setup"):
