@@ -364,7 +364,11 @@ class StatusTest(Sandbox):
 
     def test_the_real_version_question_is_answered_by_the_python_that_runs_this(self):
         mock.patch.stopall()
-        self.assertEqual(transcribe._version_of(sys.executable), tuple(sys.version_info[:2]))
+        # The question is put with the small environment the Mac's tools get (_base_env). It is only ever put on a
+        # Mac. On Windows that environment lacks SystemRoot, without which Python 3.9 does not start there at all
+        # (seen on GitHub: 3.9 answered nothing, 3.14 and 3.15 answered), so the real answer is checked on POSIX only.
+        if os.name == "posix":
+            self.assertEqual(transcribe._version_of(sys.executable), tuple(sys.version_info[:2]))
         self.assertIsNone(transcribe._version_of(str(self.tmp / "no-such-python")))
         self.assertNotIn("/usr/bin/python3", transcribe.APPLE_PYTHONS)          # on a Mac without the tools that is not a Python
 
