@@ -402,7 +402,7 @@ async function paintStepMaterial(el, s) {
   const $remove = document.getElementById('tr-remove');
   if ($remove) $remove.onclick = async (e) => {
     e.preventDefault();
-    if (!confirm(t('tr_local_confirm_remove'))) return;
+    if (!(await askConfirm(t('tr_local_confirm_remove'), { ok: t('delete'), danger: true }))) return;
     try { await api('DELETE', '/api/transcriber'); repaint(); } catch (err) { showError(err); }
   };
   const $list = document.getElementById('mt-list');
@@ -423,7 +423,7 @@ async function paintStepMaterial(el, s) {
         toast(t('rn_confirmed'));
         repaint();
       } else if (e.target.closest('[data-del]')) {
-        if (!confirm(poDeleteSampleText(row.dataset.id, 'mt_confirm_delete'))) return;
+        if (!(await askConfirm(poDeleteSampleText(row.dataset.id, 'mt_confirm_delete'), { ok: t('delete'), danger: true }))) return;
         await api('DELETE', '/api/samples/' + row.dataset.id);
         repaint();
       }

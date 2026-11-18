@@ -1,0 +1,14 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!--
+  Added to the Info.plist the build makes for the Mac app.
+  NSMicrophoneUsageDescription: the sentence macOS shows when the app first wants the microphone. Without it
+  macOS refuses the microphone and asks nobody. The app records only while "say it" is on, on the ideas page,
+  and the recording is turned into text on this computer.
+-->
+<plist version="1.0">
+<dict>
+  <key>NSMicrophoneUsageDescription</key>
+  <string>Learn My Voice listens only while you use "Say it" to speak an idea, and turns what you said into text on this Mac. 只有在你用「说一句」讲选题的时候才会录音，并且在这台 Mac 上转成文字。</string>
+</dict>
+</plist>

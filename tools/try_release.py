@@ -159,6 +159,7 @@ def run_once(app: Path, command: List[str], version: str, how: str, checks: List
     log_path = app.parent / ("log-%d.txt" % port)
     env = dict(os.environ, PYTHONDONTWRITEBYTECODE="1")
     env.pop("STUDIO_DATA_DIR", None)                         # the app keeps its data where a person's copy would
+    env.pop("LEARN_MY_VOICE_WINDOW_CHECK", None)             # and is started the way a person starts it
     options: Dict[str, Any] = {"creationflags": subprocess.CREATE_NEW_PROCESS_GROUP} if os.name == "nt" else {"start_new_session": True}
     with open(str(log_path), "wb") as log:
         process = subprocess.Popen(command + ["--no-browser", "--port", str(port)], cwd=str(app), stdin=subprocess.DEVNULL,
@@ -180,6 +181,11 @@ def run_once(app: Path, command: List[str], version: str, how: str, checks: List
             time.sleep(0.3)
         checks.append("%s starts the app" % how)
         use(base, version, checks)
+        # The check of the desktop app's window is a way for a script to steer the page. Started by a person the
+        # app must not offer it, and the page must not be told to load it.
+        if ask(base, "GET", "/api/window-check")[0] != 404 or "window_check" in ask(base, "GET", "/api/state")[1]:
+            raise Failed("started the way a person starts it, the app offers the window check that is only for trials of the desktop app")
+        checks.append("started the way a person starts it, it offers no window check")
         said = log_path.read_bytes().decode("utf-8", "replace")
         if "http://127.0.0.1:%d/" % port not in said:
             raise Failed("%s did not print the address to open (it printed %r)" % (how, said[:300]))

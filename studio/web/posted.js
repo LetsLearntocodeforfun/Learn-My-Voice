@@ -275,7 +275,8 @@ async function poSave() {
 async function poRefresh() {
   if (poUi.busy || !cur) return;
   const s = cur.script;
-  if (!confirm(t('po_refresh_confirm'))) return;
+  /* While the question is open another script may have been opened: the answer then belongs to nothing. */
+  if (!(await askConfirm(t('po_refresh_confirm'))) || poUi.busy || !cur || cur.script.id !== s.id) return;
   poUi.busy = true;
   poUi.error = '';
   try {

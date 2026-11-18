@@ -99,6 +99,22 @@ be read again then.
   desktop app once Apple's free Command Line Tools are installed: the app uses their Python to set
   transcription up, and keeps what it sets up beside its data, outside the app. Without the tools it says how
   to get them.
+- **In the desktop app, files and links go through the app itself.** An export is put into the Downloads
+  folder by the app, under a name that is not taken (a second export of the same thing is `… (2).txt`), and
+  the page says where it went, with a button that shows the file in its folder. When the Downloads folder
+  cannot be written to, the file goes into `exports` beside the app's data and the page gives the full path.
+  A link to another site opens in the system's browser. The reason: the window shows the page in the
+  system's web view (WebKit on macOS, WebView2 on Windows), and what such a view does with a download or with
+  a link that asks for a new window differs from a browser and between the two. From the zip, in a browser,
+  an export is still a download.
+- **The installed app's own window is tried before an installer goes out.** Until now the trial of an
+  installer spoke to the app's core and looked at a picture. Now the page in the installed app's window also
+  uses itself through its own buttons: it opens a script in the editor, exports it through the menu (the file
+  is then read back from the disk), asks for it to be shown, follows a link to another site, and deletes the
+  script through the question the page asks. Each step has to have happened, the window has to show the app
+  afterwards, and the page must have logged no error; otherwise the installer is not attached. What each trial
+  did and what the page reported about its web view is attached to the release candidate as
+  `desktop-<system>-trial.txt`. The page does this only when the app was started for such a trial.
 
 **Changed**
 
@@ -118,6 +134,11 @@ be read again then.
 - A script with no finding now says "These checks found nothing" where it said "No issues found" with a
   thumbs-up, and through MCP a saved script with no must-fix finding is no longer called free of problems:
   the checks are this project's own lists, and passing them does not make wording allowed.
+- "Delete this script?" and the five other yes/no questions are now asked inside the page, with the focus on
+  Cancel when the answer would delete something, and Escape for no. Before, they were the browser's own
+  question box, which the web view of the desktop app may answer with "no" without showing anything.
+- The Mac app now says what it wants the microphone for (macOS shows that sentence when it asks) and is signed
+  with the right to use it. Without the first, macOS refuses the microphone without asking.
 
 **Fixed**
 
@@ -159,6 +180,15 @@ be read again then.
   is the desktop app: Apple's Python made the environment beside a data folder, and a spoken Chinese sentence
   was transcribed. Inside the desktop app itself it has not been tried. A microphone has not been tried in
   the desktop app, and there is no build for Linux.
+- Exports, links and questions in the desktop app's window: up to and including release candidate 9 nobody
+  and nothing had clicked anything in that window. That an export there could replace the app's page with
+  the exported text, that a link could open nothing and that a deletion could be refused silently was
+  concluded from how the web views are documented to behave, not seen. The new way was run in headless Chrome
+  on one Mac with the core told that it is the desktop app. What it does inside the installed apps is what
+  the trial on GitHub's machines now finds out for each installer; a release candidate's notes and its
+  `desktop-<system>-trial.txt` files say what was found for that build. Showing a file in its folder and
+  opening a link in the browser were not run for real anywhere: in the trial the core writes them down and
+  opens nothing, because nobody is there to close what would open.
 - On Windows the app does not close its data folder to the other accounts on the computer. Who may read it is
   decided by the folder the app was unpacked in; the desktop app keeps its data in the user's own folder for
   application data.

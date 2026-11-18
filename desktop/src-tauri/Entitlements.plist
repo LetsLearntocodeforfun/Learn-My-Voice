@@ -1,0 +1,13 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!--
+  The rights the Mac app is signed with. One: the microphone, for speaking an idea on the ideas page. An app
+  signed for the system's stricter rules (the "hardened runtime") is refused the microphone without it.
+  Nothing else is asked for: no camera, no files beyond what any app may reach, no network server right.
+-->
+<plist version="1.0">
+<dict>
+  <key>com.apple.security.device.audio-input</key>
+  <true/>
+</dict>
+</plist>

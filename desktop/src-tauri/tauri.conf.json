@@ -31,7 +31,8 @@
     ],
     "macOS": {
       "minimumSystemVersion": "11.3",
-      "signingIdentity": "-"
+      "signingIdentity": "-",
+      "entitlements": "Entitlements.plist"
     },
     "windows": {
       "nsis": {

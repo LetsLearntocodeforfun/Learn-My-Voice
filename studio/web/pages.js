@@ -456,7 +456,7 @@ async function renderLibrary() {
       return;
     }
     if (!e.target.closest('[data-del]')) return;
-    if (!confirm(poDeleteSampleText(card.dataset.id, 'confirm_delete_sample'))) return;
+    if (!(await askConfirm(poDeleteSampleText(card.dataset.id, 'confirm_delete_sample'), { ok: t('delete'), danger: true }))) return;
     await api('DELETE', '/api/samples/' + card.dataset.id);
     renderLibrary();
   };
@@ -743,7 +743,7 @@ async function renderTrends(data) {
       if (!has && draft.keywords.length < MAX_KEYWORDS) draft.keywords.push(item.keyword);
       location.hash = '#/new';
     } else if (e.target.closest('[data-del]')) {
-      if (!confirm(tf('tr_confirm_delete', { k: item.keyword }))) return;
+      if (!(await askConfirm(tf('tr_confirm_delete', { k: item.keyword }), { ok: t('delete'), danger: true }))) return;
       try { await renderTrends(await api('DELETE', '/api/trends/' + item.id)); } catch (err) { showError(err); }
     }
   };

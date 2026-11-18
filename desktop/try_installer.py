@@ -13,13 +13,18 @@ On whatever system it runs on (macOS or Windows):
    checked, exported, deleted), asks it what only the desktop app has to get right (that it knows it is the
    desktop app, what it says about transcription, and that an AI app started as its settings page says reaches
    the same data), and waits until the window has finished loading the app's page;
-4. takes a picture of the screen, so that a person can look at what was on it;
+4. has the page in the app's own window use itself the way a person would (open a script, export it through the
+   menu, follow a link to another site, delete the script through the question the page asks) and reads what
+   the page reports: this is the one part that shows what the system's web view does with the real page;
+   then takes a picture of the screen, so that a person can look at what was on it;
 5. ends the app abruptly and checks that its core stops by itself, then starts it once more without naming a
    data folder and checks that it keeps its data in the system's folder for application data;
 6. on Windows, uninstalls it.
 
 This is meant for GitHub's machines. It installs a program for the user it runs as and writes to that user's
 application-data folder; on Windows it uninstalls again, on macOS nothing was installed outside its own folder.
+The one file the window check saves into the Downloads folder is removed again.
+Beside the picture it leaves desktop-<label>-trial.txt: every check in words, and what the window reported.
 Standard library only.
 """
 from __future__ import annotations
@@ -30,6 +35,7 @@ import importlib.util
 import json
 import os
 import platform
+import plistlib
 import shutil
 import signal
 import subprocess
@@ -46,6 +52,17 @@ BINARY = "learn-my-voice"
 RUNNING_FILE = "desktop-running.json"                              # as in src-tauri/src/main.rs
 PROBLEM_FILE = "desktop-problem.txt"                               # as in src-tauri/src/main.rs
 START_TIMEOUT_SEC = 180
+WINDOW_CHECK_ENV = "LEARN_MY_VOICE_WINDOW_CHECK"                   # as in studio/server.py
+WINDOW_CHECK_SEC = 150
+# What the page in the window has to have done, under the names studio/web/windowcheck.js gives its steps.
+WINDOW_STEPS = (
+    "a script opens in the editor",
+    "an export through the menu is saved and the window still shows the editor",
+    "the saved file can be shown in its folder",
+    "a link to another site goes to the system browser and the window stays",
+    "a script is deleted through the question the page asks",
+)
+MICROPHONE_RIGHT = "com.apple.security.device.audio-input"
 
 
 def load_trial() -> Any:
@@ -213,6 +230,90 @@ def as_the_desktop_app(base: str, data: Path, python: Any, checks: List[str]) ->
     checks.append("an AI app started as the settings page says reaches the same data, through the Python inside the app")
 
 
+def through_the_window(base: str, checks: List[str], record: Dict[str, Any]) -> None:
+    """Have the page in the app's own window use itself, and read what it reports (studio/web/windowcheck.js).
+
+    Everything before this spoke to the core. This is the page, in the web view the system gives the app
+    (WebKit on macOS, WebView2 on Windows), clicking its own buttons: it opens a script in the editor, exports
+    it through the menu, asks for the saved file to be shown, follows a link to another site, and deletes the
+    script through the question the page asks. Each step has to have happened, the window has to show the app
+    afterwards, the page must have logged no error, and the exported file has to be on the disk with the
+    export in it. During this the core writes links and folders down and opens nothing.
+    """
+    status, _, _ = trial.ask(base, "POST", "/api/window-check/start", {})
+    if status != 200:
+        raise Failed("the app was not started for a check of its window (asked to start one, it answered %s)" % status)
+    deadline = time.time() + WINDOW_CHECK_SEC
+    report = None
+    while not isinstance(report, dict):
+        status, check, _ = trial.ask(base, "GET", "/api/window-check")
+        report = check.get("report") if status == 200 and isinstance(check, dict) else None
+        if not isinstance(report, dict):
+            if time.time() > deadline:
+                raise Failed("the page in the app's window reported nothing within %d seconds of being asked to check "
+                             "itself: its scripts do not run in this web view, or stopped before they could say why"
+                             % WINDOW_CHECK_SEC)
+            time.sleep(1)
+    record["window"] = report
+    errors = "; ".join(str(error) for error in report.get("errors") or [])[:1500]
+    steps = {str(step.get("name")): step for step in report.get("steps") or [] if isinstance(step, dict)}
+    for name in WINDOW_STEPS:
+        step = steps.get(name)
+        if not step or step.get("ok") is not True:
+            raise Failed("in the app's own window: %s: %s%s" % (name, (step or {}).get("said") or "this step was not reached",
+                                                              "\nErrors the page logged: " + errors if errors else ""))
+        checks.append("in its own window: " + name)
+    if errors:
+        raise Failed("the page logged errors in the app's own window: " + errors)
+    checks.append("in its own window the page logged no error")
+    saved = report.get("saved") if isinstance(report.get("saved"), dict) else {}
+    path = Path(str(saved.get("path") or "nowhere"))
+    try:
+        text = path.read_text(encoding="utf-8")
+    except (OSError, ValueError) as problem:
+        raise Failed("the page said the export was saved as %s, and it cannot be read there: %s" % (path, problem))
+    if not text.startswith("今天去超市啦"):
+        raise Failed("the file the window exported does not hold the export: %r" % text[:80])
+    checks.append("the file exported in the window is on the disk and holds the export: %s"
+                  % ("in the Downloads folder" if saved.get("in_downloads") is True
+                     else "beside the app's data, because the Downloads folder could not be written to"))
+    try:
+        path.unlink()
+    except OSError:
+        pass
+
+
+def microphone_is_declared(app: Path, checks: List[str], record: Dict[str, Any]) -> None:
+    """On a Mac, speaking a prompt needs two things from the app itself, and both are read back here.
+
+    macOS asks a person whether an app may use the microphone only when the app says what for
+    (NSMicrophoneUsageDescription in its Info.plist); without that it refuses without asking. And an app
+    signed for the system's stricter rules (the "hardened runtime") gets the microphone only when it was
+    signed with the right to it. Whether a recording then works is not shown here: no person is there to
+    answer the system's question.
+    """
+    try:
+        with open(str(app / "Contents" / "Info.plist"), "rb") as handle:
+            about = plistlib.load(handle)
+    except (OSError, ValueError, plistlib.InvalidFileException) as problem:
+        raise Failed("the app's Info.plist cannot be read: %s" % problem)
+    why = about.get("NSMicrophoneUsageDescription")
+    if not (isinstance(why, str) and why.strip()):
+        raise Failed("the app does not say what it wants the microphone for (NSMicrophoneUsageDescription): "
+                     "macOS would refuse it the microphone without asking the person")
+    said = b""
+    for form in (["--entitlements", ":-"], ["--entitlements", "-", "--xml"]):       # how older and newer systems want it asked
+        done = subprocess.run(["codesign", "-d"] + form + [str(app)], capture_output=True, timeout=120)
+        said += done.stdout + done.stderr
+    signature = subprocess.run(["codesign", "-dv", str(app)], capture_output=True, timeout=120)
+    flags = [line for line in (signature.stdout + signature.stderr).decode("utf-8", "replace").splitlines() if "flags=" in line]
+    record["signature"] = flags[0].strip() if flags else "no flags line"
+    if MICROPHONE_RIGHT.encode("ascii") not in said:
+        raise Failed("the app is not signed with the right to the microphone (%s); its signature says: %s"
+                     % (MICROPHONE_RIGHT, record["signature"]))
+    checks.append("on the Mac it says what it wants the microphone for, and is signed with the right to it")
+
+
 def picture(target: Path) -> bool:
     """A picture of the whole screen, for a person to look at. Not having one fails nothing."""
     try:
@@ -248,11 +349,14 @@ def answers(base: str) -> bool:
         return False
 
 
-def start(program: Path, data: Optional[Path], log: Path) -> "subprocess.Popen[bytes]":
+def start(program: Path, data: Optional[Path], log: Path, window_check: bool = False) -> "subprocess.Popen[bytes]":
     env = dict(os.environ)
     env.pop("LEARN_MY_VOICE_DATA_DIR", None)
+    env.pop(WINDOW_CHECK_ENV, None)
     if data is not None:
         env["LEARN_MY_VOICE_DATA_DIR"] = str(data)
+    if window_check:
+        env[WINDOW_CHECK_ENV] = "1"             # the shell hands its environment on to the core, which reads this
     with open(str(log), "wb") as out:
         return subprocess.Popen([str(program)], stdin=subprocess.DEVNULL, stdout=out, stderr=subprocess.STDOUT, env=env)
 
@@ -300,6 +404,7 @@ def try_installer(installer: Path, shots: Optional[Path], label: str) -> Dict[st
         kind = platform.system()
         if kind == "Darwin":
             program, resources = install_macos(installer, work, checks)
+            microphone_is_declared(resources.parent.parent, checks, record)
         elif kind == "Windows":
             program, resources = install_windows(installer, work, checks)
             folder = resources
@@ -314,7 +419,7 @@ def try_installer(installer: Path, shots: Optional[Path], label: str) -> Dict[st
         python_inside(core, checks)
 
         data = work / "data"
-        process = start(program, data, log)
+        process = start(program, data, log, window_check=True)
         note = wait_for(data / RUNNING_FILE, process, False, "the installed app")
         base = str(note["url"]).rstrip("/")
         checks.append("the installed app starts and its core listens on this computer only")
@@ -324,6 +429,7 @@ def try_installer(installer: Path, shots: Optional[Path], label: str) -> Dict[st
         as_the_desktop_app(base, data, runtime.get("python"), checks)
         wait_for(data / RUNNING_FILE, process, True, "the installed app")
         checks.append("its window finished loading the app's page")
+        through_the_window(base, checks, record)
         time.sleep(3)                                        # let the page draw before the picture is taken
         if shots is not None and picture(shots / ("desktop-%s.png" % label)):
             checks.append("a picture of the screen was taken")
@@ -345,6 +451,9 @@ def try_installer(installer: Path, shots: Optional[Path], label: str) -> Dict[st
         note = wait_for(usual / RUNNING_FILE, process, False, "the app, started a second time")
         if not answers(str(note["url"]).rstrip("/")):
             raise Failed("started a second time, the app's core did not answer")
+        if trial.ask(str(note["url"]).rstrip("/"), "GET", "/api/window-check")[0] != 404:
+            raise Failed("started the way a person starts it, the app still offers the window check")
+        checks.append("started the way a person starts it, there is no window check")
         checks.append("started again without a folder named, it keeps its data in the system's folder for application data")
         end_abruptly(int(note["shell_pid"]))
         process.wait(timeout=30)
@@ -366,6 +475,31 @@ def try_installer(installer: Path, shots: Optional[Path], label: str) -> Dict[st
         shutil.rmtree(str(work), ignore_errors=True)
     record["seconds"] = round(time.time() - started, 1)
     return record
+
+
+def in_words(label: str, record: Dict[str, Any]) -> str:
+    """The trial as text, for a person: every check that passed, why it stopped if it did, and what the page in
+    the app's own window reported about that window."""
+    lines = ["Trial of the desktop app on %s (%s)" % (label, record.get("system", "")),
+             "Version %s, with its own Python %s" % (record.get("version", "?"), record.get("python", "?")),
+             "Result: %s after %s seconds" % ("passed" if record.get("ok") else "FAILED", record.get("seconds", "?")), ""]
+    lines += ["  ok    " + check for check in record.get("checks", [])]
+    if record.get("error"):
+        lines += ["  FAIL  " + str(record["error"])]
+    if record.get("signature"):
+        lines += ["", "Signature: " + str(record["signature"])]
+    window = record.get("window")
+    if isinstance(window, dict):
+        lines += ["", "What the page reported from the app's own window", "  web view: " + str(window.get("agent", ""))]
+        facts = window.get("facts") if isinstance(window.get("facts"), dict) else {}
+        lines += ["  %s: %s" % (key, facts[key]) for key in sorted(facts)]
+        for step in window.get("steps") or []:
+            if isinstance(step, dict):
+                lines.append("  %s  %s: %s" % ("ok  " if step.get("ok") is True else "FAIL", step.get("name"), step.get("said")))
+        lines += ["  error logged by the page: " + str(error) for error in window.get("errors") or []]
+        if isinstance(window.get("saved"), dict):
+            lines.append("  the export was saved as: " + str(window["saved"].get("path")))
+    return "\n".join(lines) + "\n"
 
 
 def main(argv: Optional[List[str]] = None) -> int:
@@ -397,6 +531,12 @@ def main(argv: Optional[List[str]] = None) -> int:
                                    "installer": installer.name if installer else "",
                                    "sha256": hashlib.sha256(installer.read_bytes()).hexdigest() if installer else ""},
                                   ensure_ascii=False, indent=1) + "\n", encoding="utf-8")
+    if args.shots and installer is not None:
+        try:
+            Path(args.shots).mkdir(parents=True, exist_ok=True)
+            (Path(args.shots) / ("desktop-%s-trial.txt" % label)).write_text(in_words(label, record), encoding="utf-8")
+        except OSError:
+            pass                                             # the text is for people; not having it fails nothing
     for check in record["checks"]:
         print("  ok    " + check)
     if not record["ok"]:

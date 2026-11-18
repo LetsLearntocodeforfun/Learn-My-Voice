@@ -21,7 +21,9 @@ const I18N = {
     exp_voice: '口播文稿', exp_voice_d: '一口气一行，可用于提词或字幕文稿',
     exp_shots: '拍摄清单', exp_shots_d: '每一句对应的画面', exp_flower: '花字清单', exp_flower_d: '剪辑时要加的花字',
     all_good: '这些检查没有发现问题', issues_n: '处需要看一下', issues_more: '另有 {n} 处没有列出',
-    close: '关闭',
+    close: '关闭', ask_ok: '确定', ask_cancel: '取消',
+    exp_saved: '已存到「下载」文件夹：{name}', exp_saved_else: '「下载」文件夹写不进去，已存到：{path}', exp_show: '在文件夹中显示',
+    link_not_opened: '这个链接没能在浏览器里打开，可以复制后自己打开：', link_copy: '复制链接',
     voice_title: '我的声音', voice_sub: 'AI 写稿和检查时参照的说话习惯。',
     v_essence: '整体感觉', v_rate: '语速', v_rate_u: '字/分钟', v_clause: '每口气字数', v_particles: '常用语气词',
     v_address: '怎么称呼大家', v_partner: '怎么称呼{@partner}', v_partner_any: '怎么称呼一起出镜的人',
@@ -53,7 +55,10 @@ const I18N = {
     exp_voice: 'Voiceover text', exp_voice_d: 'One breath per line, for prompting or subtitle text',
     exp_shots: 'Shot list', exp_shots_d: 'What to film for each line', exp_flower: 'On-screen text list', exp_flower_d: 'Text overlays to add when editing',
     all_good: 'These checks found nothing', issues_n: 'things to check', issues_more: '{n} more are not listed',
-    close: 'Close',
+    close: 'Close', ask_ok: 'OK', ask_cancel: 'Cancel',
+    exp_saved: 'Saved to the Downloads folder: {name}', exp_saved_else: 'The Downloads folder could not be written to. Saved to: {path}',
+    exp_show: 'Show in folder',
+    link_not_opened: 'This link could not be opened in the browser. Copy it and open it there: ', link_copy: 'Copy link',
     voice_title: '{@Names} voice', voice_sub: 'The speech habits used for drafting and checking.',
     v_essence: 'Overall feel', v_rate: 'Speaking rate', v_rate_u: 'units/min', v_clause: 'Units per breath', v_particles: 'Particles',
     v_address: 'Addresses viewers as', v_partner: 'Refers to {@partner} as', v_partner_any: 'Refers to an on-camera partner as',
@@ -112,12 +117,101 @@ const formatChoices = (current) => appState.video_formats.filter(
 const esc = (s) => String(s === null || s === undefined ? '' : s)
   .replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
 
-function toast(msg) {
+/* `action` (optional) is { label, run }: one button beside the message, and the message then stays longer. */
+function toast(msg, action) {
   $toast.textContent = msg;
+  if (action) {
+    const button = document.createElement('button');
+    button.type = 'button';
+    button.textContent = action.label;
+    button.onclick = () => { $toast.classList.remove('show'); action.run(); };
+    $toast.appendChild(button);
+  }
+  $toast.classList.toggle('acts', !!action);
   $toast.classList.add('show');
   clearTimeout(toast.timer);
-  toast.timer = setTimeout(() => $toast.classList.remove('show'), 3200);
+  toast.timer = setTimeout(() => $toast.classList.remove('show'), action ? 9000 : 3200);
 }
+
+/* A question with two answers, asked inside the page. Resolves true for yes; false for Cancel, Escape and a click
+   beside the box. The browser's own confirm() is not used: inside the desktop app the system's web view may answer
+   it with "no" without showing anything, and then nothing could be deleted there. `o.ok` is the label of the yes
+   button. `o.danger` says that yes removes something: the focus then starts on Cancel, so Enter alone removes nothing. */
+function askConfirm(message, o) {
+  const opts = o || {};
+  if (askConfirm.close) askConfirm.close(false);            // one question at a time: an earlier one counts as "no"
+  return new Promise((resolve) => {
+    let $ask = document.getElementById('ask');
+    if (!$ask) { $ask = document.createElement('div'); $ask.id = 'ask'; document.body.appendChild($ask); }
+    const before = document.activeElement;
+    $ask.innerHTML = `<div class="ask-box" role="alertdialog" aria-modal="true" aria-describedby="ask-text">
+      <p id="ask-text">${esc(message)}</p>
+      <div class="ask-row"><button type="button" class="btn" id="ask-no">${esc(t('ask_cancel'))}</button>
+        <button type="button" class="btn primary${opts.danger ? ' danger' : ''}" id="ask-yes">${esc(opts.ok || t('ask_ok'))}</button></div>
+    </div>`;
+    $ask.hidden = false;
+    const $yes = document.getElementById('ask-yes');
+    const $no = document.getElementById('ask-no');
+    const onKey = (e) => {
+      if (e.key === 'Escape') { e.preventDefault(); e.stopPropagation(); done(false); }
+      else if (e.key === 'Tab') { e.preventDefault(); (document.activeElement === $yes ? $no : $yes).focus(); }   // stays in the box
+    };
+    function done(answer) {
+      askConfirm.close = null;
+      document.removeEventListener('keydown', onKey, true);
+      $ask.hidden = true;
+      $ask.innerHTML = '';
+      if (before && before.focus && document.contains(before)) before.focus();
+      resolve(answer);
+    }
+    askConfirm.close = done;
+    document.addEventListener('keydown', onKey, true);
+    $yes.onclick = () => done(true);
+    $no.onclick = () => done(false);
+    $ask.onclick = (e) => { if (e.target === $ask) done(false); };
+    (opts.danger ? $no : $yes).focus();
+  });
+}
+
+/* ---------- inside the desktop app: files and links go through the core ---------- */
+let lastExport = null;      // what the core answered the last time it saved an export itself
+
+/* In a browser an export is a download, and the browser deals with it. Inside the desktop app the core puts the
+   file into the Downloads folder itself and the page says where it went: what the system's web view does with a
+   download differs from system to system, and a file it can display it may show in place of the app. */
+async function exportScript(id, kind) {
+  const path = `/api/scripts/${id}/export/${kind}`;
+  if (!appState.desktop) { location.href = `${path}?lang=${lang}`; return; }
+  try {
+    const saved = await api('POST', path + '/save', { lang });
+    lastExport = saved;
+    toast(saved.in_downloads ? tf('exp_saved', { name: saved.name }) : tf('exp_saved_else', { path: saved.path }),
+      { label: t('exp_show'), run: () => api('POST', '/api/outside/show', { path: saved.path }).catch(showError) });
+  } catch (e) {
+    toast((lang === 'zh' && e.message_zh) || e.detail || t('err_default'));
+  }
+}
+
+/* Inside the desktop app a link to another site is handed to the core, which opens it in the system's browser.
+   Left to the system's web view, such a link asks for a new window, and may open nothing or open inside the app. */
+async function openOutside(url) {
+  let opened = false;
+  try { opened = !!(await api('POST', '/api/outside/open', { url })).opened; } catch (e) { opened = false; }
+  if (!opened) {
+    toast(t('link_not_opened') + url, { label: t('link_copy'),
+      run: () => { if (navigator.clipboard) navigator.clipboard.writeText(url).catch(() => {}); } });
+  }
+}
+document.addEventListener('click', (e) => {
+  if (!appState.desktop || e.defaultPrevented || e.button) return;
+  const a = e.target && e.target.closest ? e.target.closest('a[href]') : null;
+  if (!a) return;
+  let url;
+  try { url = new URL(a.getAttribute('href'), location.href); } catch (err) { return; }
+  if (url.origin === location.origin || (url.protocol !== 'http:' && url.protocol !== 'https:')) return;
+  e.preventDefault();
+  openOutside(url.href);
+});
 
 async function api(method, path, body) {
   const opts = { method, headers: {} };
@@ -181,6 +275,14 @@ async function router() {
   const m = hash.match(/^#\/s\/([0-9a-f]{12})$/);
   try {
     appState = await api('GET', '/api/state');
+    /* The core was started by a script that is trying an installer of the desktop app: the page checks its own
+       window (windowcheck.js) and reports to the core. Never set when a person starts the app. */
+    if (appState.window_check && !router.checking) {
+      router.checking = true;
+      const check = document.createElement('script');
+      check.src = '/windowcheck.js';
+      document.body.appendChild(check);
+    }
     /* Nothing set up yet: open the guided setup once per session. After that the home page only points to it. */
     if (hash === '#/' && appState.setup_next === 'creator' && !sessionStorage.getItem('start-shown')) {
       sessionStorage.setItem('start-shown', '1');
@@ -438,10 +540,10 @@ function paintScript() {
     if (!a) return;
     e.preventDefault(); $pop.hidden = true;
     await flushSave();
-    location.href = `/api/scripts/${s.id}/export/${a.dataset.export}?lang=${lang}`;
+    exportScript(s.id, a.dataset.export);
   };
   document.getElementById('delete-btn').onclick = async () => {
-    if (!confirm(t('confirm_delete'))) return;
+    if (!(await askConfirm(t('confirm_delete'), { ok: t('delete'), danger: true }))) return;
     clearTimeout(saveTimer); dirty = false;
     await api('DELETE', '/api/scripts/' + s.id);
     cur = null; location.hash = '#/';

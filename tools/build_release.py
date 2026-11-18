@@ -362,6 +362,10 @@ def desktop_section(results: List[Dict[str, Any]], installers: List[Dict[str, st
     lines = ["", "### Desktop app", "",
              "New, and no person has used it yet. It is the same app in a window of its own, installed like any other "
              "program, and it needs no Python on the computer: Python 3.14 is inside it.", "",
+             "On GitHub's machines each installer below was installed and the app opened. Then the page in the app's own "
+             "window used itself through its own buttons: it opened a script, exported it (the file was then read back "
+             "from the disk), followed a link to another site, and deleted the script through the question the page asks. "
+             "What each trial did and found, in words, is in the file `desktop-<system>-trial.txt` attached below.", "",
              "| System | File | Installed, opened and used on GitHub's machine |", "| :--- | :--- | :--- |"]
     offered = []
     for system, _ending, shown in INSTALLERS:
@@ -385,6 +389,10 @@ def desktop_section(results: List[Dict[str, Any]], installers: List[Dict[str, st
                   "- **Windows:** run the setup program. When \"Windows protected your PC\" appears, click More info, then "
                   "Run anyway. (运行安装程序。出现「Windows 已保护你的电脑」时，点「更多信息」，再点「仍要运行」。)", "",
                   "On a computer managed by an employer or a school this may not be allowed at all. "
+                  "In the desktop app an export is not a download: the app puts the file into the Downloads folder itself "
+                  "and says where it went. A link to another site opens in the system's browser. "
+                  "Speaking an idea on a Mac: the app now says what it wants the microphone for and is signed with the right "
+                  "to it, which the trial reads back; a recording made in the desktop app has not been tried by anyone. "
                   "To transcribe videos, the desktop app needs a Mac with an Apple chip and Apple's free Command Line Tools; it "
                   "says how to get them. That was tried with the app started from its source, not inside the desktop "
                   "app. "
@@ -503,8 +511,10 @@ def main(argv: Optional[List[str]] = None) -> int:
             if entry["system"] in passed:
                 Path(entry["path"] + ".sha256").write_text("%s  %s\n" % (entry["sha256"], entry["name"]), encoding="utf-8")
                 files += [entry["path"], entry["path"] + ".sha256"]
-        # Pictures of the screen from the trials, and the list of Rust packages each build used: small, and worth keeping.
+        # Pictures of the screen from the trials, each trial in words (every check, and what the page reported from
+        # the app's own window), and the list of Rust packages each build used: small, and worth keeping.
         files += sorted(str(path) for path in (folder.glob("desktop-*.png") if folder else [])) \
+            + sorted(str(path) for path in (folder.glob("desktop-*-trial.txt") if folder else [])) \
             + sorted(str(path) for path in (folder.glob("Cargo-*.lock") if folder else []))
         Path(args.attach).write_text("".join(name + "\n" for name in files if Path(name).is_file()), encoding="utf-8")
     if args.out:

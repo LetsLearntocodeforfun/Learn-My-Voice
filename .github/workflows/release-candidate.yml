@@ -105,7 +105,22 @@ jobs:
       - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0     # v7.1.0
         with:
           python-version: ${{ matrix.python }}
+      # GitHub's machines sometimes cannot reach GitHub's own storage for a while ("Unable to make request:
+      # ENOTFOUND" on an Intel Mac, run 11 on 18 November, which cost that run its release candidate although
+      # nothing was wrong with the app). So when the package cannot be fetched, it is fetched once more after a
+      # pause. A second failure fails the job.
       - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        id: fetch
+        continue-on-error: true
+        with:
+          name: package
+          path: dist
+      - name: Wait before fetching the package again
+        if: ${{ steps.fetch.outcome == 'failure' }}
+        shell: bash
+        run: sleep 90
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        if: ${{ steps.fetch.outcome == 'failure' }}
         with:
           name: package
           path: dist
@@ -162,7 +177,19 @@ jobs:
       - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0     # v7.1.0
         with:
           python-version: "3.14"
+      # Fetched once more after a pause when the first attempt failed: see the trial job above.
       - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        id: fetch
+        continue-on-error: true
+        with:
+          name: package
+          path: dist
+      - name: Wait before fetching the package again
+        if: ${{ steps.fetch.outcome == 'failure' }}
+        shell: bash
+        run: sleep 90
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        if: ${{ steps.fetch.outcome == 'failure' }}
         with:
           name: package
           path: dist

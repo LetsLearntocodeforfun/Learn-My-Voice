@@ -365,6 +365,8 @@ class NotesTest(TempCase):
             (folder / ("learn-my-voice-0.2.0-beta.rc.7-%s%s" % (system, ending))).write_bytes(b"installer for " + system.encode())
         (folder / "learn-my-voice-0.2.0-beta.rc.6-macos-arm64.dmg").write_bytes(b"of another version")
         (folder / "desktop-macos-arm64.png").write_bytes(b"picture")
+        (folder / "desktop-macos-arm64-trial.txt").write_bytes(b"the trial in words")
+        (folder / "desktop-notes.txt").write_bytes(b"some other text file: not attached")
         return folder
 
     def test_nothing_is_said_about_the_desktop_app_when_no_desktop_job_ran(self):
@@ -393,7 +395,10 @@ class NotesTest(TempCase):
         self.assertIn(found[0]["sha256"] + "  learn-my-voice-0.2.0-beta.rc.7-macos-arm64.dmg", section)
         self.assertNotIn(found[1]["sha256"], text)
         for said in ("no person has used it yet", "not signed", "Open Anyway", "仍要打开", "Run anyway", "仍要运行", "managed by an employer",
-                     "To transcribe videos, the desktop app needs a Mac with an Apple chip", "not inside the desktop app"):
+                     "To transcribe videos, the desktop app needs a Mac with an Apple chip", "not inside the desktop app",
+                     "the page in the app's own window used itself through its own buttons", "`desktop-<system>-trial.txt`",
+                     "an export is not a download: the app puts the file into the Downloads folder itself",
+                     "a recording made in the desktop app has not been tried by anyone"):
             self.assertIn(said, section)
         self.assertIn("windows-x64, the desktop app:", text)                    # what the failed trial reported is quoted
         self.assertIn("the window had not finished loading the page", text)
@@ -453,7 +458,7 @@ class NotesTest(TempCase):
         names = [Path(line).name for line in attach.read_text(encoding="utf-8").split("\n") if line]
         self.assertEqual(names, ["learn-my-voice-0.2.0-beta.rc.7.zip", "learn-my-voice-0.2.0-beta.rc.7.zip.sha256",
                                  "learn-my-voice-0.2.0-beta.rc.7-macos-arm64.dmg", "learn-my-voice-0.2.0-beta.rc.7-macos-arm64.dmg.sha256",
-                                 "desktop-macos-arm64.png"])
+                                 "desktop-macos-arm64.png", "desktop-macos-arm64-trial.txt"])
         self.assertTrue((folder / "learn-my-voice-0.2.0-beta.rc.7-macos-arm64.dmg.sha256").read_text(encoding="utf-8").startswith(
             hashlib.sha256(b"installer for macos-arm64").hexdigest()))
 

@@ -50,13 +50,17 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
 from . import checks, corpus, creator, exports, keyword_import, llm, pipeline, textstats, timing, transcribe, trends
-from . import buildinfo, hooks, posted, suggest, wordlist
+from . import buildinfo, hooks, outside, posted, suggest, wordlist
 from . import setup as setup_status
 from .jobs import JobError, Jobs, Progress
 from .store import HISTORY_ID, MANUAL_PROVIDER, PROVIDERS, ROOT, StaleScript, Store, TextTooLong, clean_file_name
 
 WEB_DIR = Path(__file__).with_name("web")
 MAX_BODY = 12 * 1024 * 1024  # room for a base64 .docx
+MAX_REMEMBERED_FILES = 200   # exported files of this run that can still be shown in the file manager
+MAX_WINDOW_REPORT = 200_000  # characters of what the window check may report
+# Set to 1 by the script that tries an installer of the desktop app: see ``App.start_window_check``.
+WINDOW_CHECK_ENV = "LEARN_MY_VOICE_WINDOW_CHECK"
 DEFAULT_PORT = 8765
 UNTITLED = {"zh": "未命名脚本", "en": "Untitled script"}
 MANUAL_TASKS = ("draft", "voice", "ideas", "trends", "suggest")
@@ -260,19 +264,44 @@ class App:
     ``transport`` (the model call) and ``transcriber`` (anything with ``status()``,
     ``install(progress)``, ``transcribe_file(path, progress)`` and ``uninstall()``;
     by default the ``studio.transcribe`` module) can be replaced, so tests need
-    neither a model nor Whisper.
+    neither a model nor Whisper. So can ``outside`` (by default the ``studio.outside``
+    module: the Downloads folder, the file manager and the browser), so tests write
+    into a folder of their own and open nothing.
     """
 
-    def __init__(self, store: Store, transport: Optional[llm.Transport] = None, transcriber: Any = None) -> None:
+    def __init__(self, store: Store, transport: Optional[llm.Transport] = None, transcriber: Any = None,
+                 outside_world: Any = None) -> None:
         self.store = store
         self.transport = transport
         self.transcriber = transcriber if transcriber is not None else transcribe
+        self.outside = outside_world if outside_world is not None else outside
+        # Files this run of the app put into the Downloads folder. Only these can be shown in the file manager
+        # on request, so the page cannot make the app point at any other place on the computer.
+        self.saved_files: List[str] = []
+        # None, or what a trial of the desktop app is told and tells: see ``start_window_check``.
+        self.window_check: Optional[Dict[str, Any]] = None
         self.jobs = Jobs()
         self.max_upload_bytes = MAX_UPLOAD_BYTES
         self.install_lock = threading.Lock()
         self.discover_lock = threading.Lock()
         self.uploads = Uploads(store.uploads_dir)
         self.uploads.clear_leftovers()
+
+    def remember_saved(self, path: Path) -> None:
+        self.saved_files.append(str(path))
+        del self.saved_files[:-MAX_REMEMBERED_FILES]
+
+    def start_window_check(self) -> None:
+        """Get ready for a trial of the desktop app's window by a script (LEARN_MY_VOICE_WINDOW_CHECK=1).
+
+        The page then loads ``windowcheck.js``, waits to be told to start, uses itself the way a person would
+        (exports a script through the menu, deletes one through the dialog, follows a link to another site) and
+        reports what happened; the script that runs the trial reads the report. It is the only way to see what
+        the system's web view does with the real page, short of a person looking. While it is on, a link or a
+        folder is written down and not opened (``outside.Recorded``). Never on unless the app was started so.
+        """
+        self.window_check = {"start": False, "report": None, "opened": [], "shown": []}
+        self.outside = outside.Recorded(self.window_check, self.outside)
 
 
 class Handler(BaseHTTPRequestHandler):
@@ -381,6 +410,18 @@ class Handler(BaseHTTPRequestHandler):
     def _lang(self, body: Optional[Dict[str, Any]] = None) -> str:
         value = (body or {}).get("lang") or (self.query.get("lang") or [""])[0]
         return "en" if value == "en" else "zh"
+
+    def _export(self, script_id: str, kind: str, lang: str) -> Tuple[str, bytes, str]:
+        """``(file name, content, media type)`` of one export of one script; refused when either is not there."""
+        store = self.app.store
+        script = store.get_script(script_id)
+        if script is None:
+            raise ApiError(404, "not_found")
+        dna, is_example = store.load_dna()
+        try:
+            return exports.export_file(script, kind, dna, lang, dna_is_example=is_example, who=store.load_creator())
+        except KeyError:
+            raise ApiError(404, "unknown_export")
 
     def _require_ai(self) -> None:
         settings = self.app.store.public_settings()
@@ -657,7 +698,43 @@ class Handler(BaseHTTPRequestHandler):
             }
             if store.dna_unreadable():
                 state["dna_unreadable"] = True
+            if app.window_check is not None:        # a script is trying the desktop app: the page loads windowcheck.js
+                state["window_check"] = True
             return self._json(state)
+
+        # ---- outside the app: the file manager and the browser (see ``studio.outside``) ----
+        if route == ("POST", "/api/outside/show"):
+            # {"path": a file this run of the app saved}. Shows it in the file manager. Any other path is refused.
+            wanted = self._read_json().get("path")
+            if not isinstance(wanted, str) or wanted not in app.saved_files:
+                raise ApiError(404, "not_found")
+            return self._json({"shown": bool(app.outside.reveal(Path(wanted)))})
+        if route == ("POST", "/api/outside/open"):
+            # {"url": an http(s) address}. Opens it in the system's browser. ``opened`` false: nothing could be started.
+            url = self._read_json().get("url")
+            problem = app.outside.link_problem(url)
+            if problem:
+                raise ApiError(400, "bad_link", "Only a web address (http or https) can be opened: " + problem,
+                               "只能打开网址（http 或 https）")
+            return self._json({"opened": bool(app.outside.open_link(url))})
+
+        # ---- the window check: there only while a script is trying the desktop app ----
+        if path in ("/api/window-check", "/api/window-check/start"):
+            check = app.window_check
+            if check is None:
+                raise ApiError(404, "not_found")
+            if route == ("GET", "/api/window-check"):
+                return self._json(check)
+            if route == ("POST", "/api/window-check/start"):
+                check["start"] = True
+                return self._json({"start": True})
+            if route == ("POST", "/api/window-check"):
+                report = self._read_json()
+                if len(json.dumps(report, ensure_ascii=False)) > MAX_WINDOW_REPORT:
+                    raise ApiError(413, "too_large")
+                check["report"] = report
+                return self._json({"received": True})
+            raise ApiError(405, "method_not_allowed")
         if route == ("GET", "/api/setup"):
             return self._json(setup_status.status(store))
         if route == ("GET", "/api/creator"):
@@ -1025,21 +1102,33 @@ class Handler(BaseHTTPRequestHandler):
             script, created = _posting(lambda: posted.mark(store, m.group(1), body, update_only=(method == "PUT")))
             return self._json(script, 201 if created else 200)
 
+        m = re.fullmatch(r"/api/scripts/([0-9a-f]{12})/export/(\w+)/save", path)
+        if m and method == "POST":
+            # The file GET .../export/<kind> sends, put into the Downloads folder by this program, under a name
+            # that is not taken; {"lang"} chooses the language of its name. The desktop app's page asks for this
+            # in place of a download (why: ``studio.outside``). When Downloads cannot be written to, the file goes
+            # into ``exports`` beside the data folder and ``in_downloads`` is false. Answers with where it is.
+            filename, data, _ = self._export(m.group(1), m.group(2), self._lang(self._read_json()))
+            downloads = app.outside.downloads_folder()
+            try:
+                saved = app.outside.save(filename, data, [downloads, Path(store.data_dir).resolve().parent / "exports"])
+            except OSError as exc:
+                raise ApiError(507, "export_not_saved", "The file could not be saved on this computer: %s" % exc,
+                               "文件没能存到这台电脑上：%s" % exc)
+            app.remember_saved(saved)
+            return self._json({"name": saved.name, "folder": str(saved.parent), "path": str(saved),
+                               "in_downloads": saved.parent == Path(downloads)}, 201)
+
         m = re.fullmatch(r"/api/scripts/([0-9a-f]{12})(?:/export/(\w+))?", path)
         if m:
             script_id, export_kind = m.group(1), m.group(2)
+            if export_kind and method == "GET":
+                filename, data, content_type = self._export(script_id, export_kind, self._lang())
+                disposition = "attachment; filename*=UTF-8''" + urllib.parse.quote(filename)
+                return self._send(200, data, content_type, {"Content-Disposition": disposition})
             script = store.get_script(script_id)
             if script is None:
                 raise ApiError(404, "not_found")
-            if export_kind and method == "GET":
-                dna, is_example = store.load_dna()
-                try:
-                    filename, data, content_type = exports.export_file(
-                        script, export_kind, dna, self._lang(), dna_is_example=is_example, who=store.load_creator())
-                except KeyError:
-                    raise ApiError(404, "unknown_export")
-                disposition = "attachment; filename*=UTF-8''" + urllib.parse.quote(filename)
-                return self._send(200, data, content_type, {"Content-Disposition": disposition})
             if not export_kind and method == "GET":
                 # ``posted``: null, or what was recorded when the script was marked as posted (``posted.for_script``).
                 return self._json(posted.with_posted(store, script))
@@ -1264,11 +1353,12 @@ class StudioServer(ThreadingHTTPServer):
 
 
 def make_server(port: int, store: Store, transport: Optional[llm.Transport] = None,
-                transcriber: Any = None) -> StudioServer:
-    """A server on 127.0.0.1. ``transport`` and ``transcriber`` stand in for the model and Whisper in tests."""
+                transcriber: Any = None, outside_world: Any = None) -> StudioServer:
+    """A server on 127.0.0.1. ``transport``, ``transcriber`` and ``outside_world`` stand in, in tests, for the
+    model, for Whisper, and for the Downloads folder, the file manager and the browser."""
     server = StudioServer(("127.0.0.1", port), Handler)
     server.daemon_threads = True
-    server.app = App(store, transport, transcriber)
+    server.app = App(store, transport, transcriber, outside_world)
     return server
 
 
@@ -1319,6 +1409,8 @@ def main(argv: Optional[List[str]] = None) -> int:
         print("无法启动：端口 %d–%d 都被占用。/ Could not start: ports %d-%d are all in use."
               % (args.port, args.port + 9, args.port, args.port + 9), file=sys.stderr, flush=True)
         return 1
+    if os.environ.get(WINDOW_CHECK_ENV) == "1":
+        server.app.start_window_check()
     url = "http://127.0.0.1:%d/" % server.server_address[1]
     # Sent at once also when the output is not a window: whoever started the app is waiting for this address.
     print("工作台已启动 / Studio running: %s\n关闭这个窗口即可退出。/ Close this window to quit." % url, flush=True)

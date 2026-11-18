@@ -448,6 +448,200 @@ class CoreForTheAppTest(TempCase):
         self.assertIn("desktop/", release.LEFT_OUT)                             # the shell's sources are not in the package people download
 
 
+class WindowTrialTest(TempCase):
+    """The part of the installer trial that has the page in the app's own window use itself (through_the_window).
+
+    Here the app's window is played by a thread that does what studio/web/windowcheck.js does through the page:
+    it waits to be told to start, saves an export through the core, and reports. What the real page does in a
+    real web view is seen only where the installers are tried.
+    """
+
+    def setUp(self):
+        super().setUp()
+        from studio import outside
+
+        downloads = self.tmp / "Downloads"
+
+        class Elsewhere:
+            def downloads_folder(self):
+                return downloads
+
+            def __getattr__(self, name):
+                return getattr(outside, name)
+
+        self.store = Store(self.tmp / "data")
+        self.httpd = server.make_server(0, self.store, None, None, Elsewhere())
+        serving = threading.Thread(target=self.httpd.serve_forever, kwargs={"poll_interval": 0.02}, daemon=True)
+        serving.start()
+        self.addCleanup(lambda: (self.httpd.shutdown(), self.httpd.server_close(), serving.join(5)))
+        self.base = "http://127.0.0.1:%d" % self.httpd.server_address[1]
+        self.script = self.store.create_script(title="窗口", target_sec=30, lines=[{"spoken_script_zh": "今天去超市啦 / 买了好多东西"}])
+
+    def ask(self, method, path, payload=None):
+        conn = http.client.HTTPConnection("127.0.0.1", self.httpd.server_address[1], timeout=10)
+        try:
+            body = json.dumps(payload).encode("utf-8") if payload is not None else None
+            conn.request(method, path, body=body, headers={"Content-Type": "application/json"} if body else {})
+            res = conn.getresponse()
+            return res.status, json.loads(res.read().decode("utf-8"))
+        finally:
+            conn.close()
+
+    def page(self, change=None):
+        """Play the page: wait for "start", save an export through the core, report every step as done."""
+        def play():
+            deadline = time.time() + 20
+            while time.time() < deadline and not self.ask("GET", "/api/window-check")[1].get("start"):
+                time.sleep(0.02)
+            saved = self.ask("POST", "/api/scripts/%s/export/voiceover/save" % self.script["id"], {"lang": "zh"})[1]
+            report = {"agent": "a web view", "facts": {"secure_context": True, "clipboard": False}, "errors": [], "saved": saved,
+                      "steps": [{"name": name, "ok": True, "said": "done"} for name in try_installer.WINDOW_STEPS]
+                      + [{"name": "copying without a click", "ok": True, "said": "refused"}]}
+            if change:
+                change(report)
+            self.ask("POST", "/api/window-check", report)
+        thread = threading.Thread(target=play, daemon=True)
+        thread.start()
+        self.addCleanup(thread.join, 10)
+
+    def test_an_app_not_started_for_it_fails_the_trial_at_once(self):
+        with self.assertRaises(try_installer.Failed) as refused:
+            try_installer.through_the_window(self.base, [], {})
+        self.assertIn("was not started for a check of its window", str(refused.exception))
+
+    def test_a_window_that_did_everything_passes_and_the_file_it_saved_is_removed_again(self):
+        self.httpd.app.start_window_check()
+        self.page()
+        checks, record = [], {}
+        try_installer.through_the_window(self.base, checks, record)
+        self.assertEqual(checks, ["in its own window: " + name for name in try_installer.WINDOW_STEPS]
+                         + ["in its own window the page logged no error",
+                            "the file exported in the window is on the disk and holds the export: in the Downloads folder"])
+        self.assertEqual(record["window"]["agent"], "a web view")
+        self.assertEqual(list((self.tmp / "Downloads").iterdir()), [])          # nothing is left in the Downloads folder
+        words = try_installer.in_words("macos-arm64", dict(record, ok=True, checks=checks, system="Darwin", version="0.2.0", python="3.14.10",
+                                                           seconds=12.5, signature="flags=0x10002(adhoc,runtime)"))
+        for said in ("Trial of the desktop app on macos-arm64", "Result: passed after 12.5 seconds", "  ok    in its own window: a script opens in the editor",
+                     "web view: a web view", "  clipboard: False", "  secure_context: True", "  ok    copying without a click: refused",
+                     "Signature: flags=0x10002(adhoc,runtime)", "the export was saved as: "):
+            self.assertIn(said, words)
+
+    def test_what_fails_it(self):
+        def step_failed(report):
+            report["steps"][1].update(ok=False, said="waited in vain for the core saying where the file went")
+            report["errors"].append("TypeError: undefined is not an object")
+
+        def step_missing(report):
+            del report["steps"][3]
+
+        def error_logged(report):
+            report["errors"].append("SyntaxError: Unexpected token")
+
+        def file_gone(report):
+            Path(report["saved"]["path"]).unlink()
+
+        def other_content(report):
+            Path(report["saved"]["path"]).write_text("<html>the app's page</html>", encoding="utf-8")
+
+        def nothing_saved(report):
+            report["saved"] = None
+
+        for change, said in ((step_failed, ["an export through the menu is saved and the window still shows the editor: waited in vain",
+                                            "Errors the page logged: TypeError"]),
+                             (step_missing, ["a link to another site goes to the system browser and the window stays: this step was not reached"]),
+                             (error_logged, ["the page logged errors in the app's own window: SyntaxError: Unexpected token"]),
+                             (file_gone, ["it cannot be read there"]), (other_content, ["does not hold the export"]),
+                             (nothing_saved, ["it cannot be read there"])):
+            self.httpd.app.window_check = None
+            self.httpd.app.start_window_check()
+            self.page(change)
+            checks = []
+            with self.assertRaises(try_installer.Failed, msg=change.__name__) as refused:
+                try_installer.through_the_window(self.base, checks, {})
+            for part in said:
+                self.assertIn(part, str(refused.exception), change.__name__)
+            self.assertNotIn("the file exported in the window is on the disk", " ".join(checks))
+
+    def test_a_window_that_never_reports_fails_it_after_the_wait(self):
+        self.httpd.app.start_window_check()
+        with mock.patch.object(try_installer, "WINDOW_CHECK_SEC", 1):
+            with self.assertRaises(try_installer.Failed) as refused:
+                try_installer.through_the_window(self.base, [], {})
+        self.assertIn("reported nothing within 1 seconds", str(refused.exception))
+        self.assertIs(self.httpd.app.window_check["start"], True)               # it was asked
+
+    def test_the_steps_it_waits_for_are_the_steps_the_page_reports(self):
+        page = (ROOT / "studio" / "web" / "windowcheck.js").read_text(encoding="utf-8")
+        reported = re.findall(r"await step\('([^']+)'", page)
+        self.assertEqual(reported[:len(try_installer.WINDOW_STEPS)], list(try_installer.WINDOW_STEPS))
+        self.assertEqual(reported[len(try_installer.WINDOW_STEPS):], ["copying without a click"])        # told, and not required
+        self.assertEqual(try_installer.WINDOW_CHECK_ENV, server.WINDOW_CHECK_ENV)
+        rust = (SHELL / "src" / "main.rs").read_text(encoding="utf-8")
+        self.assertNotIn("env_clear", rust)                                     # the shell hands its environment on to the core
+
+    def test_the_app_is_started_for_the_check_once_and_like_a_person_starts_it_the_second_time(self):
+        started = []
+        with mock.patch.object(try_installer.subprocess, "Popen", lambda command, **more: started.append(more["env"])), \
+                mock.patch.dict(os.environ, {try_installer.WINDOW_CHECK_ENV: "1", "LEARN_MY_VOICE_DATA_DIR": "/left/over"}):
+            try_installer.start(self.tmp / "app", self.tmp / "data", self.tmp / "log.txt", window_check=True)
+            try_installer.start(self.tmp / "app", None, self.tmp / "log.txt")
+        self.assertEqual((started[0][try_installer.WINDOW_CHECK_ENV], started[0]["LEARN_MY_VOICE_DATA_DIR"]), ("1", str(self.tmp / "data")))
+        self.assertNotIn(try_installer.WINDOW_CHECK_ENV, started[1])             # also when the trial itself was started with it
+        self.assertNotIn("LEARN_MY_VOICE_DATA_DIR", started[1])
+        source = (DESKTOP / "try_installer.py").read_text(encoding="utf-8")
+        self.assertEqual(source.count("window_check=True"), 1)
+
+    def mac_app(self, about):
+        import plistlib
+        app = self.tmp / "Learn My Voice.app"
+        (app / "Contents").mkdir(parents=True, exist_ok=True)
+        with open(str(app / "Contents" / "Info.plist"), "wb") as handle:
+            plistlib.dump(about, handle)
+        return app
+
+    def test_what_the_mac_app_has_to_say_about_the_microphone(self):
+        def codesign(rights, flags="flags=0x10002(adhoc,runtime)"):
+            def run(command, **more):
+                said = rights if "--entitlements" in command else b"Executable=/x\nCodeDirectory v=20500 size=1 " + flags.encode("ascii") + b" hashes=1\n"
+                return subprocess.CompletedProcess(command, 0, said if "--entitlements" in command else b"", b"" if "--entitlements" in command else said)
+            return mock.patch.object(try_installer.subprocess, "run", run)
+
+        right = b"<key>com.apple.security.device.audio-input</key><true/>"
+        said = {"NSMicrophoneUsageDescription": "to speak an idea"}
+        with codesign(right):
+            checks, record = [], {}
+            try_installer.microphone_is_declared(self.mac_app(said), checks, record)
+            self.assertEqual(checks, ["on the Mac it says what it wants the microphone for, and is signed with the right to it"])
+            self.assertEqual(record["signature"], "CodeDirectory v=20500 size=1 flags=0x10002(adhoc,runtime) hashes=1")
+            for wrong in ({}, {"NSMicrophoneUsageDescription": "  "}, {"NSCameraUsageDescription": "x"}):
+                with self.assertRaises(try_installer.Failed) as refused:
+                    try_installer.microphone_is_declared(self.mac_app(wrong), [], {})
+                self.assertIn("does not say what it wants the microphone for", str(refused.exception))
+        with codesign(b"<dict/>"), self.assertRaises(try_installer.Failed) as refused:
+            try_installer.microphone_is_declared(self.mac_app(said), [], {})
+        self.assertIn("not signed with the right to the microphone", str(refused.exception))
+        (self.tmp / "Learn My Voice.app" / "Contents" / "Info.plist").write_bytes(b"not a plist")
+        with codesign(right), self.assertRaises(try_installer.Failed) as refused:
+            try_installer.microphone_is_declared(self.tmp / "Learn My Voice.app", [], {})
+        self.assertIn("Info.plist cannot be read", str(refused.exception))
+
+    def test_the_shells_files_declare_the_microphone_and_nothing_more(self):
+        import plistlib
+        with open(str(SHELL / "Info.plist"), "rb") as handle:
+            about = plistlib.load(handle)
+        self.assertEqual(sorted(about), ["NSMicrophoneUsageDescription"])
+        why = about["NSMicrophoneUsageDescription"]
+        self.assertRegex(why, r"[A-Za-z]{4}.*[\u4e00-\u9fff]{4}")               # said in English and in Chinese
+        page = (ROOT / "studio" / "web" / "discover.js").read_text(encoding="utf-8")
+        for label in re.findall(r"dv_mic: '🎙 ([^']+)'", page):                  # it names the button as the page does
+            self.assertIn(label, why)
+        with open(str(SHELL / "Entitlements.plist"), "rb") as handle:
+            rights = plistlib.load(handle)
+        self.assertEqual(rights, {try_installer.MICROPHONE_RIGHT: True})        # a new right is a decision, not a habit
+        config = json.loads((SHELL / "tauri.conf.json").read_text(encoding="utf-8"))
+        self.assertEqual(config["bundle"]["macOS"]["entitlements"], "Entitlements.plist")
+
+
 def load_release():
     spec = importlib.util.spec_from_file_location("desktop_build_release", str(ROOT / "tools" / "build_release.py"))
     module = importlib.util.module_from_spec(spec)
