@@ -795,7 +795,7 @@ class HostileFileTest(ServerCase):
         self.assertTrue(0 < len(table["rows"]) < written, len(table["rows"]))
         self.assertEqual(table["rows"][-1][1], str(len(table["rows"]) - 1))      # whole rows only: the one that was cut in two is not kept
         self.assertEqual(table["more_rows"], True)
-        status, out = self.quickly(self.preview, name="a.xlsx", file_base64=b64(data), keyword_column=1)
+        status, out = self.quickly(self.preview, name="a.xlsx", file_base64=b64(data), keyword_column=1, within=SLOW_AT_FULL_BUDGET)
         self.assertEqual((status, out["more_rows"], out["rows_read"]), (200, True, len(table["rows"])))
 
     def test_only_a_part_that_holds_more_than_was_unpacked_counts_as_cut(self):

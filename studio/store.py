@@ -528,23 +528,27 @@ class Store:
         self.pending_path = self.data_dir / "voice_pending.json"
         self.recommendations_path = self.data_dir / "recommendations.json"
         self.uploads_dir = self.data_dir / "uploads"    # videos waiting to be transcribed; created on first use
-        with self._db() as db:
-            db.executescript(_SCHEMA)
-            for table, column, definition in _ADDED_COLUMNS:   # database created by an earlier version
-                if column in self._columns(db, table):
-                    continue
-                try:
-                    db.execute("BEGIN IMMEDIATE")     # the column and what follows from it arrive together or not at all
-                    db.execute("ALTER TABLE %s ADD COLUMN %s %s" % (table, column, definition))
-                    for statement in _AFTER_ADDING.get((table, column), ()):
-                        db.execute(statement)
-                    db.commit()
-                except sqlite3.OperationalError:
-                    db.rollback()
-                    # The web app and the MCP server may open the same database at once: fine if the other one added it.
-                    if column not in self._columns(db, table):
-                        raise
-            db.execute(_ONE_ITEM_A_SCRIPT)
+        db = self._db()
+        try:
+            with db:
+                db.executescript(_SCHEMA)
+                for table, column, definition in _ADDED_COLUMNS:   # database created by an earlier version
+                    if column in self._columns(db, table):
+                        continue
+                    try:
+                        db.execute("BEGIN IMMEDIATE")     # the column and what follows from it arrive together or not at all
+                        db.execute("ALTER TABLE %s ADD COLUMN %s %s" % (table, column, definition))
+                        for statement in _AFTER_ADDING.get((table, column), ()):
+                            db.execute(statement)
+                        db.commit()
+                    except sqlite3.OperationalError:
+                        db.rollback()
+                        # The web app and the MCP server may open the same database at once: fine if the other one added it.
+                        if column not in self._columns(db, table):
+                            raise
+                db.execute(_ONE_ITEM_A_SCRIPT)
+        finally:
+            db.close()
         # Last, so the database just created is covered too. Until then a new one sits in a folder that is
         # already closed; a folder an earlier version left open is closed here, with everything in it.
         _owner_only(self.data_dir)

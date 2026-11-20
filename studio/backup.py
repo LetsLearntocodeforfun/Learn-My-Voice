@@ -996,7 +996,7 @@ def _stage(source: Path, work: Path) -> Dict[str, Any]:
     try:
         staged = Store(new)             # adds what an older database lacks, the way an older data folder gets it
     except (sqlite3.Error, OSError) as exc:
-        raise _bad_database("cannot_bring_up_to_date: %s" % str(exc)[:80])
+        raise _bad_database("cannot_bring_up_to_date: %s" % str(exc)[:80]) from None
     older = before != _columns_of(new / DATABASE) or manifest["data_version"] < DATA_VERSION
     _check_scripts(staged)
     _try_out(staged)
