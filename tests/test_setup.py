@@ -28,7 +28,7 @@ import urllib.parse
 from pathlib import Path
 from unittest import mock
 
-from studio import creator, guardrails, mcp_server, pipeline, server, transcribe
+from studio import creator, evidence, guardrails, mcp_server, pipeline, server, transcribe
 from studio import setup as setup_status
 from studio.store import MAX_BRIEFS, Store, clean_file_name
 from tests.test_features import HER_SCRIPT
@@ -1303,6 +1303,197 @@ class ReviewRuleTest(SetupCase):
 
 
 # ---------------------------------------------------------------------------------------------- 5. speaking rate
+SETUP_JS = (ROOT / "studio" / "web" / "setup.js").read_text(encoding="utf-8")
+
+
+def page_words(lang):
+    """The texts of setup.js in one language, as written in the file."""
+    start = SETUP_JS.index("Object.assign(I18N.%s, {" % lang)
+    return SETUP_JS[start:SETUP_JS.index("\n});", start)]
+
+
+def free_text_fields():
+    """Every field of a profile that holds free text: text the evidence check looks nothing up for.
+
+    The same walk as ``evidence._free_text``, over the shape of a profile instead of over one profile.
+    """
+    found = []
+
+    def walk(shape, name):
+        for key, sub in shape.items():
+            here = "%s.%s" % (name, key) if name else key
+            if sub in (evidence._TEXT, evidence._TEXTS):
+                if here not in evidence._CHECKED_FIELDS and ("%s.*" % name) not in evidence._CHECKED_FIELDS:
+                    found.append(here)
+            elif isinstance(sub, list):
+                walk(sub[0], here)
+            elif isinstance(sub, dict):
+                walk(sub, here)
+    walk(evidence._SHAPE, "")
+    return found
+
+
+def as_the_page_sends(pending, unticked=(), ticked=()):
+    """The body of POST /api/voice/approve as the review page builds it (reviewHtml and the click on
+    "Accept this profile" in studio/web/setup.js), written out again here in Python.
+
+    ``unticked`` and ``ticked`` are paths of boxes the creator changed before the click. The rules, as on the page:
+    a ban the material contradicts and a quote that was not found have a locked box; what was found, what is
+    indeed absent and what cannot be checked start ticked; a habit that was not found starts unticked. Free text
+    starts ticked, except a note about an entry whose box is not ticked: that one is locked and goes with its entry.
+    Sent: ``created_at``; ``rejected``, every unlocked box that is not ticked; ``keep``, every ticked box of a thing
+    the material does not bear out (not found, not checkable, free text).
+    """
+    report = pending["report"]
+    fixed = lambda it: it["status"] == "conflict" or (it["kind"] == "quote" and it["status"] == "not_found")
+    on = {}
+    for it in report["items"]:
+        if not fixed(it):
+            on[it["path"]] = (it["status"] in ("found", "absent", "not_checkable") or it["path"] in ticked) and it["path"] not in unticked
+    needs_keep = {it["path"] for it in report["items"] if not fixed(it) and it["status"] in ("not_found", "not_checkable")}
+    items = {it["path"] for it in report["items"]}
+    free = {}
+    for field in report["unverified"]:
+        owner = field["belongs_to"] if field["belongs_to"] in items else None
+        if owner is None or on.get(owner):
+            free[field["path"]] = field["path"] not in unticked
+    return {"created_at": pending["created_at"],
+            "rejected": [path for path, kept in on.items() if not kept] + [path for path, kept in free.items() if not kept],
+            "keep": [path for path, kept in on.items() if kept and path in needs_keep] + [path for path, kept in free.items() if kept]}
+
+
+class ReviewPageTest(SetupCase):
+    """What the page sends when the creator accepts a proposal, and that the server accepts exactly that.
+
+    Until 19 November 2026 the page sent ``{"rejected": [...]}`` and nothing else. The server needs ``created_at``
+    and refused every such click (409 ``stale_proposal``), so no proposal could be accepted in the app at all;
+    the tests did not see it because their own helper added ``created_at`` and ``keep`` for the page.
+    """
+
+    FULL = dict(copy.deepcopy(DNA_CHECKED), **{
+        "cadence_and_syntax": {"target_speaking_rate_cpm": 235, "ideal_clause_length_chars": {"min": 6, "median": 11, "hard_max": 20},
+                               "sentence_structure_habits": ["先说结论再解释", "一句话不超过两个逗号"]},
+        "beat_playbooks": {"closing_formulas": ["好啦下期见"]},
+    })
+
+    def setUp(self):
+        super().setUp()
+        self.connect_model()
+        self.add("超市那天", HER_SCRIPT)
+        self.fake.dna = copy.deepcopy(self.FULL)
+        status, out = self.call("POST", "/api/voice/learn", {})
+        self.assertEqual(status, 200, out)
+        self.shown = out["pending"]
+
+    def test_the_click_sends_the_three_things_the_server_needs(self):
+        self.assertEqual(re.findall(r"api\('POST', '/api/voice/approve', (\{[^}]*\})\)", SETUP_JS), ["{ created_at: p.created_at, keep, rejected }"])
+        self.assertEqual(SETUP_JS.count("/api/voice/approve"), 2)                # the request, and the comment that says what it needs
+        click = SETUP_JS[SETUP_JS.index("on('rv-approve'"):SETUP_JS.index("on('rv-discard'")]
+        # Both kinds of box are read, a locked one is left out, and "keep" is asked for what the material does not bear out.
+        self.assertEqual(click.count(".filter((x) => !x.disabled)"), 2)
+        self.assertIn("x.checked && x.dataset.needsKeep === '1'", click)
+        self.assertIn("freeBoxes.filter((x) => x.checked).map((x) => x.dataset.freePath)", click)
+        self.assertIn("freeBoxes.filter((x) => !x.checked).map((x) => x.dataset.freePath)", click)
+        # A proposal that was replaced meanwhile, or is gone: said in words, and the page shows what is there now.
+        self.assertIn("err.code === 'stale_proposal' || err.code === 'no_pending'", click)
+        self.assertIn("await renderSetup('voice');", click)
+        for lang in ("zh", "en"):
+            for key in ("err_stale_proposal", "err_no_pending"):
+                self.assertRegex(page_words(lang), r"\b%s: '[^']+'" % key, (lang, key))
+
+    def test_what_the_page_sends_when_nothing_is_changed_is_accepted(self):
+        body = as_the_page_sends(self.shown)
+        self.assertEqual(body["created_at"], self.shown["created_at"])
+        free = [field["path"] for field in self.shown["report"]["unverified"]]
+        self.assertEqual(free, ["persona_summary.one_line_essence_zh", "cadence_and_syntax.sentence_structure_habits[0]",
+                                "cadence_and_syntax.sentence_structure_habits[1]", "lexical_fingerprint.signature_openers[0].pattern_zh",
+                                "lexical_fingerprint.signature_openers[1].pattern_zh", "beat_playbooks.closing_formulas[0]"])
+        # The note about the invented opener is locked (its quote was not found), so it is in neither list.
+        self.assertEqual(sorted(body["keep"]), sorted(path for path in free if path != "lexical_fingerprint.signature_openers[1].pattern_zh"))
+        self.assertEqual(body["rejected"], [USES])                              # 你们看: not found, so its box starts unticked
+        status, out = self.call("POST", "/api/voice/approve", body)
+        self.assertEqual(status, 200, out)
+        self.assertIsNone(self.pending())
+        dna = self.call("GET", "/api/dna")[1]
+        self.assertFalse(dna["is_example"])
+        dna = dna["dna"]
+        self.assertEqual(dna["persona_summary"]["one_line_essence_zh"], "松弛")
+        self.assertEqual(dna["cadence_and_syntax"]["sentence_structure_habits"], ["先说结论再解释", "一句话不超过两个逗号"])
+        self.assertEqual(dna["beat_playbooks"]["closing_formulas"], ["好啦下期见"])
+        self.assertEqual(dna["lexical_fingerprint"]["signature_openers"], [{"pattern_zh": "今天去…", "verbatim_sample": "今天去超市买菜"}])
+        self.assertEqual(dna["persona_summary"]["audience_address_terms"]["uses"], [])
+        review = dna["evidence_review"]
+        self.assertEqual((review["free_text_kept"], review["free_text_removed"]), (5, 0))
+
+    def test_unticked_free_text_goes_and_a_ticked_habit_that_was_not_found_stays(self):
+        gone = "cadence_and_syntax.sentence_structure_habits[0]"
+        body = as_the_page_sends(self.shown, unticked=[gone, "beat_playbooks.closing_formulas[0]"], ticked=[USES])
+        self.assertIn(gone, body["rejected"])
+        self.assertIn(USES, body["keep"])
+        status, out = self.call("POST", "/api/voice/approve", body)
+        self.assertEqual(status, 200, out)
+        dna = self.call("GET", "/api/dna")[1]["dna"]
+        self.assertEqual(dna["cadence_and_syntax"]["sentence_structure_habits"], ["一句话不超过两个逗号"])
+        self.assertEqual(dna["beat_playbooks"]["closing_formulas"], [])
+        self.assertEqual(dna["persona_summary"]["audience_address_terms"]["uses"], ["你们看"])
+        self.assertEqual(dna["persona_summary"]["one_line_essence_zh"], "松弛")
+
+    def test_a_note_goes_with_the_entry_it_describes_when_that_entry_is_unticked(self):
+        body = as_the_page_sends(self.shown, unticked=[OPENER])
+        note = "lexical_fingerprint.signature_openers[0].pattern_zh"
+        self.assertIn(OPENER, body["rejected"])
+        self.assertNotIn(note, body["keep"] + body["rejected"])                # its box is locked while the opener's is not ticked
+        self.assertEqual(self.call("POST", "/api/voice/approve", body)[0], 200)
+        self.assertEqual(self.call("GET", "/api/dna")[1]["dna"]["lexical_fingerprint"]["signature_openers"], [])
+
+    def test_what_the_page_sent_before_is_refused_and_changes_nothing(self):
+        status, out = self.call("POST", "/api/voice/approve", {"rejected": [USES]})
+        self.assertEqual((status, out["error"]), (409, "stale_proposal"), out)
+        self.assertTrue(out["message"] and out["message_zh"])
+        self.assertEqual(self.pending()["created_at"], self.shown["created_at"])
+        self.assertTrue(self.call("GET", "/api/dna")[1]["is_example"])
+
+    def test_a_proposal_that_replaced_the_one_on_the_screen_is_not_accepted_unseen(self):
+        body = as_the_page_sends(self.shown)
+        self.fake.dna["persona_summary"]["one_line_essence_zh"] = "另一份"
+        time.sleep(0.01)
+        self.assertEqual(self.call("POST", "/api/voice/learn", {})[0], 200)
+        newer = self.pending()
+        self.assertNotEqual(newer["created_at"], self.shown["created_at"])
+        status, out = self.call("POST", "/api/voice/approve", body)
+        self.assertEqual((status, out["error"]), (409, "stale_proposal"), out)
+        self.assertEqual(self.pending()["created_at"], newer["created_at"])
+        self.assertEqual(self.call("POST", "/api/voice/approve", as_the_page_sends(newer))[0], 200)
+        self.assertEqual(self.call("GET", "/api/dna")[1]["dna"]["persona_summary"]["one_line_essence_zh"], "另一份")
+
+    def test_every_piece_of_free_text_is_shown_with_a_box_under_the_name_of_its_field(self):
+        review = SETUP_JS[SETUP_JS.index("function reviewHtml(p)"):SETUP_JS.index("async function paintStepVoice")]
+        self.assertIn("(p.report && p.report.unverified) || []", review)
+        self.assertIn('data-free-path="${esc(f.path)}"', review)
+        self.assertIn("FREE_TEXT_KEYS[g.name] ? t(FREE_TEXT_KEYS[g.name]) : g.name", review)      # a field without a name of its own is still shown
+        # The summary no longer picks two fields out of the profile and leaves the rest unseen.
+        self.assertNotIn("persona.one_line_essence", review)
+        self.assertNotIn("sentence_structure_habits", review)
+        # A note about an entry says which, and is locked while that entry's box is not ticked.
+        self.assertIn("!owner || ticked(owner) ? 'checked' : 'disabled'", review)
+        self.assertIn("tf('rvf_about', { text: owner.text })", review)
+        follow = SETUP_JS[SETUP_JS.index("async function paintStepVoice"):SETUP_JS.index("on('rv-approve'")]
+        self.assertIn("note.disabled = !box.checked;", follow)
+        self.assertIn("note.checked = box.checked;", follow)
+        names = SETUP_JS[SETUP_JS.index("const FREE_TEXT_KEYS = {"):]
+        names = dict(re.findall(r"  '([a-z_.]+)': '(rvf_[a-z_]+)',\n", names[:names.index("};")]))
+        fields = free_text_fields()
+        self.assertEqual(len(fields), 21)
+        self.assertEqual(sorted(names), sorted(fields))                        # a field added to the shape needs a name here
+        self.assertEqual(len(set(names.values())), len(names))
+        for lang in ("zh", "en"):
+            for key in list(names.values()) + ["rvf_about", "rvf_goes_with", "rv_summary_d"]:
+                self.assertRegex(page_words(lang), r"\b%s: '(?:[^'\\]|\\.)+'" % key, (lang, key))
+        # The sentence above the free text says what a tick does, in both languages.
+        self.assertIn("勾着的会保留", re.search(r"rv_summary_d: '([^']+)'", page_words("zh")).group(1))
+        self.assertIn("Ticked items are kept", re.search(r"rv_summary_d: '([^']+)'", page_words("en")).group(1))
+
+
 class SpeakingRateTest(SetupCase):
     def setUp(self):
         super().setUp()

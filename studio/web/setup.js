@@ -64,7 +64,13 @@ Object.assign(I18N.zh, {
   rv_found: '找到 {n} 处：{titles}', rv_found_sponsored: '只在商单里出现过：{titles}', rv_not_found: '在你的素材里没找到',
   rv_not_found_quote: '在你的素材里没找到这句原话，不会保留',
   rv_absent: '你的素材里确实没出现过', rv_conflict: 'AI 说你不说，但出现过 {n} 次：{titles}。不会加入禁用。', rv_not_checkable: '这是一句描述，没法逐字核对',
-  rv_summary_title: 'AI 的概括', rv_summary_d: '这部分是它读完后的判断，没法逐条核对。采用以后可以在「我的声音」里看。',
+  rv_summary_title: 'AI 的概括', rv_summary_d: '这部分是它读完后的判断，没法逐条核对。勾着的会保留，以后每次写稿都会交给 AI；没勾的会去掉。',
+  rvf_about: '说的是：{text}', rvf_goes_with: '它说的那一条没有保留，这句说明会跟着一起去掉。',
+  rvf_essence: '一句话概括', rvf_essence_en: '一句话概括（英文）', rvf_couple_tone: '说到身边人时的语气', rvf_accent: '口音和地方说法',
+  rvf_sentences: '句子习惯', rvf_pauses: '停顿和标点', rvf_opener_patterns: '开头的句式', rvf_opener_when: '这些开头什么时候用',
+  rvf_particle_rules: '语气词怎么用', rvf_mix_density: '中英混说的多少', rvf_mix_natural: '自然会说英文的地方', rvf_mix_never: '不会夹英文的地方',
+  rvf_mix_forced: '要避免的生硬中英混说', rvf_vlog_hooks: '日常视频怎么开场', rvf_product_share: '分享好物的结构', rvf_sponsor_pivot: '怎么转到商单',
+  rvf_closings: '怎么结尾', rvf_flower_text: '花字风格', rvf_titles: '标题句式', rvf_captions: '文案和表情习惯', rvf_from_edits: '从修改里学到的、不这样说的话',
   rv_approve: '采用这份档案', rv_discard: '放弃这份提议', rv_approved: '已采用', rv_discarded: '已放弃',
   err_stale_proposal: '这一页显示的不是现在保存的提议，可能已被新提议替换。已为你刷新。',
   err_no_pending: '现在没有等你确认的声音档案。',
@@ -151,7 +157,13 @@ Object.assign(I18N.en, {
   rv_found: 'Found {n} times: {titles}', rv_found_sponsored: 'Only found in sponsored material: {titles}', rv_not_found: 'Not found in the material',
   rv_not_found_quote: 'This line was not found in the material, so it is not kept',
   rv_absent: 'Does not appear in the material', rv_conflict: 'The AI said this is never used, but it appears {n} times: {titles}. It will not be banned.', rv_not_checkable: 'A description, which cannot be checked word for word',
-  rv_summary_title: 'The AI\'s summary', rv_summary_d: 'This is its judgment after reading and cannot be checked item by item. Ticked items are kept and shown on the Voice page.',
+  rv_summary_title: 'The AI\'s summary', rv_summary_d: 'This is its judgment after reading and cannot be checked item by item. Ticked items are kept and are given to the AI with every draft; unticked ones are removed.',
+  rvf_about: 'About: {text}', rvf_goes_with: 'The entry it describes is not kept, so this note goes with it.',
+  rvf_essence: 'In one line', rvf_essence_en: 'In one line (English)', rvf_couple_tone: 'Tone when talking about people close to {@them}', rvf_accent: 'Accent and regional speech',
+  rvf_sentences: 'Sentence habits', rvf_pauses: 'Pauses and punctuation', rvf_opener_patterns: 'Opener patterns', rvf_opener_when: 'When each opener is used',
+  rvf_particle_rules: 'How the particles are used', rvf_mix_density: 'How much English is mixed in', rvf_mix_natural: 'Where English comes naturally', rvf_mix_never: 'Where English is never mixed in',
+  rvf_mix_forced: 'Forced mixing to avoid', rvf_vlog_hooks: 'Ways to open a vlog', rvf_product_share: 'Structure of a product share', rvf_sponsor_pivot: 'Ways to turn to a sponsor',
+  rvf_closings: 'Ways to close', rvf_flower_text: 'On-screen text style', rvf_titles: 'Title patterns', rvf_captions: 'Caption and emoji habits', rvf_from_edits: 'Learned from edits: wording to avoid',
   rv_approve: 'Accept this profile', rv_discard: 'Discard the proposal', rv_approved: 'Accepted', rv_discarded: 'Discarded',
   err_stale_proposal: 'This page was showing an older proposal that has since been replaced. Reloaded with the current one.',
   err_no_pending: 'There is no proposed voice profile waiting to be accepted.',
@@ -514,6 +526,31 @@ const EVIDENCE_GROUP_KEYS = {
   'anti_voice_blacklist.banned_phrases_zh': 'evg_never_phrases',
 };
 
+/* Free text is listed under the field it sits in (``field`` of unverified_fields in studio/evidence.py). */
+const FREE_TEXT_KEYS = {
+  'persona_summary.one_line_essence_zh': 'rvf_essence',
+  'persona_summary.one_line_essence_en': 'rvf_essence_en',
+  'persona_summary.husband_and_family_references.couple_dynamic_tone': 'rvf_couple_tone',
+  'persona_summary.regional_and_phonetic_nuances.accent_region_notes': 'rvf_accent',
+  'cadence_and_syntax.sentence_structure_habits': 'rvf_sentences',
+  'cadence_and_syntax.punctuation_and_pause_style': 'rvf_pauses',
+  'lexical_fingerprint.signature_openers.pattern_zh': 'rvf_opener_patterns',
+  'lexical_fingerprint.signature_openers.when_used_en': 'rvf_opener_when',
+  'lexical_fingerprint.modal_particles.primary.placement_rule': 'rvf_particle_rules',
+  'code_switching_grammar.overall_density': 'rvf_mix_density',
+  'code_switching_grammar.natural_english_categories': 'rvf_mix_natural',
+  'code_switching_grammar.never_code_switch_rules': 'rvf_mix_never',
+  'code_switching_grammar.good_vs_bad_examples.fake_chinglish_to_avoid': 'rvf_mix_forced',
+  'beat_playbooks.vlog_hook_formulas': 'rvf_vlog_hooks',
+  'beat_playbooks.product_share_structure': 'rvf_product_share',
+  'beat_playbooks.sponsor_soft_pivot_formulas': 'rvf_sponsor_pivot',
+  'beat_playbooks.closing_formulas': 'rvf_closings',
+  'onscreen_flower_text_and_caption_dna.flower_text_style': 'rvf_flower_text',
+  'onscreen_flower_text_and_caption_dna.title_formulas': 'rvf_titles',
+  'onscreen_flower_text_and_caption_dna.caption_and_emoji_habits': 'rvf_captions',
+  'anti_voice_blacklist.learned_from_her_edits': 'rvf_from_edits',
+};
+
 function reviewHtml(p) {
   const items = (p.report && p.report.items) || [];
   const freeItems = ((p.report && p.report.unverified) || []).filter((f) => f && typeof f.path === 'string' && f.text);
@@ -525,23 +562,42 @@ function reviewHtml(p) {
     g.items.push(it);
   });
   const label = (name) => (EVIDENCE_GROUP_KEYS[name] ? t(EVIDENCE_GROUP_KEYS[name]) : name);
+  /* Two outcomes are not up for a vote: a ban the material contradicts is always dropped, and a line presented
+     as a quote that cannot be found is never kept as one. */
+  const isFixed = (it) => it.status === 'conflict' || (it.kind === 'quote' && it.status === 'not_found');
+  const ticked = (it) => !isFixed(it) && (it.status === 'found' || it.status === 'absent' || it.status === 'not_checkable');
   const rows = (g) => g.items.map((it) => {
-    /* Two outcomes are not up for a vote: a ban the material contradicts is always dropped, and a line presented
-       as a quote that cannot be found is never kept as one. */
-    const fixed = it.status === 'conflict' || (it.kind === 'quote' && it.status === 'not_found');
-    const keep = !fixed && (it.status === 'found' || it.status === 'absent' || it.status === 'not_checkable');
+    const fixed = isFixed(it);
+    /* What the material did not bear out stays only when the server is told so (`keep`): a tick alone is not enough. */
     const needsKeep = !fixed && (it.status === 'not_found' || it.status === 'not_checkable');
-    return `<label class="ev ${esc(it.status)}"><input type="checkbox" data-path="${esc(it.path)}"${needsKeep ? ' data-needs-keep="1"' : ''} ${keep ? 'checked' : ''} ${fixed ? 'disabled' : ''}>
+    return `<label class="ev ${esc(it.status)}"><input type="checkbox" data-path="${esc(it.path)}"${needsKeep ? ' data-needs-keep="1"' : ''} ${ticked(it) ? 'checked' : ''} ${fixed ? 'disabled' : ''}>
       <span class="ev-text">${esc(it.text)}</span><span class="ev-status">${esc(evidenceStatusText(it))}</span></label>`;
   }).join('');
   /* A list of "never says" entries that all checked out is long and uneventful: fold it, but keep it one click away. */
   const group = (g) => (g.items.every((it) => it.status === 'absent')
     ? `<details class="ev-fold"><summary>${esc(label(g.name))} · ${g.items.length} · ${esc(t('rv_absent'))}</summary>${rows(g)}</details>`
     : `<h4>${esc(label(g.name))}</h4>${rows(g)}`);
-  const freeHtml = freeItems.map((f) =>
-    `<label class="ev free-text"><input type="checkbox" data-free-path="${esc(f.path)}" checked>
-      <span class="ev-text">${esc(f.text)}</span></label>`).join('');
-  const judgment = freeItems.length ? `<div class="card soft"><h3>${esc(t('rv_summary_title'))}</h3><p class="hint">${esc(t('rv_summary_d'))}</p>
+  /* Free text: what the AI wrote that nothing can be looked up for. Every piece is shown, under the name of the
+     field it sits in, because every piece that stays is given to the AI with each draft, and the server keeps
+     only what this page sends back as ticked. A note that describes an entry above (the pattern of an opener,
+     where a particle goes) leaves with that entry: it says which entry that is, and its box is unticked and
+     locked while the entry's box is not ticked (paintStepVoice keeps the two together). */
+  const byPath = {};
+  items.forEach((it) => { byPath[it.path] = it; });
+  const fields = [];
+  freeItems.forEach((f) => {
+    let g = fields.find((x) => x.name === f.field);
+    if (!g) { g = { name: f.field, items: [] }; fields.push(g); }
+    g.items.push(f);
+  });
+  const freeRow = (f) => {
+    const owner = f.belongs_to ? byPath[f.belongs_to] : null;
+    const about = owner ? `<span class="ev-status">${esc(tf('rvf_about', { text: owner.text }))}</span><span class="ev-off">${esc(t('rvf_goes_with'))}</span>` : '';
+    return `<label class="ev free-text"><input type="checkbox" data-free-path="${esc(f.path)}"${owner ? ` data-owner="${esc(owner.path)}"` : ''} ${!owner || ticked(owner) ? 'checked' : 'disabled'}>
+      <span class="ev-text">${esc(f.text)}</span>${about}</label>`;
+  };
+  const freeHtml = fields.map((g) => `<h4>${esc(FREE_TEXT_KEYS[g.name] ? t(FREE_TEXT_KEYS[g.name]) : g.name)}</h4>${g.items.map(freeRow).join('')}`).join('');
+  const judgment = freeItems.length ? `<div class="card soft review"><h3>${esc(t('rv_summary_title'))}</h3><p class="hint">${esc(t('rv_summary_d'))}</p>
       ${freeHtml}</div>` : '';
   return `<div class="card review"><h3>${esc(t('rv_title'))}</h3><p class="hint">${esc(t('rv_intro'))}</p>
       <p>${esc(tf('rv_summary', { n: sum.checked || 0, f: sum.found || 0, m: sum.not_found || 0, a: sum.absent || 0, c: sum.conflict || 0 }))}</p>
@@ -571,6 +627,16 @@ async function paintStepVoice(el, s) {
   }
   el.innerHTML = measured + action;
 
+  /* A note leaves with the entry it describes (reviewHtml): while that entry's box is not ticked, the note's is
+     unticked and locked; ticked again, the note comes back ticked. */
+  el.querySelectorAll('.ev input[data-path]').forEach((box) => {
+    box.onchange = () => el.querySelectorAll('.ev input[data-owner]').forEach((note) => {
+      if (note.dataset.owner !== box.dataset.path) return;
+      note.disabled = !box.checked;
+      note.checked = box.checked;
+    });
+  });
+
   const on = (id, fn) => { const x = document.getElementById(id); if (x) x.onclick = fn; };
   on('vo-manual', async () => {
     try { await api('POST', '/api/settings', { provider: 'manual' }); await router(); } catch (err) { showError(err); }
@@ -581,8 +647,12 @@ async function paintStepVoice(el, s) {
   }));
   on('vo-next', () => renderSetup('script'));
   on('rv-approve', (e) => busy(e.currentTarget, e.currentTarget.textContent, async () => {
+    /* What the server needs (POST /api/voice/approve): `created_at`, which names the proposal on this screen, so
+       that one that replaced it meanwhile is not accepted unseen; `rejected`, what was unticked; and `keep`, what
+       is ticked among the things the material does not bear out, free text included. A locked box is not sent:
+       what it stands for is decided already. */
     const evBoxes = Array.from(el.querySelectorAll('.ev input[data-path]')).filter((x) => !x.disabled);
-    const freeBoxes = Array.from(el.querySelectorAll('.ev input[data-free-path]'));
+    const freeBoxes = Array.from(el.querySelectorAll('.ev input[data-free-path]')).filter((x) => !x.disabled);
     const rejected = evBoxes.filter((x) => !x.checked).map((x) => x.dataset.path)
       .concat(freeBoxes.filter((x) => !x.checked).map((x) => x.dataset.freePath));
     const keep = evBoxes.filter((x) => x.checked && x.dataset.needsKeep === '1').map((x) => x.dataset.path)
