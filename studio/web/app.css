@@ -487,6 +487,38 @@ input[type=date] { border: 1px solid var(--line-2); border-radius: 10px; padding
   .dv-spin { animation: none !important; }
 }
 
+/* ---- critic note & visual RedNote video ingestion ---- */
+.cr-note { margin: 6px 0; padding: 6px 10px; border-left: 3px solid var(--warn); border-radius: 8px; background: var(--warn-soft); color: var(--ink); font-size: 13px; }
+.adders-drop { border-radius: var(--radius); transition: background-color .15s, box-shadow .15s; margin-bottom: 14px; }
+.adders-drop .adders { margin-bottom: 6px; }
+.adders-drop.drag-on { background: var(--accent-soft); box-shadow: 0 0 0 2px var(--accent); padding: 8px; }
+.adders-drop-hint { margin: 0 2px; }
+.adder-video { border-color: var(--accent); background: var(--card); }
+.sv-list { margin-bottom: 14px; }
+.sv-card { padding: 14px 16px; }
+.sv-grid { display: grid; grid-template-columns: 220px minmax(0, 1fr); gap: 16px; align-items: start; }
+.sv-media { display: flex; flex-direction: column; gap: 8px; }
+.sv-player { width: 100%; max-height: 280px; border-radius: 10px; background: var(--fill); display: block; object-fit: contain; }
+.sv-audio { width: 100%; display: block; }
+.sv-frames { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 5px; }
+.sv-frame { border: 1px solid var(--line); border-radius: 7px; padding: 0; background: var(--card); cursor: pointer; overflow: hidden; display: flex; flex-direction: column; align-items: center; }
+.sv-frame:hover { border-color: var(--accent); }
+.sv-frame img { width: 100%; aspect-ratio: 3 / 4; object-fit: cover; display: block; }
+.sv-frame span { font-size: 11px; color: var(--muted); line-height: 1.4; font-variant-numeric: tabular-nums; }
+.sv-body { display: flex; flex-direction: column; gap: 8px; min-width: 0; }
+.sv-input { font-size: 14px; padding: 7px 10px; }
+.sv-actions { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 2px; }
+.sv-privacy { margin-top: 2px; line-height: 1.45; }
+.vi-notes { margin: 6px 0 8px; padding: 8px 12px; background: var(--fill-2); border-radius: 10px; display: flex; flex-direction: column; gap: 6px; font-size: 13.5px; }
+.vi-line { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; }
+.vi-line .tag { margin: 0; }
+.vi-review-split { display: grid; grid-template-columns: minmax(0, 1fr); gap: 12px; margin-top: 8px; }
+.vi-review-split:has(.vi-review-media) { grid-template-columns: 200px minmax(0, 1fr); align-items: start; }
+.vi-review-media { display: flex; flex-direction: column; gap: 6px; }
+@media (max-width: 720px) {
+  .sv-grid, .vi-review-split:has(.vi-review-media) { grid-template-columns: 1fr; }
+}
+
 /* ---- references beside the script editor (refs.js): the creator's own material, pinned or found by plain rules ----
    Every colour in this block is one of the variables at the top of this sheet, so that a change of those (another
    look, a dark mode) reaches the panel without a change here. */
@@ -508,7 +540,7 @@ input[type=date] { border: 1px solid var(--line-2); border-radius: 10px; padding
 .rf-name { margin-bottom: 4px; font-size: 15px; font-weight: 600; }
 .rf-nums { margin: 2px 0; }
 /* Wording that is not confirmed as the creator's own, and what is no longer in the library: said in the colours of a notice. */
-.rf-note, .cr-note { margin: 6px 0; padding: 6px 10px; border-left: 3px solid var(--warn); border-radius: 8px; background: var(--warn-soft); color: var(--ink); font-size: 13px; }
+.rf-note { margin: 6px 0; padding: 6px 10px; border-left: 3px solid var(--warn); border-radius: 8px; background: var(--warn-soft); color: var(--ink); font-size: 13px; }
 .rf-opening { margin: 6px 0 2px; }
 .rf-opening .tag { margin: 0 0 0 4px; }
 /* The text of an item is there to be read, selected and copied. */

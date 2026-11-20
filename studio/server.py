@@ -54,7 +54,7 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
 from . import checks, corpus, creator, exports, keyword_import, llm, pipeline, textstats, timing, transcribe, trends
-from . import buildinfo, hooks, outside, posted, refs, suggest, wordlist
+from . import buildinfo, hooks, outside, posted, refs, suggest, video_ingest, wordlist
 from . import setup as setup_status
 from .jobs import JobError, Jobs, Progress
 from .store import (
@@ -81,7 +81,7 @@ MAX_WINDOW_REPORT = 200_000  # characters of what the window check may report
 WINDOW_CHECK_ENV = "LEARN_MY_VOICE_WINDOW_CHECK"
 DEFAULT_PORT = 8765
 UNTITLED = {"zh": "未命名脚本", "en": "Untitled script"}
-MANUAL_TASKS = ("draft", "voice", "ideas", "trends", "suggest")
+MANUAL_TASKS = ("draft", "voice", "ideas", "trends", "suggest", "video_ingest")
 IDLE_TIMEOUT_SEC = 30                   # a connection that sends nothing for this long while it is being read is closed
 
 # Sent with every answer. The pages load their scripts and their style sheet from this server, style some
@@ -97,7 +97,8 @@ CONTENT_SECURITY_POLICY = "; ".join((
     "style-src 'self' 'unsafe-inline'",
     "style-src-elem 'self'",
     "style-src-attr 'unsafe-inline'",
-    "img-src 'self'",
+    "img-src 'self' blob: data:",
+    "media-src 'self' blob:",
     "connect-src 'self'",
     "base-uri 'none'",
     "form-action 'none'",
@@ -702,6 +703,60 @@ class Handler(BaseHTTPRequestHandler):
             raise
         self._json({"job": job}, 202)
 
+    def _start_ai_video(self, body: Dict[str, Any]) -> None:
+        """``POST /api/videos/ai``: ingest an uploaded video/audio file via Gemini multimodal or OpenAI Whisper."""
+        app = self.app
+        upload_id, title, caption = body.get("upload_id"), body.get("title"), body.get("caption")
+        if not isinstance(upload_id, str) or not _UPLOAD_ID.fullmatch(upload_id):
+            raise ApiError(400, "bad_upload_id")
+        if title is not None and not isinstance(title, str):
+            raise ApiError(400, "bad_title")
+        if caption is not None and not isinstance(caption, str):
+            raise ApiError(400, "bad_caption")
+        raw_dur = body.get("duration_sec")
+        duration_sec: Optional[float] = None
+        if raw_dur is not None:
+            if isinstance(raw_dur, bool) or not isinstance(raw_dur, (int, float)) or not math.isfinite(raw_dur) or raw_dur < 0:
+                raise ApiError(400, "bad_duration")
+            duration_sec = float(raw_dur)
+        attach_to = body.get("attach_to")
+        if attach_to is not None:
+            _posting(lambda: posted.attachable(app.store, attach_to))
+        app.uploads.drop_stale()
+        upload = app.uploads.claim(upload_id)
+        if upload is None:
+            raise ApiError(404, "upload_not_found")
+        clean_title = (title or "").strip() or upload["name"].rsplit(".", 1)[0]
+        clean_caption = (caption or "").strip()[:2000]
+        sponsored = body.get("is_sponsored") if isinstance(body.get("is_sponsored"), bool) else None
+        try:
+            if not video_ingest.ai_video_info(app.store)["ai_video_capable"]:
+                raise ApiError(
+                    400,
+                    "ai_video_not_configured",
+                    "Connect a Gemini or OpenAI API key in Settings first, or use copy-and-paste.",
+                    "请先在「设置」连接 Gemini 或 OpenAI 密钥，或使用复制粘贴方式。",
+                )
+            job = app.jobs.start(
+                TRANSCRIBE_JOB,
+                lambda progress: video_ingest.transcribe_via_ai(
+                    app.store,
+                    upload,
+                    title=clean_title,
+                    caption=clean_caption,
+                    is_sponsored=sponsored,
+                    duration_sec=duration_sec,
+                    attach_to=attach_to,
+                    transport=app.transport,
+                    progress=progress,
+                ),
+                label=upload["name"],
+            )
+        except BaseException:
+            _remove(upload["path"])
+            raise
+        self._json({"job": job}, 202)
+
     def _start_dictation(self, body: Dict[str, Any]) -> None:
         """``POST /api/dictation``: write down a short spoken request on this computer, as a job.
 
@@ -731,7 +786,8 @@ class Handler(BaseHTTPRequestHandler):
     def _transcriber_payload(self) -> Dict[str, Any]:
         app = self.app
         return dict(app.transcriber.status(), job=app.jobs.latest(INSTALL_JOB),
-                    upload={"max_bytes": app.max_upload_bytes, "extensions": list(MEDIA_EXTENSIONS)})
+                    upload={"max_bytes": app.max_upload_bytes, "extensions": list(MEDIA_EXTENSIONS)},
+                    **video_ingest.ai_video_info(app.store))
 
     def _static(self, path: str) -> None:
         name = "index.html" if path in ("/", "") else path.lstrip("/")
@@ -770,6 +826,15 @@ class Handler(BaseHTTPRequestHandler):
             system, user = pipeline.voice_prompt(store)
         elif task == "trends":
             system, user = pipeline.trends_prompt(store, focus=str(body.get("focus") or ""))
+        elif task == "video_ingest":
+            raw_dur = body.get("duration_sec")
+            dur = float(raw_dur) if (isinstance(raw_dur, (int, float)) and not isinstance(raw_dur, bool)
+                                     and math.isfinite(raw_dur) and raw_dur > 0) else None
+            system, user = video_ingest.video_ingest_prompt(
+                title=str(body.get("title") or "")[:300],
+                caption=str(body.get("caption") or "")[:2000],
+                duration_sec=dur,
+            )
         else:
             system, user = pipeline.ideas_prompt(store, focus=_focus(body))
         return {"prompt": pipeline.single_prompt(system, user)}
@@ -800,6 +865,24 @@ class Handler(BaseHTTPRequestHandler):
             found = pipeline.store_trends(store, result)
             keywords = found.pop("keywords")
             return self._json(dict(trends.payload(store), found=keywords, **found))
+        if task == "video_ingest":
+            raw_dur = body.get("duration_sec")
+            dur = float(raw_dur) if (isinstance(raw_dur, (int, float)) and not isinstance(raw_dur, bool)
+                                     and math.isfinite(raw_dur) and raw_dur > 0) else None
+            sponsored_override = body.get("is_sponsored") if isinstance(body.get("is_sponsored"), bool) else None
+            source_name = body.get("source_name") if isinstance(body.get("source_name"), str) else ""
+            try:
+                sample = video_ingest.parse_stage1_reply(
+                    store,
+                    result,
+                    title=str(body.get("title") or ""),
+                    source_name=source_name,
+                    is_sponsored_override=sponsored_override,
+                    fallback_duration_sec=dur,
+                )
+            except TextTooLong as exc:
+                raise ApiError(413, exc.code, exc.message, exc.message_zh, extra={"limit": exc.limit})
+            return self._json({"sample": posted.shown(store, sample)}, 201)
         ideas = pipeline.apply_ideas(store, result, focus=focus, lookup=lookup)
         return self._json({"performance": corpus.performance(store.list_samples()), "result": ideas})
 
@@ -1137,6 +1220,8 @@ class Handler(BaseHTTPRequestHandler):
             return self._upload()
         if route == ("POST", "/api/videos"):
             return self._start_video(self._read_json())
+        if route == ("POST", "/api/videos/ai"):
+            return self._start_ai_video(self._read_json())
         if route == ("POST", "/api/dictation"):
             return self._start_dictation(self._read_json())
         m = re.fullmatch(r"/api/jobs/([0-9a-f]{12})", path)

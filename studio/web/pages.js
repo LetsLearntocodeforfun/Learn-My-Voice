@@ -4,14 +4,14 @@
 
 Object.assign(I18N.zh, {
   nav_ideas: '选题建议', nav_library: '素材库',
-  lib_title: '素材库', lib_sub: '把以前手写的脚本放进来，AI 会照着你的习惯写。填上数据，还能帮你分析选题。',
+  lib_title: '素材库', lib_sub: '导入你的小红书视频、剪映字幕或以前手写的脚本，提取真实语速、语气词与屏幕花字，生成你的声音档案。',
   upload: '上传脚本文件', upload_hint: '支持 .txt、.md、.docx，可以一次选多个',
-  paste_title: '或者直接粘贴一篇', paste_ph: '把脚本内容粘贴到这里', add_to_lib: '加入素材库',
-  lib_empty: '素材库还是空的。', imported_n: '已加入 {n} 篇', import_failed: '「{name}」读取失败',
+  paste_title: '或者直接粘贴一篇脚本', paste_ph: '把脚本内容粘贴到这里', add_to_lib: '加入素材库',
+  lib_empty: '素材库还是空的。把你的小红书视频、字幕文件或手写脚本拖到上方开始吧。', imported_n: '已加入 {n} 篇', import_failed: '「{name}」读取失败',
   m_views: '播放', m_likes: '点赞', m_collects: '收藏', m_comments: '评论', sponsored: '商单',
   show_text: '查看 / 修改内容', lib_stats: '共 {n} 篇', confirm_delete_sample: '确定从素材库删除这一篇吗？', title_ph: '视频标题',
   learn_btn: '✨ 从素材库学习我的声音', learn_again: '重新学习', learning: '正在学习，可能要一两分钟…', learned: '学好了！',
-  learn_need_samples: '先到「素材库」放几篇你写的脚本（建议 5 篇以上），再回来学习。',
+  learn_need_samples: '先到「素材库」导入你的小红书视频、字幕文件或以前写的脚本（视频转写确认后即可用来学习），再生成声音档案。',
   learn_source: '根据 {n} 篇脚本学习', rate_label: '我的语速（字/分钟）',
   rate_hint: '语速没法从文字里量出来。念一段一分钟的口播，数一下字数，填在这里。',
   rate_unconfirmed: '现在是默认值，还没确认', rate_saved: '语速已更新',
@@ -23,19 +23,19 @@ Object.assign(I18N.zh, {
   conf_low: '把握：低', conf_medium: '把握：中', conf_high: '把握：高', generated_at: '生成于',
   local_models: '本地模型', local_url: '本地模型地址',
   local_hint: '需要先在这台电脑上打开 Ollama 或 LM Studio，并下载好模型。内容不会离开这台电脑。',
-  err_no_samples: '素材库里还没有可用的脚本。', err_bad_file: '这个文件读不了，请换成 .txt 或 .docx。',
+  err_no_samples: '素材库里还没有已确认的非商单素材（视频转写需要先点确认）。', err_bad_file: '这个文件读不了，请换成 .txt 或 .docx。',
   err_empty_text: '内容是空的。', err_bad_rate: '语速请填 100 到 500 之间的数字。', err_no_profile: '请先学习你的声音。',
 });
 Object.assign(I18N.en, {
   nav_ideas: 'Ideas', nav_library: 'Library',
-  lib_title: 'Library', lib_sub: 'Add scripts {@name} wrote by hand so AI writes in {@their} habits. Add numbers to get topic analysis.',
+  lib_title: 'Library', lib_sub: 'Ingest {@names} RedNote videos, subtitle files, or past scripts to measure speaking rate, capture tone & 花字, and build {@their} voice profile.',
   upload: 'Upload script files', upload_hint: '.txt, .md, .docx; several at once is fine',
-  paste_title: 'Or paste one', paste_ph: 'Paste the script here', add_to_lib: 'Add to library',
-  lib_empty: 'The library is empty.', imported_n: 'Added {n}', import_failed: 'Could not read "{name}"',
+  paste_title: 'Or paste a script', paste_ph: 'Paste the script here', add_to_lib: 'Add to library',
+  lib_empty: 'The library is empty. Drop RedNote videos, subtitle files, or scripts above to start.', imported_n: 'Added {n}', import_failed: 'Could not read "{name}"',
   m_views: 'Views', m_likes: 'Likes', m_collects: 'Collects', m_comments: 'Comments', sponsored: 'Sponsored',
-  show_text: 'View / edit text', lib_stats: '{n} scripts', confirm_delete_sample: 'Remove this script from the library?', title_ph: 'Video title',
+  show_text: 'View / edit text', lib_stats: '{n} items', confirm_delete_sample: 'Remove this item from the library?', title_ph: 'Video title',
   learn_btn: '✨ Learn {@names} voice from the library', learn_again: 'Learn again', learning: 'Learning, this can take a minute or two…', learned: 'Done!',
-  learn_need_samples: 'Add a few of {@names} scripts to the Library first (5 or more is better).',
+  learn_need_samples: 'Add {@names} RedNote videos, subtitle files, or past scripts in the Library first (confirming any video transcripts), then create the voice profile.',
   learn_source: 'Learned from {n} scripts', rate_label: 'Speaking rate (units/min)',
   rate_hint: 'Rate cannot be measured from text. Read one minute of voiceover aloud, count the characters, and enter it here.',
   rate_unconfirmed: 'Currently a default, not confirmed', rate_saved: 'Rate updated',
@@ -47,7 +47,7 @@ Object.assign(I18N.en, {
   conf_low: 'Confidence: low', conf_medium: 'Confidence: medium', conf_high: 'Confidence: high', generated_at: 'Generated',
   local_models: 'Local model', local_url: 'Local server address',
   local_hint: 'Ollama or LM Studio must be running on this computer with a model downloaded. Nothing leaves the computer.',
-  err_no_samples: 'There are no usable scripts in the library yet.', err_bad_file: 'This file could not be read. Use .txt or .docx.',
+  err_no_samples: 'There is no confirmed non-sponsored material yet (confirm video transcripts first).', err_bad_file: 'This file could not be read. Use .txt or .docx.',
   err_empty_text: 'The text is empty.', err_bad_rate: 'Enter a rate between 100 and 500.', err_no_profile: 'Learn {@names} voice first.',
 });
 
@@ -243,10 +243,11 @@ async function manualBridge(task, payload, options) {
   const $modal = document.getElementById('modal');
   return new Promise((resolve) => {
     const step1Html = o.replyOnly ? '' : `
-      <label class="field" for="mb-prompt">${esc(t('mb_step1'))}</label>
+      <label class="field" for="mb-prompt">${esc(o.step1 || t('mb_step1'))}</label>
       <textarea id="mb-prompt" class="mono" rows="5" readonly></textarea>
       <div class="row" style="margin-top:8px">
         <button type="button" class="btn primary" id="mb-copy">${esc(t('mb_copy'))}</button>
+        ${task === 'video_ingest' ? `<a class="btn" href="https://gemini.google.com/" target="_blank" rel="noopener">${esc(t('mb_open_gemini'))}</a>` : ''}
         <a class="btn" href="https://chatgpt.com/" target="_blank" rel="noopener">${esc(t('mb_open'))}</a>
         <span class="meta">${esc(tf('mb_size', { n: prompt.length.toLocaleString() }))}</span></div>`;
     $modal.innerHTML = `<div class="sheet" role="dialog" aria-modal="true">
@@ -497,6 +498,7 @@ function sampleHtml(s) {
   const kind = ['script', 'subtitle', 'video'].includes(s.kind) ? s.kind : 'script';
   const timed = s.timing && s.timing.speaking_rate_cpm
     ? ` · ${tf('mt_timed', { d: fmtSpan(s.timing.spoken_sec), r: s.timing.speaking_rate_cpm })}` : '';
+  const mediaSide = s.needs_review && !poWaits(s) ? sessionVideoReviewHtml(s.id) : '';
   return `<div class="card sample" data-id="${esc(s.id)}">
     <div class="row">
       <input type="text" class="sample-title" data-f="title" value="${esc(s.title)}" placeholder="${esc(t('title_ph'))}">
@@ -504,34 +506,62 @@ function sampleHtml(s) {
       <button class="btn ghost" data-del aria-label="${esc(t('delete'))}">✕</button>
     </div>
     <div class="metrics">${['views', 'likes', 'collects', 'comments'].map(metric).join('')}</div>
+    ${visualIngestHtml(s)}
     ${poSampleHtml(s)}${s.needs_review ? reviewNoteHtml(s) : ''}
     <details ${s.needs_review ? 'open' : ''}><summary><span class="tag ${kind === 'script' ? '' : 'ok'}">${esc(t('mt_kind_' + kind))}</span>
       ${esc(t('show_text'))} · ${spokenUnits(s.text)}${lang === 'zh' ? '' : ' '}${esc(t('chars'))}${esc(timed)}</summary>
-      <textarea data-f="text" rows="8">${esc(s.text)}</textarea></details>
+      ${mediaSide ? `<div class="vi-review-split">${mediaSide}<div class="vi-review-text"><textarea data-f="text" rows="8">${esc(s.text)}</textarea></div></div>`
+        : `<textarea data-f="text" rows="8">${esc(s.text)}</textarea>`}</details>
+  </div>`;
+}
+
+function libraryVoiceBarHtml(st, lib) {
+  const samples = (lib && lib.samples) || [];
+  const confirmedOrganic = samples.filter((x) => !x.needs_review && !x.is_sponsored && String(x.text || '').trim());
+  const scriptCount = confirmedOrganic.filter((x) => (x.kind || 'script') === 'script').length;
+  const mediaCount = confirmedOrganic.length - scriptCount;
+  const unreviewed = (st.material && st.material.unreviewed) || 0;
+  const voice = st.voice || {};
+  const active = voice.state === 'active';
+  const hasPending = !!voice.has_pending;
+  const activeNote = active
+    ? `<p class="hint" style="margin-top:6px">${esc(tf('vo_active', { n: voice.based_on, d: voice.learned_at || '' }))}${voice.new_since ? ' ' + esc(tf('vo_new_since', { n: voice.new_since })) : ''}</p>` : '';
+  const unreviewedBanner = unreviewed
+    ? `<div class="banner" style="margin:10px 0 6px">${esc(tf(countKey('lib_voice_unreviewed', unreviewed), { n: unreviewed }))}</div>` : '';
+  const canLearn = (st.material && st.material.organic > 0);
+  return `<div class="card" id="lib-voice-bar">
+    <div class="row">
+      <div>
+        <h3>${esc(t('lib_voice_title'))}</h3>
+        <div class="meta">${esc(tf('lib_voice_counts', { n: st.material.organic, s: scriptCount, v: mediaCount, c: st.material.clauses }))} · ${esc(rateLine(lib.measured))}</div>
+      </div>
+      <span class="spacer"></span>
+      ${hasPending ? `<button type="button" class="btn primary" id="lib-review-voice">${esc(t('lib_voice_review'))}</button>` : ''}
+      <button type="button" class="btn ${hasPending ? '' : 'primary'}" id="lib-learn-voice" ${canLearn ? '' : 'disabled'}>${esc(t(active ? 'lib_voice_update' : 'lib_voice_create'))}</button>
+      ${active ? `<a class="btn" href="#/voice">${esc(t('lib_voice_open'))}</a>` : ''}
+    </div>
+    ${activeNote}
+    ${unreviewedBanner}
   </div>`;
 }
 
 async function renderLibrary() {
-  const { samples } = await api('GET', '/api/samples');
+  stopSetupPolling();
+  const [lib, tr, st] = await Promise.all([api('GET', '/api/samples'), api('GET', '/api/transcriber'), api('GET', '/api/setup')]);
+  const samples = lib.samples || [];
+  const localPanel = tr.supported && !(tr.installed && tr.model_ready) && tr.job && tr.job.status === 'running' ? transcriberHtml(tr) : '';
   $view.innerHTML = `<div class="wrap"><h1>${esc(t('lib_title'))}</h1><p class="sub">${esc(t('lib_sub'))}</p>
-    <div class="card">
-      <div class="row"><label class="btn primary" for="files">${esc(t('upload'))}</label>
-        <input type="file" id="files" multiple accept=".txt,.md,.docx,text/plain" hidden>
-        <span class="hint">${esc(t('upload_hint'))}</span></div>
-      <p class="hint">${esc(t('lib_more_kinds'))} <a href="#/start" id="lib-to-material">${esc(t('lib_more_kinds_go'))}</a></p>
-      <label class="field" for="paste">${esc(t('paste_title'))}</label>
+    ${materialAddersHtml(tr, 'lib')}
+    ${localPanel}
+    <details class="card soft"><summary>${esc(t('paste_title'))}</summary>
       <textarea id="paste" rows="4" placeholder="${esc(t('paste_ph'))}"></textarea>
       <div class="row" style="margin-top:10px"><button class="btn" id="paste-add">${esc(t('add_to_lib'))}</button></div>
-    </div>
+    </details>
+    ${libraryVoiceBarHtml(st, lib)}
     <p class="meta">${samples.length ? esc(tf('lib_stats', { n: samples.length })) : ''}</p>
-    <div id="samples">${samples.map(sampleHtml).join('') || `<div class="empty">${esc(t('lib_empty'))}</div>`}</div></div>`;
+    <div id="samples">${samples.map(sampleHtml).join('') || (stagedVideos.length ? '' : `<div class="empty">${esc(t('lib_empty'))}</div>`)}</div></div>`;
 
-  document.getElementById('lib-to-material').onclick = () => { setupUi.open = 'material'; };
-  document.getElementById('files').onchange = async (e) => {
-    const added = await importFiles(Array.from(e.target.files));
-    if (added) toast(tf('imported_n', { n: added }));
-    renderLibrary();
-  };
+  bindMaterialAdders($view, tr, 'lib', renderLibrary, ['#/library']);
   const $paste = document.getElementById('paste');
   $paste.oninput = () => autoGrow($paste);
   document.getElementById('paste-add').onclick = async () => {
@@ -541,7 +571,28 @@ async function renderLibrary() {
       renderLibrary();
     } catch (err) { showError(err); }
   };
+  const $reviewVoice = document.getElementById('lib-review-voice');
+  if ($reviewVoice) {
+    $reviewVoice.onclick = () => {
+      setupUi.open = 'voice';
+      location.hash = '#/start';
+    };
+  }
+  const $learnVoice = document.getElementById('lib-learn-voice');
+  if ($learnVoice) {
+    $learnVoice.onclick = (e) => busy(
+      e.currentTarget,
+      (!appState.settings.configured || appState.settings.manual) ? e.currentTarget.textContent : t('learning'),
+      async () => {
+        const out = appState.settings.configured ? await aiRun('voice', {}) : await manualBridge('voice', {});
+        if (!out) return;
+        setupUi.open = 'voice';
+        location.hash = '#/start';
+      }
+    );
+  }
   const $list = document.getElementById('samples');
+  bindSeekClicks($list);
   $list.onchange = async (e) => {
     const card = e.target.closest('.sample');
     const field = e.target.dataset.f;
@@ -565,6 +616,7 @@ async function renderLibrary() {
     }
     if (!e.target.closest('[data-del]')) return;
     if (!(await askConfirm(poDeleteSampleText(card.dataset.id, 'confirm_delete_sample'), { ok: t('delete'), danger: true }))) return;
+    forgetVideoPreview(card.dataset.id);
     await api('DELETE', '/api/samples/' + card.dataset.id);
     renderLibrary();
   };
@@ -574,12 +626,21 @@ async function renderLibrary() {
 async function paintVoiceActions(dna, isExample) {
   const el = document.getElementById('voice-actions');
   if (!el) return;
-  const ready = appState.settings.configured && appState.sample_count > 0;
+  let st = null;
+  try { st = await api('GET', '/api/setup'); } catch (e) { st = null; }
+  const organic = st && st.material ? st.material.organic : appState.sample_count;
+  const unreviewed = st && st.material ? st.material.unreviewed : 0;
+  const ready = appState.settings.configured && organic > 0;
   const source = (dna && dna.source_corpus_summary) || {};
   const rate = dna && dna.cadence_and_syntax ? dna.cadence_and_syntax.target_speaking_rate_cpm : '';
   let hint = '';
-  if (!appState.sample_count) hint = `${esc(t('learn_need_samples'))} <a href="#/library">${esc(t('go_library'))}</a>`;
-  else if (!appState.settings.configured) hint = `${esc(t('no_ai'))} <a href="#/settings">${esc(t('go_settings'))}</a>`;
+  if (!organic && unreviewed > 0) {
+    hint = `${esc(tf(countKey('lib_voice_unreviewed', unreviewed), { n: unreviewed }))} <a href="#/library">${esc(t('go_library'))}</a>`;
+  } else if (!organic) {
+    hint = `${esc(t('learn_need_samples'))} <a href="#/library">${esc(t('go_library'))}</a>`;
+  } else if (!appState.settings.configured) {
+    hint = `${esc(t('no_ai'))} <a href="#/settings">${esc(t('go_settings'))}</a> · <a href="#/library">${esc(t('go_library'))}</a>`;
+  }
   const rateBox = isExample ? '' : `<div class="card">
       <label class="field" style="margin-top:0" for="rate">${esc(t('rate_label'))}
         ${source.speaking_rate_source === 'measured' ? `<span class="hint">· ${esc(t('rate_measured'))}</span>`

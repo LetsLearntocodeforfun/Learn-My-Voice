@@ -55,8 +55,8 @@ HER_SCRIPT = "\n".join(["今天去超市买菜 / 结果人特别多嘛 / 排队�
 SLOW = 3.0              # seconds
 LIBRARY_LIMIT = 500000  # characters; the number in contract 4
 POLICY = ("default-src 'none'; script-src 'self'; style-src 'self' 'unsafe-inline'; style-src-elem 'self'; "
-          "style-src-attr 'unsafe-inline'; img-src 'self'; connect-src 'self'; base-uri 'none'; form-action 'none'; "
-          "frame-ancestors 'none'")
+          "style-src-attr 'unsafe-inline'; img-src 'self' blob: data:; media-src 'self' blob:; connect-src 'self'; "
+          "base-uri 'none'; form-action 'none'; frame-ancestors 'none'")
 MB = 1024 * 1024
 
 
@@ -974,10 +974,13 @@ class PageProtectionTest(StudioCase):
         self.assertEqual(policy["default-src"], "'none'")
         self.assertEqual(policy["script-src"], "'self'")                         # no inline script, no eval, no other address
         self.assertEqual(policy["frame-ancestors"], "'none'")
+        self.assertEqual(policy["img-src"], "'self' blob: data:")
+        self.assertEqual(policy["media-src"], "'self' blob:")
         for directive, value in policy.items():
             self.assertNotIn("*", value, directive)
             self.assertNotIn("http", value, directive)
-            self.assertNotIn("data:", value, directive)
+            if directive != "img-src":
+                self.assertNotIn("data:", value, directive)
             if directive not in ("style-src", "style-src-attr"):
                 self.assertNotIn("unsafe", value, directive)
 
@@ -1000,9 +1003,9 @@ class PageProtectionTest(StudioCase):
             "an event handler written into markup": r"<[A-Za-z][^<>]*\son[a-z]+\s*=",
             "a javascript: address": r"javascript:",
             "code built from text": r"\beval\s*\(|new\s+Function\s*\(|set(?:Timeout|Interval)\s*\(\s*['\"`]",
-            "something loaded from another address": r"""(?:src|href)\s*=\s*["']?(?:https?:)?//(?!chatgpt\.com/)|@import|url\(\s*["']?(?:https?:|//|data:)""",
+            "something loaded from another address": r"""(?:src|href)\s*=\s*["']?(?:https?:)?//(?!chatgpt\.com/|gemini\.google\.com/)|@import|url\(\s*["']?(?:https?:|//|data:)""",
             "an embedded page or plug-in": r"<(?:iframe|object|embed|base|form)\b",
-            "an image, sound or font": r"<(?:img|audio|video|source|picture)\b|@font-face|new\s+Image\s*\(",
+            "an external source, picture or font": r"<(?:source|picture)\b|@font-face|new\s+Image\s*\(",
             "a connection other than a request to this server": r"\b(?:WebSocket|EventSource|sendBeacon|importScripts|Worker)\b",
         }
         for name, text in sources.items():

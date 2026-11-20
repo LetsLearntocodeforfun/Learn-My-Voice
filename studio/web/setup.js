@@ -26,7 +26,7 @@ Object.assign(I18N.zh, {
   cr_never_hint: '这些话只要出现在脚本的口播台词里就会标红，不分大小写。这一条靠的是规则，不是 AI，你随时可以自己试。现场原声、花字、标题和正文目前不检查。',
   cr_save: '保存并继续', err_name_required: '请先填一下怎么称呼你。',
   mt_scripts: '上传脚本文件', mt_scripts_d: '.txt、.md、.docx', mt_subs: '上传字幕文件', mt_subs_d: '.srt、.vtt（剪映识别字幕后导出）',
-  mt_video: '上传视频或录音', mt_video_d: '在这台电脑上转写，不会上传',
+  mt_video: '导入小红书视频 / 录音', mt_video_d: '.mp4、.mov、.m4a、.mp3 · 预览画面，提取口播、语速与花字',
   mt_paste: '或者粘贴一篇脚本', mt_paste_ph: '把脚本内容粘贴到这里', mt_paste_add: '加入',
   mt_none: '还没有素材。', mt_kind_script: '脚本', mt_kind_subtitle: '字幕', mt_kind_video: '视频',
   mt_units: '{n} 字', mt_timed: '实录 {d} · {r} 字/分钟', mt_sponsored: '商单', mt_metrics_later: '播放、点赞这些数据可以稍后到「素材库」里填。',
@@ -92,7 +92,31 @@ Object.assign(I18N.zh, {
   ed_none: '你还没有改动 AI 的初稿。', ed_remember: '记住这个改法', ed_remembered: '已记住', ed_deleted: '（整句删掉了）', ed_added: '（你新加的）',
   ed_ai_text: '你采用的 AI 建议', ed_ai_note: '这句是 AI 写的，不算你的改法',
   job_queued: '排队中', job_starting: '开始', job_environment: '准备运行环境', job_packages: '下载组件', job_model: '下载语音识别模型',
-  job_check: '试转一段，确认能用', job_audio: '取出声音', job_transcribe: '正在这台电脑上转写', job_done: '完成',
+  job_check: '试转一段，确认能用', job_audio: '取出声音', job_transcribe: '正在这台电脑上转写',
+  job_ai_upload: '正在读取视频与准备分析', job_ai_analyze: 'AI 正在识别口播、语气与屏幕花字', job_done: '完成',
+  vi_drop_hint: '也可以直接把小红书视频（.mp4 / .mov）、剪映字幕（.srt）或脚本文件拖到这里',
+  vi_caption_ph: '小红书标题 / 正文话题备注（可不填，有助于识别专有名词和花字）',
+  vi_btn_local: '在本机离线转写口播与语速',
+  vi_btn_gemini: '✨ 用 Gemini 提取口播、语气与屏幕花字',
+  vi_btn_openai: '✨ 用 OpenAI Whisper 识别口播与语速',
+  vi_btn_manual: '✨ 用 ChatGPT / Gemini 网页版提取口播与花字（复制粘贴）',
+  vi_btn_install_local: '下载本机离线转写组件（约 2 GB）',
+  vi_privacy_note: '隐私说明：上方画面预览与关键帧只在本窗口生成，不上传任何内容；离线转写全程不联网；Gemini / OpenAI 按钮会把这条音视频发给你在「设置」连接的接口，完成后立即删除本机暂存副本；复制粘贴模式由你自己在网页里附上视频。',
+  vi_probing: '正在读取视频时长与画面预览…',
+  vi_keyframes: '关键帧预览（点击可跳转画面）',
+  vi_tone_tag: '语气与状态',
+  vi_flower_label: '提取到的屏幕花字：',
+  vi_mb_title: '用 Gemini / ChatGPT 提取视频口播、语气与花字',
+  vi_mb_intro: '不需要 API 密钥，也不用下载 2 GB 本地组件。在 Gemini（推荐，可直接看完整视频画面与花字）或 ChatGPT 里附上「{name}」，粘贴下面的提示词，再把返回的 JSON 粘贴回来即可。',
+  vi_mb_step1: '第一步：复制提示词，在 Gemini 或 ChatGPT 里附上视频「{name}」一起发送',
+  mb_open_gemini: '打开 Gemini ↗',
+  lib_voice_title: '声音与语气档案',
+  lib_voice_counts: '已确认非商单素材 {n} 篇（脚本 {s} · 视频/字幕 {v}），共 {c} 口气。',
+  lib_voice_unreviewed: '还有 {n} 条视频转写待确认：在下方对照视频核对文字（重点看句尾语气词 啦/嘛/哈）并点「我看过了，文字没问题」后，就会纳入你的声音档案学习。',
+  lib_voice_create: '✨ 从这些素材生成我的声音档案',
+  lib_voice_update: '✨ 用最新素材更新声音档案',
+  lib_voice_review: '查看并确认待采用的声音档案提议 →',
+  lib_voice_open: '查看当前声音档案',
 });
 Object.assign(I18N.en, {
   nav_start: 'Start', st_title: 'Getting started', st_sub: 'Five steps to make the studio {@names} own. What each step did, and what it was based on, stays in view.',
@@ -117,7 +141,7 @@ Object.assign(I18N.en, {
   cr_never_hint: 'A script is flagged in red whenever one of these appears in a spoken line, whatever the letter case. This is a rule, not AI, so it can be tested at any time. Live clips, on-screen text, titles and captions are not checked yet.',
   cr_save: 'Save and continue', err_name_required: 'Enter a name first.',
   mt_scripts: 'Upload script files', mt_scripts_d: '.txt, .md, .docx', mt_subs: 'Upload subtitle files', mt_subs_d: '.srt, .vtt (exported after auto-captions in 剪映 / CapCut)',
-  mt_video: 'Upload video or audio', mt_video_d: 'Transcribed on this computer, never uploaded',
+  mt_video: 'Ingest RedNote video or audio', mt_video_d: '.mp4, .mov, .m4a, .mp3 · Preview & extract speech, rate, tone & 花字',
   mt_paste: 'Or paste a script', mt_paste_ph: 'Paste the script here', mt_paste_add: 'Add',
   mt_none: 'No material yet.', mt_kind_script: 'Script', mt_kind_subtitle: 'Subtitles', mt_kind_video: 'Video',
   mt_units: '{n} units', mt_timed: '{d} recorded · {r} units/min', mt_sponsored: 'Sponsored', mt_metrics_later: 'Views and likes can be added later in the Library.',
@@ -185,7 +209,32 @@ Object.assign(I18N.en, {
   ed_none: 'The AI\'s draft has not been changed yet.', ed_remember: 'Remember this change', ed_remembered: 'Remembered', ed_deleted: '(line deleted)', ed_added: '(a line added by hand)',
   ed_ai_text: 'An AI proposal that was taken', ed_ai_note: 'Written by an AI, so not remembered as {@names} wording',
   job_queued: 'waiting', job_starting: 'starting', job_environment: 'preparing the environment', job_packages: 'downloading components', job_model: 'downloading the speech model',
-  job_check: 'running a test transcription', job_audio: 'extracting the audio', job_transcribe: 'transcribing on this computer', job_done: 'done',
+  job_check: 'running a test transcription', job_audio: 'extracting the audio', job_transcribe: 'transcribing on this computer',
+  job_ai_upload: 'reading media for analysis', job_ai_analyze: 'analyzing speech, tone & on-screen text', job_done: 'done',
+  vi_drop_hint: 'Or drag & drop RedNote videos (.mp4 / .mov), subtitles (.srt), or script files anywhere here',
+  vi_caption_ph: 'Optional RedNote caption / hashtags note (helps recognize brand names & 花字)',
+  vi_btn_local: 'Transcribe offline on this Mac',
+  vi_btn_gemini: '✨ Analyze speech, tone & 花字 with Gemini',
+  vi_btn_openai: '✨ Transcribe speech & rate with OpenAI Whisper',
+  vi_btn_manual: '✨ Extract speech, tone & 花字 via ChatGPT / Gemini (copy & paste)',
+  vi_btn_install_local: 'Install offline transcriber (~2 GB)',
+  vi_privacy_note: 'Privacy: video preview & keyframes are rendered locally in this window without uploading; offline transcription never uses the network; Gemini / OpenAI sends this file to your connected key and deletes the local temp copy right after; copy & paste lets you attach the video yourself.',
+  vi_probing: 'Reading duration & video keyframes…',
+  vi_keyframes: 'Keyframes (click to seek)',
+  vi_tone_tag: 'Vocal tone',
+  vi_flower_label: 'Extracted on-screen 花字:',
+  vi_mb_title: 'Extract speech, tone & 花字 with Gemini or ChatGPT',
+  vi_mb_intro: 'Works with zero API key and zero 2 GB install. Attach "{name}" in Gemini (recommended for full video + 花字) or ChatGPT, send the prompt below, and paste the JSON reply back.',
+  vi_mb_step1: 'Step 1: copy the prompt, attach "{name}" in Gemini or ChatGPT, and send',
+  mb_open_gemini: 'Open Gemini ↗',
+  lib_voice_title: 'Tone & Voice Profile',
+  lib_voice_counts: 'Confirmed non-sponsored material: {n} items ({s} scripts · {v} videos/subtitles), {c} breaths.',
+  lib_voice_unreviewed: '{n} video transcripts are waiting for confirmation below: check particles against the video and click confirm so they count toward {@names} voice profile.',
+  lib_voice_unreviewed_one: '1 video transcript is waiting for confirmation below: check particles against the video and click confirm so it counts toward {@names} voice profile.',
+  lib_voice_create: '✨ Create Voice Profile from Material',
+  lib_voice_update: '✨ Update Voice Profile from Material',
+  lib_voice_review: 'Review & accept pending voice profile proposal →',
+  lib_voice_open: 'Open active voice profile',
 });
 
 const SETUP_STEPS = ['creator', 'material', 'voice', 'script', 'grow'];
@@ -202,11 +251,12 @@ const stageText = (stage) => (I18N.zh['job_' + stage] !== undefined ? t('job_' +
 
 function stopSetupPolling() { clearInterval(setupUi.poll); setupUi.poll = 0; }
 
-/* Calls `fn` on a timer until it returns true, the page is left, or the step is repainted. */
-function pollSetup(fn, ms) {
+/* Calls `fn` on a timer until it returns true, the page is left, or the view is repainted. */
+function pollSetup(fn, ms, allowedHashes) {
   stopSetupPolling();
+  const hashes = allowedHashes || ['#/start'];
   const timer = setInterval(async () => {
-    if (location.hash !== '#/start' || setupUi.poll !== timer) return clearInterval(timer);
+    if (!hashes.includes(location.hash) || setupUi.poll !== timer) return clearInterval(timer);
     try { if (await fn()) { clearInterval(timer); if (setupUi.poll === timer) setupUi.poll = 0; } } catch (e) { /* try again on the next tick */ }
   }, ms || 1500);
   setupUi.poll = timer;
@@ -294,8 +344,481 @@ async function paintStepCreator(el) {
   draw();
 }
 
-/* ---------- step 2: material ---------- */
-const materialJobs = [];   // files being read or transcribed during this visit: { name, state, stage, detail, jobId }
+/* ---------- step 2 & library: visual RedNote video ingestion & material ---------- */
+const stagedVideos = [];          // staged RedNote video/audio cards with local blob preview & keyframes
+const videoPreviews = new Map();  // sampleId -> { url, frames, duration, isVideo, name } for side-by-side review
+let stagedSeq = 0;
+
+const DEFAULT_MEDIA_EXTS = ['mp4', 'mov', 'm4v', 'm4a', 'mp3', 'wav', 'aac', 'aif', 'aiff', 'caf', 'flac', '3gp'];
+const VIDEO_FILE_RE = /\.(mp4|mov|m4v|3gp)$/i;
+
+function fmtClock(sec) {
+  const s = Math.max(0, Math.round(Number(sec) || 0));
+  const m = Math.floor(s / 60);
+  const r = s % 60;
+  return `${String(m).padStart(2, '0')}:${String(r).padStart(2, '0')}`;
+}
+
+function fmtBytes(bytes) {
+  const n = Number(bytes) || 0;
+  if (n >= 1024 * 1024) return (n / (1024 * 1024)).toFixed(1) + ' MB';
+  return Math.max(1, Math.round(n / 1024)) + ' KB';
+}
+
+function isPreviewUrlInUse(url) {
+  if (!url) return false;
+  if (stagedVideos.some((x) => x.preview && x.preview.url === url)) return true;
+  for (const p of videoPreviews.values()) if (p && p.url === url) return true;
+  return false;
+}
+
+function rememberVideoPreview(sampleId, preview) {
+  if (!sampleId || !preview || !preview.url) return;
+  videoPreviews.set(sampleId, preview);
+  while (videoPreviews.size > 20) {
+    const oldest = videoPreviews.keys().next().value;
+    const oldPrev = videoPreviews.get(oldest);
+    videoPreviews.delete(oldest);
+    if (oldPrev && oldPrev.url && !isPreviewUrlInUse(oldPrev.url)) {
+      try { URL.revokeObjectURL(oldPrev.url); } catch (e) { /* ignore */ }
+    }
+  }
+}
+
+function forgetVideoPreview(sampleId) {
+  const prev = videoPreviews.get(sampleId);
+  videoPreviews.delete(sampleId);
+  if (prev && prev.url && !isPreviewUrlInUse(prev.url)) {
+    try { URL.revokeObjectURL(prev.url); } catch (e) { /* ignore */ }
+  }
+}
+
+function dismissStagedVideo(uid) {
+  const idx = stagedVideos.findIndex((x) => x.uid === uid);
+  if (idx === -1) return;
+  const [removed] = stagedVideos.splice(idx, 1);
+  if (removed && removed.preview && removed.preview.url && !isPreviewUrlInUse(removed.preview.url)) {
+    try { URL.revokeObjectURL(removed.preview.url); } catch (e) { /* ignore */ }
+  }
+}
+
+/* Probes duration and 4 visual keyframes locally in-browser without uploading a single byte. */
+function probeMediaPreview(item) {
+  const preview = item.preview;
+  if (!preview || !preview.url) return;
+  const el = document.createElement(preview.isVideo ? 'video' : 'audio');
+  el.preload = 'metadata';
+  el.muted = true;
+  el.playsInline = true;
+  let settled = false;
+  const finish = () => {
+    if (settled) return;
+    settled = true;
+    preview.probing = false;
+    try { el.removeAttribute('src'); el.load(); } catch (e) { /* ignore */ }
+    refreshStagedCardDom(item);
+  };
+  const guard = setTimeout(finish, 4000);
+  el.onerror = () => { clearTimeout(guard); finish(); };
+  el.onloadedmetadata = async () => {
+    if (Number.isFinite(el.duration) && el.duration > 0) preview.duration = el.duration;
+    if (!preview.isVideo || !el.videoWidth || !el.videoHeight || !(preview.duration > 0)) {
+      clearTimeout(guard);
+      finish();
+      return;
+    }
+    const w = Math.min(160, el.videoWidth);
+    const h = Math.min(240, Math.max(90, Math.round((w * el.videoHeight) / el.videoWidth)));
+    const canvas = document.createElement('canvas');
+    canvas.width = w;
+    canvas.height = h;
+    const ctx = canvas.getContext('2d');
+    const marks = [0.12, 0.37, 0.62, 0.86];
+    for (const ratio of marks) {
+      if (settled) break;
+      const target = Math.min(Math.max(preview.duration * ratio, 0.05), Math.max(preview.duration - 0.05, 0.05));
+      const ok = await new Promise((resolve) => {
+        let timer = setTimeout(() => resolve(false), 850);
+        el.onseeked = () => { clearTimeout(timer); resolve(true); };
+        try { el.currentTime = target; } catch (e) { clearTimeout(timer); resolve(false); }
+      });
+      if (ok && ctx) {
+        try {
+          ctx.drawImage(el, 0, 0, w, h);
+          preview.frames.push({ time: Math.round(target), dataUrl: canvas.toDataURL('image/jpeg', 0.7) });
+        } catch (e) { break; }
+      }
+    }
+    clearTimeout(guard);
+    finish();
+  };
+  el.src = preview.url;
+}
+
+function keyframesStripHtml(frames) {
+  if (!frames || !frames.length) return '';
+  return `<div class="sv-frames" aria-label="${esc(t('vi_keyframes'))}">${frames.map((f) =>
+    `<button type="button" class="sv-frame" data-seek="${esc(f.time)}" title="${esc(fmtClock(f.time))}">` +
+    `<img src="${esc(f.dataUrl)}" alt=""><span>${esc(fmtClock(f.time))}</span></button>`).join('')}</div>`;
+}
+
+function refreshStagedCardDom(item) {
+  const card = document.querySelector(`.sv-card[data-uid="${item.uid}"]`);
+  if (!card) return;
+  const metaEl = card.querySelector('[data-sv-meta]');
+  if (metaEl) {
+    const dur = item.preview.duration > 0 ? `${fmtClock(item.preview.duration)} · ` : '';
+    metaEl.textContent = `${dur}${fmtBytes(item.size)}`;
+  }
+  const slot = card.querySelector('[data-sv-frames]');
+  if (slot) slot.innerHTML = keyframesStripHtml(item.preview.frames);
+}
+
+function stageMediaFiles(files, extensions, repaint) {
+  const allowed = (extensions && extensions.length ? extensions : DEFAULT_MEDIA_EXTS).map((x) => x.toLowerCase());
+  let added = 0;
+  for (const file of files) {
+    const ext = (file.name.match(/\.([^.]+)$/) || ['', ''])[1].toLowerCase();
+    if (!allowed.includes(ext)) {
+      toast(tf('mt_bad_media', { name: file.name }));
+      continue;
+    }
+    let url = '';
+    try { url = URL.createObjectURL(file); } catch (e) { url = ''; }
+    const item = {
+      uid: 'sv-' + (++stagedSeq),
+      file,
+      name: file.name,
+      size: file.size || 0,
+      title: file.name.replace(/\.[^.]+$/, ''),
+      caption: '',
+      isSponsored: false,
+      preview: { url, frames: [], duration: 0, isVideo: VIDEO_FILE_RE.test(file.name), name: file.name, probing: !!url },
+      state: 'ready',
+      stage: '',
+      detail: '',
+      jobId: null,
+    };
+    stagedVideos.unshift(item);
+    added += 1;
+    if (url) probeMediaPreview(item);
+  }
+  if (added && repaint) repaint();
+}
+
+function stagedVideoCardHtml(item, tr) {
+  const p = item.preview || {};
+  const mediaTag = p.url
+    ? (p.isVideo
+      ? `<video class="sv-player" controls preload="metadata" muted playsinline src="${esc(p.url)}"></video>`
+      : `<audio class="sv-audio" controls preload="metadata" src="${esc(p.url)}"></audio>`)
+    : '';
+  const dur = p.duration > 0 ? `${fmtClock(p.duration)} · ` : (p.probing ? `${t('vi_probing')} · ` : '');
+  const localReady = !!(tr && tr.supported && tr.installed && tr.model_ready);
+  const aiCapable = !!(tr && tr.ai_video_capable);
+  const aiProvider = (tr && tr.ai_video_provider) || '';
+  let primary = 'manual';
+  if (aiCapable && aiProvider === 'gemini') primary = 'ai';
+  else if (localReady) primary = 'local';
+  else if (aiCapable) primary = 'ai';
+
+  const working = item.state === 'uploading' || item.state === 'working';
+  const errBanner = item.state === 'failed'
+    ? `<div class="banner" style="margin:8px 0">${esc(t('mt_failed') + (item.detail || ''))}</div>` : '';
+
+  let controlsHtml;
+  if (working) {
+    const statusLabel = item.state === 'uploading' ? t('mt_uploading') : stageText(item.stage);
+    controlsHtml = `<div class="dv-progress" style="margin-top:10px"><span class="dv-spin"></span><span>${esc(statusLabel)}</span></div>`;
+  } else {
+    const installBtn = tr && tr.supported && !localReady && !(tr.job && tr.job.status === 'running')
+      ? `<button type="button" class="btn" data-sv-act="install-local">${esc(t('vi_btn_install_local'))}</button>` : '';
+    controlsHtml = `${errBanner}<div class="sv-actions">
+        ${aiCapable ? `<button type="button" class="btn ${primary === 'ai' ? 'primary' : ''}" data-sv-act="ai">${esc(t(aiProvider === 'gemini' ? 'vi_btn_gemini' : 'vi_btn_openai'))}</button>` : ''}
+        ${localReady ? `<button type="button" class="btn ${primary === 'local' ? 'primary' : ''}" data-sv-act="local">${esc(t('vi_btn_local'))}</button>` : ''}
+        <button type="button" class="btn ${primary === 'manual' ? 'primary' : ''}" data-sv-act="manual">${esc(t('vi_btn_manual'))}</button>
+        ${installBtn}
+      </div>
+      <p class="hint sv-privacy">${esc(t('vi_privacy_note'))}</p>`;
+  }
+
+  return `<div class="card sv-card" data-uid="${esc(item.uid)}">
+    <div class="sv-grid">
+      <div class="sv-media">${mediaTag}<div data-sv-frames>${keyframesStripHtml(p.frames)}</div></div>
+      <div class="sv-body">
+        <div class="row">
+          <span class="tag ok">${esc(t('mt_kind_video'))}</span>
+          <span class="meta" data-sv-meta>${esc(dur + fmtBytes(item.size))}</span>
+          <span class="spacer"></span>
+          <label class="check"><input type="checkbox" data-sv-sponsored ${item.isSponsored ? 'checked' : ''} ${working ? 'disabled' : ''}> ${esc(t('mt_sponsored'))}</label>
+          ${working ? '' : `<button type="button" class="btn ghost" data-sv-dismiss aria-label="${esc(t('close'))}">✕</button>`}
+        </div>
+        <input type="text" class="sv-input" data-sv-title value="${esc(item.title)}" placeholder="${esc(t('title_ph'))}" ${working ? 'disabled' : ''}>
+        <input type="text" class="sv-input" data-sv-caption value="${esc(item.caption)}" placeholder="${esc(t('vi_caption_ph'))}" ${working ? 'disabled' : ''}>
+        ${controlsHtml}
+      </div>
+    </div>
+  </div>`;
+}
+
+async function runStagedVideoJob(item, useAi, repaint) {
+  item.state = 'uploading';
+  item.stage = '';
+  item.detail = '';
+  if (repaint) repaint();
+  try {
+    const res = await fetch('/api/uploads?name=' + encodeURIComponent(item.name), {
+      method: 'PUT',
+      headers: studioHeaders({ 'Content-Type': 'application/octet-stream' }),
+      body: item.file,
+    });
+    const up = await res.json().catch(() => ({}));
+    if (!res.ok) throw Object.assign(new Error(up.message || up.error || 'upload'), { message_zh: up.message_zh });
+    const endpoint = useAi ? '/api/videos/ai' : '/api/videos';
+    const body = {
+      upload_id: up.upload_id,
+      title: (item.title || '').trim() || item.name.replace(/\.[^.]+$/, ''),
+      is_sponsored: !!item.isSponsored,
+    };
+    if (useAi) {
+      if ((item.caption || '').trim()) body.caption = item.caption.trim();
+      if (item.preview && item.preview.duration > 0) body.duration_sec = item.preview.duration;
+    }
+    const { job } = await api('POST', endpoint, body);
+    item.jobId = job.id;
+    item.state = 'working';
+    item.stage = job.stage;
+  } catch (e) {
+    item.state = 'failed';
+    item.detail = failText(e) || e.detail || e.message || '';
+  }
+  if (repaint) repaint();
+}
+
+async function runManualStagedVideo(item, repaint) {
+  const payload = {
+    title: (item.title || '').trim() || item.name.replace(/\.[^.]+$/, ''),
+    caption: (item.caption || '').trim(),
+    is_sponsored: !!item.isSponsored,
+    source_name: item.name,
+  };
+  if (item.preview && item.preview.duration > 0) payload.duration_sec = Math.round(item.preview.duration * 10) / 10;
+  try {
+    const out = await manualBridge('video_ingest', payload, {
+      title: t('vi_mb_title'),
+      intro: tf('vi_mb_intro', { name: item.name }),
+      step1: tf('vi_mb_step1', { name: item.name }),
+    });
+    if (!out || !out.sample) return;
+    rememberVideoPreview(out.sample.id, item.preview);
+    const idx = stagedVideos.indexOf(item);
+    if (idx !== -1) stagedVideos.splice(idx, 1);
+    toast(tf('mt_added_n', { n: 1 }));
+    if (repaint) repaint();
+  } catch (e) {
+    showError(e);
+  }
+}
+
+function visualIngestHtml(x) {
+  const vis = x && x.timing && x.timing.visual_ingest;
+  if (!vis || typeof vis !== 'object') return '';
+  const energy = typeof vis.vocal_energy === 'string' && vis.vocal_energy.trim()
+    ? `<div class="vi-line"><span class="tag ok">${esc(t('vi_tone_tag'))}</span><span>${esc(vis.vocal_energy)}</span></div>` : '';
+  const flowers = Array.isArray(vis.onscreen_flower_texts) && vis.onscreen_flower_texts.length
+    ? `<div class="vi-line"><span class="meta">${esc(t('vi_flower_label'))}</span>${vis.onscreen_flower_texts.slice(0, 14).map((f) => `<span class="tag">${esc(f)}</span>`).join('')}</div>` : '';
+  if (!energy && !flowers) return '';
+  return `<div class="vi-notes">${energy}${flowers}</div>`;
+}
+
+function sessionVideoReviewHtml(sampleId) {
+  const p = videoPreviews.get(sampleId);
+  if (!p || !p.url) return '';
+  const player = p.isVideo
+    ? `<video class="sv-player" controls preload="metadata" muted playsinline src="${esc(p.url)}"></video>`
+    : `<audio class="sv-audio" controls preload="metadata" src="${esc(p.url)}"></audio>`;
+  return `<div class="vi-review-media">${player}${keyframesStripHtml(p.frames)}</div>`;
+}
+
+function materialAddersHtml(tr, prefix) {
+  const extensions = ((tr && tr.upload && tr.upload.extensions) || DEFAULT_MEDIA_EXTS)
+    .map((x) => String(x).replace(/^\./, '').toLowerCase());
+  const stagedHtml = stagedVideos.map((item) => stagedVideoCardHtml(item, tr)).join('');
+  return `<div class="adders-drop" data-drop-zone="${esc(prefix)}">
+      <div class="adders">
+        <label class="adder adder-video" for="${esc(prefix)}-video"><b>${esc(t('mt_video'))}</b><small>${esc(t('mt_video_d'))}</small></label>
+        <input type="file" id="${esc(prefix)}-video" multiple accept="${esc(extensions.map((x) => '.' + x).join(','))}" hidden>
+        <label class="adder" for="${esc(prefix)}-subs"><b>${esc(t('mt_subs'))}</b><small>${esc(t('mt_subs_d'))}</small></label>
+        <input type="file" id="${esc(prefix)}-subs" multiple accept=".srt,.vtt" hidden>
+        <label class="adder" for="${esc(prefix)}-scripts"><b>${esc(t('mt_scripts'))}</b><small>${esc(t('mt_scripts_d'))}</small></label>
+        <input type="file" id="${esc(prefix)}-scripts" multiple accept=".txt,.md,.docx,text/plain" hidden>
+      </div>
+      <p class="hint adders-drop-hint">${esc(t('vi_drop_hint'))}</p>
+    </div>
+    ${stagedHtml ? `<div class="sv-list" data-sv-list="${esc(prefix)}">${stagedHtml}</div>` : ''}`;
+}
+
+async function importSubtitleFiles(files) {
+  let added = 0;
+  for (const file of files) {
+    try {
+      await api('POST', '/api/samples', { title: file.name.replace(/\.[^.]+$/, ''), subtitle_text: await readTextFile(file), source_name: file.name });
+      added += 1;
+    } catch (err) { toast(tf('mt_bad_subs', { name: file.name })); }
+  }
+  return added;
+}
+
+function bindSeekClicks(container) {
+  if (!container) return;
+  container.addEventListener('click', (e) => {
+    const seekBtn = e.target.closest('[data-seek]');
+    if (!seekBtn) return;
+    const holder = seekBtn.closest('.sv-media, .vi-review-media');
+    const video = holder && holder.querySelector('video');
+    if (video) {
+      try { video.currentTime = Number(seekBtn.dataset.seek) || 0; } catch (err) { /* ignore */ }
+    }
+  });
+}
+
+function bindMaterialAdders(root, tr, prefix, repaint, allowedHashes) {
+  const extensions = ((tr && tr.upload && tr.upload.extensions) || DEFAULT_MEDIA_EXTS)
+    .map((x) => String(x).replace(/^\./, '').toLowerCase());
+  const $scripts = document.getElementById(prefix + '-scripts');
+  const $subs = document.getElementById(prefix + '-subs');
+  const $video = document.getElementById(prefix + '-video');
+
+  if ($scripts) {
+    $scripts.onchange = async (e) => {
+      const added = await importFiles(Array.from(e.target.files));
+      if (added) toast(tf('mt_added_n', { n: added }));
+      repaint();
+    };
+  }
+  if ($subs) {
+    $subs.onchange = async (e) => {
+      const added = await importSubtitleFiles(Array.from(e.target.files));
+      if (added) toast(tf('mt_added_n', { n: added }));
+      repaint();
+    };
+  }
+  if ($video) {
+    $video.onchange = (e) => {
+      stageMediaFiles(Array.from(e.target.files), extensions, repaint);
+      e.target.value = '';
+    };
+  }
+
+  const dropZone = root.querySelector(`[data-drop-zone="${prefix}"]`);
+  if (dropZone) {
+    dropZone.ondragover = (e) => { e.preventDefault(); dropZone.classList.add('drag-on'); };
+    dropZone.ondragleave = (e) => { if (!dropZone.contains(e.relatedTarget)) dropZone.classList.remove('drag-on'); };
+    dropZone.ondrop = async (e) => {
+      e.preventDefault();
+      dropZone.classList.remove('drag-on');
+      const dropped = Array.from((e.dataTransfer && e.dataTransfer.files) || []);
+      if (!dropped.length) return;
+      const media = [];
+      const subs = [];
+      const scripts = [];
+      for (const f of dropped) {
+        const ext = (f.name.match(/\.([^.]+)$/) || ['', ''])[1].toLowerCase();
+        if (extensions.includes(ext)) media.push(f);
+        else if (ext === 'srt' || ext === 'vtt') subs.push(f);
+        else if (['txt', 'md', 'docx'].includes(ext)) scripts.push(f);
+        else toast(tf('mt_bad_media', { name: f.name }));
+      }
+      let count = 0;
+      if (scripts.length) count += await importFiles(scripts);
+      if (subs.length) count += await importSubtitleFiles(subs);
+      if (count) toast(tf('mt_added_n', { n: count }));
+      if (media.length) stageMediaFiles(media, extensions, repaint);
+      else if (count) repaint();
+    };
+  }
+
+  const svList = root.querySelector(`[data-sv-list="${prefix}"]`);
+  if (svList) {
+    bindSeekClicks(svList);
+    svList.oninput = (e) => {
+      const card = e.target.closest('.sv-card');
+      if (!card) return;
+      const item = stagedVideos.find((x) => x.uid === card.dataset.uid);
+      if (!item) return;
+      if (e.target.dataset.svTitle !== undefined) item.title = e.target.value;
+      else if (e.target.dataset.svCaption !== undefined) item.caption = e.target.value;
+    };
+    svList.onchange = (e) => {
+      const card = e.target.closest('.sv-card');
+      if (!card || e.target.dataset.svSponsored === undefined) return;
+      const item = stagedVideos.find((x) => x.uid === card.dataset.uid);
+      if (item) item.isSponsored = e.target.checked;
+    };
+    svList.onclick = async (e) => {
+      const card = e.target.closest('.sv-card');
+      if (!card) return;
+      const item = stagedVideos.find((x) => x.uid === card.dataset.uid);
+      if (!item) return;
+      if (e.target.closest('[data-sv-dismiss]')) {
+        dismissStagedVideo(item.uid);
+        repaint();
+        return;
+      }
+      const actBtn = e.target.closest('[data-sv-act]');
+      if (!actBtn) return;
+      const act = actBtn.dataset.svAct;
+      if (act === 'local') await runStagedVideoJob(item, false, repaint);
+      else if (act === 'ai') await runStagedVideoJob(item, true, repaint);
+      else if (act === 'manual') await runManualStagedVideo(item, repaint);
+      else if (act === 'install-local') {
+        try { await api('POST', '/api/transcriber/install', {}); repaint(); } catch (err) { showError(err); }
+      }
+    };
+  }
+
+  /* Poll running install or video ingestion jobs on whichever material view is open. */
+  const installing = tr && tr.job && tr.job.status === 'running';
+  const working = stagedVideos.some((j) => j.state === 'working');
+  if (installing) {
+    pollSetup(async () => {
+      const now = await api('GET', '/api/transcriber');
+      repaint();
+      return !(now.job && now.job.status === 'running');
+    }, 2000, allowedHashes);
+  } else if (working) {
+    const checkWorking = async () => {
+      let changed = false;
+      for (const j of stagedVideos.filter((x) => x.jobId && x.state === 'working')) {
+        const { job } = await api('GET', '/api/jobs/' + j.jobId);
+        const state = job.status === 'done' ? 'done' : (job.status === 'failed' ? 'failed' : 'working');
+        if (state !== j.state || job.stage !== j.stage) {
+          j.state = state;
+          j.stage = job.stage;
+          j.detail = failText(job.error);
+          if (state === 'done' && job.result && job.result.sample_id) {
+            rememberVideoPreview(job.result.sample_id, j.preview);
+          }
+          changed = true;
+        }
+      }
+      if (changed) {
+        let finished = 0;
+        for (let i = stagedVideos.length - 1; i >= 0; i--) {
+          if (stagedVideos[i].state === 'done') {
+            stagedVideos.splice(i, 1);
+            finished += 1;
+          }
+        }
+        if (finished) toast(tf('mt_added_n', { n: finished }));
+        repaint();
+      }
+      return !stagedVideos.some((x) => x.state === 'working');
+    };
+    setTimeout(() => { checkWorking().catch(() => {}); }, 150);
+    pollSetup(checkWorking, 900, allowedHashes);
+  }
+}
 
 function sufficiencyNote(m) {
   if (m.organic < 3) return `<div class="banner">${esc(t('mt_thin'))}</div>`;
@@ -332,7 +855,7 @@ function reviewNoteHtml(x, withButton) {
   if (poWaits(x)) return poReviewNoteHtml(x, withButton);     // a posted script, not a transcript: posted.js says why it waits
   const n = x.timing && x.timing.unclear_dropped;
   const unclear = n ? ' ' + tf(countKey('rn_unclear', n), { n }) : '';
-  const button = withButton === false ? '' : `<div class="row" style="margin-top:8px"><button type="button" class="btn" data-confirm>${esc(t('rn_confirm'))}</button></div>`;
+  const button = withButton === false ? '' : `<div class="row" style="margin-top:8px"><button type="button" class="btn primary" data-confirm>${esc(t('rn_confirm'))}</button></div>`;
   return `<div class="banner review-note"><b>${esc(t('rn_title'))}</b> ${esc(t('rn_body') + unclear)}${button}</div>`;
 }
 
@@ -340,37 +863,22 @@ function materialRowHtml(x) {
   const kind = ['script', 'subtitle', 'video'].includes(x.kind) ? x.kind : 'script';
   const timed = x.timing && x.timing.speaking_rate_cpm
     ? ` · ${tf('mt_timed', { d: fmtSpan(x.timing.spoken_sec), r: x.timing.speaking_rate_cpm })}` : '';
+  const mediaSide = x.needs_review && !poWaits(x) ? sessionVideoReviewHtml(x.id) : '';
   const review = x.needs_review ? `<div class="mat-review">${reviewNoteHtml(x, false)}
-      <textarea data-review-text rows="5">${esc(x.text)}</textarea>
-      <div class="row" style="margin-top:8px"><button type="button" class="btn primary" data-confirm>${esc(poConfirmLabel(x))}</button></div></div>` : '';
+      <div class="vi-review-split">${mediaSide}<div class="vi-review-text"><textarea data-review-text rows="5">${esc(x.text)}</textarea>
+      <div class="row" style="margin-top:8px"><button type="button" class="btn primary" data-confirm>${esc(poConfirmLabel(x))}</button></div></div></div></div>` : '';
   return `<div class="mat-wrap" data-id="${esc(x.id)}"><div class="mat">
     <span class="tag ${kind === 'script' ? '' : 'ok'}">${esc(t('mt_kind_' + kind))}</span>${poRowTag(x)}
     <span class="mat-title">${esc(x.title)}<small>${esc(tf('mt_units', { n: spokenUnits(x.text) }) + timed)}</small></span>
     <label class="check"><input type="checkbox" data-sponsored ${x.is_sponsored ? 'checked' : ''}> ${esc(t('mt_sponsored'))}</label>
-    <button class="btn ghost" data-del aria-label="${esc(t('delete'))}">✕</button></div>${review}</div>`;
-}
-
-function jobRowHtml(j, i) {
-  const text = j.state === 'failed' ? t('mt_failed') + (j.detail || '') : (j.state === 'uploading' ? t('mt_uploading') : stageText(j.stage));
-  return `<div class="mat job ${j.state}"><span class="tag">${esc(t('mt_kind_video'))}</span>
-    <span class="mat-title">${esc(j.name)}<small>${esc(text)}</small></span>
-    ${j.state === 'failed' ? `<button class="btn ghost" data-dismiss="${i}" aria-label="${esc(t('close'))}">✕</button>` : ''}</div>`;
+    <button class="btn ghost" data-del aria-label="${esc(t('delete'))}">✕</button></div>${visualIngestHtml(x)}${review}</div>`;
 }
 
 async function paintStepMaterial(el, s) {
   const [lib, tr] = await Promise.all([api('GET', '/api/samples'), api('GET', '/api/transcriber')]);
   const ready = tr.supported && tr.installed && tr.model_ready;
-  const extensions = ((tr.upload && tr.upload.extensions) || ['mp4', 'mov', 'm4v', 'm4a', 'mp3', 'wav']).map((x) => String(x).replace(/^\./, '').toLowerCase());
   const unreviewed = s.material.unreviewed || 0;
-  const jobRows = materialJobs.map(jobRowHtml).join('');
-  el.innerHTML = `<div class="adders">
-      <label class="adder" for="mt-scripts"><b>${esc(t('mt_scripts'))}</b><small>${esc(t('mt_scripts_d'))}</small></label>
-      <input type="file" id="mt-scripts" multiple accept=".txt,.md,.docx,text/plain" hidden>
-      <label class="adder" for="mt-subs"><b>${esc(t('mt_subs'))}</b><small>${esc(t('mt_subs_d'))}</small></label>
-      <input type="file" id="mt-subs" multiple accept=".srt,.vtt" hidden>
-      <label class="adder ${ready ? '' : 'off'}" for="mt-video"><b>${esc(t('mt_video'))}</b><small>${esc(t('mt_video_d'))}</small></label>
-      <input type="file" id="mt-video" multiple accept="${esc(extensions.map((x) => '.' + x).join(','))}" hidden ${ready ? '' : 'disabled'}>
-    </div>
+  el.innerHTML = `${materialAddersHtml(tr, 'mt')}
     ${transcriberHtml(tr)}
     <details class="card soft"><summary>${esc(t('mt_paste'))}</summary>
       <textarea id="mt-paste" rows="4" placeholder="${esc(t('mt_paste_ph'))}"></textarea>
@@ -378,36 +886,13 @@ async function paintStepMaterial(el, s) {
     <p class="meta">${esc(tf('mt_meter_count', { n: s.material.organic, c: s.material.clauses }))} ${esc(rateLine(lib.measured))}
       ${unreviewed ? esc(tf(countKey('mt_unreviewed', unreviewed), { n: unreviewed })) : ''}</p>
     ${sufficiencyNote(s.material)}
-    <div id="mt-list">${jobRows}${lib.samples.map(materialRowHtml).join('') || (jobRows ? '' : `<div class="empty">${esc(t('mt_none'))}</div>`)}</div>
-    <p class="hint">${esc(t('mt_metrics_later'))} ${ready ? esc(t('mt_video_removed')) : ''}</p>
+    <div id="mt-list">${lib.samples.map(materialRowHtml).join('') || (stagedVideos.length ? '' : `<div class="empty">${esc(t('mt_none'))}</div>`)}</div>
+    <p class="hint">${esc(t('mt_metrics_later'))} ${ready || tr.ai_video_capable ? esc(t('mt_video_removed')) : ''}</p>
     <div class="row" style="margin-top:18px"><button class="btn primary big" id="mt-next" ${s.material.organic ? '' : 'disabled'}>${esc(t('st_continue'))}</button></div>`;
   el.querySelectorAll('[data-review-text]').forEach((x) => { autoGrow(x); x.oninput = () => autoGrow(x); });
 
   const repaint = () => renderSetup('material');
-  document.getElementById('mt-scripts').onchange = async (e) => {
-    const added = await importFiles(Array.from(e.target.files));
-    if (added) toast(tf('mt_added_n', { n: added }));
-    repaint();
-  };
-  document.getElementById('mt-subs').onchange = async (e) => {
-    let added = 0;
-    for (const file of Array.from(e.target.files)) {
-      try {
-        await api('POST', '/api/samples', { title: file.name.replace(/\.[^.]+$/, ''), subtitle_text: await readTextFile(file), source_name: file.name });
-        added += 1;
-      } catch (err) { toast(tf('mt_bad_subs', { name: file.name })); }
-    }
-    if (added) toast(tf('mt_added_n', { n: added }));
-    repaint();
-  };
-  document.getElementById('mt-video').onchange = (e) => {
-    Array.from(e.target.files).forEach((file) => {
-      const ext = (file.name.match(/\.([^.]+)$/) || ['', ''])[1].toLowerCase();
-      if (extensions.includes(ext)) startVideoJob(file);
-      else toast(tf('mt_bad_media', { name: file.name }));
-    });
-    repaint();
-  };
+  bindMaterialAdders(el, tr, 'mt', repaint, ['#/start']);
   document.getElementById('mt-paste-add').onclick = async () => {
     try { await api('POST', '/api/samples', { text: document.getElementById('mt-paste').value }); toast(tf('mt_added_n', { n: 1 })); repaint(); }
     catch (err) { showError(err); }
@@ -422,14 +907,13 @@ async function paintStepMaterial(el, s) {
     try { await api('DELETE', '/api/transcriber'); repaint(); } catch (err) { showError(err); }
   };
   const $list = document.getElementById('mt-list');
+  bindSeekClicks($list);
   $list.onchange = async (e) => {
     const row = e.target.closest('[data-id]');
     if (!row || e.target.dataset.sponsored === undefined) return;
     try { await api('PUT', '/api/samples/' + row.dataset.id, { is_sponsored: e.target.checked }); repaint(); } catch (err) { showError(err); }
   };
   $list.onclick = async (e) => {
-    const dismiss = e.target.closest('[data-dismiss]');
-    if (dismiss) { materialJobs.splice(Number(dismiss.dataset.dismiss), 1); return repaint(); }
     const row = e.target.closest('[data-id]');
     if (!row) return;
     try {
@@ -440,50 +924,12 @@ async function paintStepMaterial(el, s) {
         repaint();
       } else if (e.target.closest('[data-del]')) {
         if (!(await askConfirm(poDeleteSampleText(row.dataset.id, 'mt_confirm_delete'), { ok: t('delete'), danger: true }))) return;
+        forgetVideoPreview(row.dataset.id);
         await api('DELETE', '/api/samples/' + row.dataset.id);
         repaint();
       }
     } catch (err) { showError(err); }
   };
-
-  /* keep the page current while an install or a transcription is running */
-  const installing = tr.job && tr.job.status === 'running';
-  const working = materialJobs.some((j) => j.state === 'working');
-  if (installing) {
-    pollSetup(async () => { const now = await api('GET', '/api/transcriber'); repaint(); return !(now.job && now.job.status === 'running'); }, 2000);
-  } else if (working) {
-    pollSetup(async () => {
-      let changed = false;
-      for (const j of materialJobs.filter((x) => x.jobId && x.state === 'working')) {
-        const { job } = await api('GET', '/api/jobs/' + j.jobId);
-        const state = job.status === 'done' ? 'done' : (job.status === 'failed' ? 'failed' : 'working');
-        if (state !== j.state || job.stage !== j.stage) { j.state = state; j.stage = job.stage; j.detail = failText(job.error); changed = true; }
-      }
-      if (changed) {
-        for (let i = materialJobs.length - 1; i >= 0; i--) if (materialJobs[i].state === 'done') materialJobs.splice(i, 1);
-        repaint();
-      }
-      return changed;
-    }, 1500);
-  }
-}
-
-/* Sends one video or audio file to the local server, which transcribes it on this computer. */
-async function startVideoJob(file) {
-  const row = { name: file.name, state: 'uploading', stage: '', detail: '', jobId: null };
-  materialJobs.push(row);
-  try {
-    const res = await fetch('/api/uploads?name=' + encodeURIComponent(file.name), {
-      method: 'PUT',
-      headers: studioHeaders({ 'Content-Type': 'application/octet-stream' }),
-      body: file,
-    });
-    const up = await res.json().catch(() => ({}));
-    if (!res.ok) throw Object.assign(new Error(up.message || up.error || 'upload'), { message_zh: up.message_zh });
-    const { job } = await api('POST', '/api/videos', { upload_id: up.upload_id, title: file.name.replace(/\.[^.]+$/, '') });
-    row.jobId = job.id; row.state = 'working'; row.stage = job.stage;
-  } catch (e) { row.state = 'failed'; row.detail = failText(e) || e.detail || ''; }
-  if (location.hash === '#/start' && setupUi.open === 'material') renderSetup('material');
 }
 
 /* ---------- step 3: voice ---------- */

@@ -443,7 +443,7 @@ def _build_voice(store: Store, corpus_chars: int = LEARN_CORPUS_CHARS) -> Tuple[
     # The notes tell the model what it is looking at, so they have to stay true for subtitle files and videos.
     measured = measured_rate(library)                 # every timed item, also a transcript not yet confirmed
     written = all(s.get("kind", "script") == "script" for s in samples if s["text"].strip())
-    timed = any(isinstance(s.get("timing"), dict) for s in library)
+    timed = any(isinstance(s.get("timing"), dict) and (s["timing"].get("spoken_sec") or 0) > 0 for s in library)
     if measured:
         rate_note = ("Speaking rate was measured from timestamps (%s seconds of speech in %d timed item(s)) and is "
                      "given as `measured_speaking_rate`; do not infer another."
@@ -467,6 +467,29 @@ def _build_voice(store: Store, corpus_chars: int = LEARN_CORPUS_CHARS) -> Tuple[
         metrics["measured_speaking_rate"] = {"units_per_minute": measured["speaking_rate_cpm"],
                                              "seconds_of_speech": measured["spoken_sec"],
                                              "timed_items": measured["videos"]}
+    visual_notes: List[Dict[str, Any]] = []
+    for sample in samples:
+        if sample.get("is_sponsored") or not (sample.get("text") or "").strip():
+            continue
+        sample_timing = sample.get("timing")
+        vis = sample_timing.get("visual_ingest") if isinstance(sample_timing, dict) else None
+        if not isinstance(vis, dict):
+            continue
+        entry: Dict[str, Any] = {"title": sample["title"]}
+        if isinstance(vis.get("vocal_energy"), str) and vis["vocal_energy"].strip():
+            entry["vocal_energy"] = vis["vocal_energy"].strip()[:240]
+        if isinstance(vis.get("onscreen_flower_texts"), list):
+            flowers = [str(f).strip()[:120] for f in vis["onscreen_flower_texts"] if isinstance(f, str) and f.strip()][:15]
+            if flowers:
+                entry["onscreen_flower_texts"] = flowers
+        if isinstance(vis.get("video_primary_format"), str) and vis["video_primary_format"].strip():
+            entry["video_primary_format"] = vis["video_primary_format"].strip()[:60]
+        if len(entry) > 1:
+            visual_notes.append(entry)
+            if len(visual_notes) >= 20:
+                break
+    if visual_notes:
+        metrics["visual_and_tone_notes_from_videos"] = visual_notes
     system, user = _blueprint(STAGE2, {
         "creator_profile_json": _dump(creator.prompt_block(store.load_creator())),
         "python_aggregated_acoustic_metrics_json": _dump(metrics),

@@ -16,6 +16,7 @@ import re
 import urllib.error
 import urllib.parse
 import urllib.request
+import uuid
 from typing import Any, Callable, Dict, List, Optional, Tuple
 
 Transport = Callable[[str, str, Dict[str, str], Optional[Dict[str, Any]]], Dict[str, Any]]
@@ -126,6 +127,7 @@ _ARRAY_TASK_KEYS = {
     "ideas": "ideas",
     "trends": "keywords",
     "suggest": "suggestions",
+    "video_ingest": "beats",
 }
 
 
@@ -174,11 +176,7 @@ def _open(request: urllib.request.Request, timeout: float) -> Any:
     return urllib.request.build_opener(_NoRedirect()).open(request, timeout=timeout)
 
 
-def _http(method: str, url: str, headers: Dict[str, str], body: Optional[Dict[str, Any]]) -> Dict[str, Any]:
-    data = json.dumps(body).encode("utf-8") if body is not None else None
-    request = urllib.request.Request(url, data=data, method=method, headers=dict(headers))
-    if data is not None:
-        request.add_header("Content-Type", "application/json")
+def _send_request(request: urllib.request.Request, headers: Dict[str, str]) -> Dict[str, Any]:
     try:
         with _open(request, 600) as response:
             raw = response.read(MAX_REPLY_BYTES + 1)      # never more than this, however much is sent
@@ -206,6 +204,57 @@ def _http(method: str, url: str, headers: Dict[str, str], body: Optional[Dict[st
         raise LLMError("Network error: %s" % _redact_secrets(str(exc), headers)[:300], "network")
     except ValueError:
         raise LLMError("Provider returned a non-JSON response", "bad_response")
+
+
+def _http(method: str, url: str, headers: Dict[str, str], body: Optional[Dict[str, Any]]) -> Dict[str, Any]:
+    data = json.dumps(body).encode("utf-8") if body is not None else None
+    request = urllib.request.Request(url, data=data, method=method, headers=dict(headers))
+    if data is not None:
+        request.add_header("Content-Type", "application/json")
+    return _send_request(request, headers)
+
+
+def _quote_part(value: str) -> str:
+    return value.replace("\\", "\\\\").replace('"', '\\"').replace("\r", " ").replace("\n", " ")
+
+
+def post_multipart_json(
+    url: str,
+    headers: Dict[str, str],
+    fields: Dict[str, str],
+    file_field: Tuple[str, str, str, bytes],
+    transport: Optional[Transport] = None,
+) -> Dict[str, Any]:
+    """Send a stdlib ``multipart/form-data`` upload (e.g. OpenAI audio transcription) and parse JSON."""
+    field_name, file_name, mime_type, file_bytes = file_field
+    if transport is not None:
+        return transport("POST", url, headers, {
+            "_multipart": dict(fields),
+            "file_field": field_name,
+            "file_name": file_name,
+            "file_mime": mime_type,
+            "file_size": len(file_bytes),
+        })
+    boundary = "----StudioBoundary" + uuid.uuid4().hex
+    chunks: List[bytes] = []
+    for key, val in fields.items():
+        chunks.append(("--%s\r\n" % boundary).encode("ascii"))
+        chunks.append(('Content-Disposition: form-data; name="%s"\r\n\r\n' % _quote_part(str(key))).encode("utf-8"))
+        chunks.append(str(val).encode("utf-8"))
+        chunks.append(b"\r\n")
+    chunks.append(("--%s\r\n" % boundary).encode("ascii"))
+    chunks.append((
+        'Content-Disposition: form-data; name="%s"; filename="%s"\r\n'
+        'Content-Type: %s\r\n\r\n'
+        % (_quote_part(field_name), _quote_part(file_name), _quote_part(mime_type))
+    ).encode("utf-8"))
+    chunks.append(file_bytes)
+    chunks.append(("\r\n--%s--\r\n" % boundary).encode("ascii"))
+    payload = b"".join(chunks)
+    req_headers = dict(headers)
+    req_headers["Content-Type"] = "multipart/form-data; boundary=" + boundary
+    request = urllib.request.Request(url, data=payload, method="POST", headers=req_headers)
+    return _send_request(request, headers)
 
 
 def _openai_style(provider: str, api_key: str, base_url: Optional[str]):
