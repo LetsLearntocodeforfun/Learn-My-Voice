@@ -193,6 +193,25 @@ _ARRAY_TASK_KEYS = {
     "suggest": "suggestions",
     "video_ingest": "beats",
 }
+_SURROGATE_ESCAPE = re.compile(r"\\u[dD][89a-fA-F][0-9a-fA-F]{2}")
+_SURROGATE_CHAR = re.compile(r"[\ud800-\udfff]")
+
+
+def _has_surrogate(value: Any) -> bool:
+    stack = [value]
+    while stack:
+        cur = stack.pop()
+        if isinstance(cur, str):
+            if _SURROGATE_CHAR.search(cur):
+                return True
+        elif isinstance(cur, dict):
+            for k, v in cur.items():
+                if isinstance(k, str) and _SURROGATE_CHAR.search(k):
+                    return True
+                stack.append(v)
+        elif isinstance(cur, list):
+            stack.extend(cur)
+    return False
 
 
 def loads_strict(text: str) -> Any:
@@ -201,12 +220,18 @@ def loads_strict(text: str) -> Any:
     Python's reader accepts ``NaN``, ``Infinity`` and ``-Infinity``, which are not JSON. Stored and sent back
     to the page they make an answer a browser cannot read, so the page shows nothing at all. Here they
     raise ``ValueError`` like any other invalid JSON, and so does a number written so large that Python
-    would read it as Infinity (``1e999``) or nested so deeply that Python raises ``RecursionError``.
+    would read it as Infinity (``1e999``), nested so deeply that Python raises ``RecursionError``, or
+    holding an unpaired UTF-16 surrogate that cannot be encoded as UTF-8.
     """
+    if not isinstance(text, str):
+        raise ValueError("JSON input must be text")
     try:
-        return json.loads(text, parse_constant=_refuse_constant, parse_float=_finite_float)
+        value = json.loads(text, parse_constant=_refuse_constant, parse_float=_finite_float)
     except RecursionError:
         raise ValueError("JSON nested too deeply")
+    if _SURROGATE_CHAR.search(text) or (_SURROGATE_ESCAPE.search(text) and _has_surrogate(value)):
+        raise ValueError("JSON contains an unpaired surrogate")
+    return value
 
 
 def _has_secret_header(headers: Optional[Dict[str, str]]) -> bool:
@@ -418,13 +443,21 @@ def list_models(provider: str, api_key: str = "", transport: Optional[Transport]
     call = transport or _http
     if provider == "gemini":
         data = call("GET", GEMINI_BASE + "/models?pageSize=200", {"x-goog-api-key": api_key}, None)
-        return sorted(
-            m.get("name", "").split("/", 1)[-1] for m in data.get("models", [])
-            if "generateContent" in (m.get("supportedGenerationMethods") or []) and m.get("name")
-        )
+        if not isinstance(data, dict) or not isinstance(data.get("models", []), list):
+            raise LLMError("Unexpected Gemini model list shape", "bad_response")
+        out: List[str] = []
+        for m in data.get("models", []):
+            if not isinstance(m, dict):
+                continue
+            name, methods = m.get("name"), m.get("supportedGenerationMethods")
+            if isinstance(name, str) and name and isinstance(methods, list) and "generateContent" in methods:
+                out.append(name.split("/", 1)[-1])
+        return sorted(out)
     base, headers = _openai_style(provider, api_key, base_url)
     data = call("GET", base + "/models", headers, None)
-    ids = [m.get("id", "") for m in (data.get("data") or []) if isinstance(m, dict)]
+    if not isinstance(data, dict) or not isinstance(data.get("data", []), list):
+        raise LLMError("Unexpected model list shape from %s" % provider, "bad_response")
+    ids = [m["id"] for m in (data.get("data") or []) if isinstance(m, dict) and isinstance(m.get("id"), str)]
     if provider == "local":
         return sorted(i for i in ids if i)
     return sorted(i for i in ids if i and not any(h in i for h in _NON_CHAT_HINTS))
@@ -729,6 +762,8 @@ def _decode_whole(candidate: str) -> Tuple[bool, Any]:
     except ValueError:
         return False, None
     if s[end:].strip(_EDGE_INVISIBLE) == "":
+        if (_SURROGATE_CHAR.search(s) or _SURROGATE_ESCAPE.search(s)) and _has_surrogate(val):
+            raise _NonFiniteJSON("JSON contains an unpaired surrogate")
         return True, val
     return False, None
 
@@ -751,6 +786,7 @@ def _scan_top_level(text: str, allow_array: bool) -> Tuple[bool, Any]:
     n = len(text)
     pos = 0
     matches: List[Tuple[int, int, Any]] = []  # (is_dict_rank, span_length, value)
+    check_surrogates = bool(_SURROGATE_CHAR.search(text) or _SURROGATE_ESCAPE.search(text))
     while pos < n:
         next_obj = text.find("{", pos)
         next_arr = text.find("[", pos) if allow_array else -1
@@ -772,6 +808,8 @@ def _scan_top_level(text: str, allow_array: bool) -> Tuple[bool, Any]:
         except ValueError:
             pos = at + 1
             continue
+        if check_surrogates and _has_surrogate(val):
+            raise _NonFiniteJSON("JSON contains an unpaired surrogate")
         if isinstance(val, dict):
             matches.append((1, end - at, val))
             pos = end
@@ -930,9 +968,13 @@ def complete_json(provider: str, api_key: str, model: str, system: str, user: st
             "generationConfig": {"responseMimeType": "application/json"},
         })
         try:
+            if not isinstance(data, dict):
+                raise TypeError("response is not an object")
             parts = data["candidates"][0]["content"]["parts"]
-            text = "".join(p.get("text", "") for p in parts)
-        except (KeyError, IndexError, TypeError):
+            if not isinstance(parts, list):
+                raise TypeError("parts is not a list")
+            text = "".join(p.get("text", "") for p in parts if isinstance(p, dict) and isinstance(p.get("text", ""), str))
+        except (KeyError, IndexError, TypeError, AttributeError):
             raise LLMError("Unexpected Gemini response shape (the reply may have been blocked)", "bad_response")
         return parse_json_text(text)
 
@@ -944,7 +986,11 @@ def complete_json(provider: str, api_key: str, model: str, system: str, user: st
         "response_format": {"type": "json_object"},
     })
     try:
+        if not isinstance(data, dict):
+            raise TypeError("response is not an object")
         text = data["choices"][0]["message"]["content"]
-    except (KeyError, IndexError, TypeError):
+        if not isinstance(text, str):
+            raise TypeError("content is not text")
+    except (KeyError, IndexError, TypeError, AttributeError):
         raise LLMError("Unexpected response shape from %s" % provider, "bad_response")
     return parse_json_text(text)
