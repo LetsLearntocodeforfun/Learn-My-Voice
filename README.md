@@ -1,9 +1,9 @@
 # Learn-My-Voice
 
-**English** | [简体中文](README.zh-CN.md)
+**English** | [简体中文](README.zh-CN.md) · **[5-Minute Quick Start Guide](docs/QUICKSTART.md)** | **[5 分钟快速上手指南](docs/QUICKSTART.zh-CN.md)**
 
 A local, bilingual (中文 / English) script studio for Xiaohongshu (RedNote) and other short-video creators.
-It learns how one creator actually talks from her own past scripts, drafts new scripts in that voice,
+It learns how one creator actually talks from her own past scripts, subtitles, and RedNote videos, drafts new scripts in that voice,
 checks them, and hands the result to 剪映 (Jianying) / CapCut for editing.
 
 It runs on your own computer. It comes in two forms: a desktop app with an installer for macOS and Windows, which needs nothing else, and a zip that needs only Python. On macOS, Python comes with Apple's free Command Line Tools, and the zip's launcher offers to install them if they are missing.
@@ -30,6 +30,8 @@ This is an early version. Read this before relying on it.
 | Desktop app | New. Installers for macOS (Apple chip and Intel chip) and 64-bit Windows are built on GitHub's machines, where each one is installed and the app is opened, used and ended before it is attached to a release candidate. **No person has installed one yet.** The installers are not signed, so the system has to be told once that the app may run. Transcribing videos in the desktop app needs a Mac with an Apple chip and Apple's free Command Line Tools; that was tried on one Mac with the app started from its source, **not** inside the desktop app. A microphone has not been tried in it, and there is no build for Linux. Before an installer is attached, the page in the installed app's own window has to open a script, export it, follow a link and delete the script by itself; what each trial found is attached to the release candidate as `desktop-<system>-trial.txt`. |
 
 ## Quick start
+
+> **New here?** Start with the step-by-step **[Quick Start Guide](docs/QUICKSTART.md)** ([简体中文](docs/QUICKSTART.zh-CN.md)) for screenshots and a 5-minute walkthrough from first launch to CapCut / 剪映 export.
 
 Release candidates are on the repository's
 [Releases page](https://github.com/LetsLearntocodeforfun/Learn-My-Voice/releases). Each offers the app in two forms.
@@ -64,7 +66,7 @@ cd Learn-My-Voice
 python3 -m studio.server
 ```
 
-From the zip or the source, the studio opens in your browser at `http://127.0.0.1:8765`. Settings shows which build is running.
+From the zip or the source, each start creates a fresh local access token and opens the studio in your browser (`http://127.0.0.1:8765/?token=...`, also printed as a launch link in the terminal window). Start it from the launcher rather than bookmarking the bare address. Settings shows which build is running.
 
 The interface starts in Chinese. Use the **English** button at the bottom of the sidebar to switch.
 It follows your computer's light or dark appearance; **Settings → Appearance** has light, dark and a choice of
@@ -96,7 +98,7 @@ Until a voice profile has been accepted the app uses a bundled *example* voice p
 ### Copy & paste with a subscription
 
 A ChatGPT subscription does not include API access, so the studio cannot call it directly. In this mode,
-each AI step shows a prepared prompt. Paste it into ChatGPT, then paste the reply back.
+each AI step shows a prepared prompt. Paste it into ChatGPT, then either **choose / drag-and-drop a `.json` file** that ChatGPT generated or **paste the reply text** back (extra prose around code blocks, trailing commas, comments, and smart quotes are tolerated; on Step 3 and Voice you can also import a saved JSON reply directly if the dialog was closed).
 The prompt contains her voice profile and the relevant script text.
 
 Looking up trend keywords always works this way, whichever AI option is selected, because it needs an AI that can
@@ -165,8 +167,10 @@ Then ask in chat, for example: *"Use Learn My Voice to write a 60-second script 
 - **Script editor**: one card per spoken line, with shot and on-screen text (花字) fields, live character count and read time, autosave.
 - **Live checks**, in Chinese and English: lines too long for one breath, phrases she never uses, influencer clichés, translated-sounding Chinese, risky advertising wording, and total length against the target duration. These are rules, not AI, so they are instant and repeatable.
 - **Guided setup** (开始 / Start): five steps: who the creator is, their material, their voice, a first script, and what keeps learning afterwards. Each step says what leaves the computer and what does not.
-- **Material**: scripts written by hand (`.txt`, `.md`, `.docx`), subtitle files (`.srt`, `.vtt`) and, on a Mac with an Apple chip, videos transcribed on the computer. Subtitle files and videos carry timestamps, so speaking rate is measured from them.
-- **Voice learning**: an AI reads the material and proposes a voice profile. Code then looks up every phrase the proposal attributes to the creator in that material. The review shows what was found, what was not, and what the AI wanted to ban although the creator says it. Nothing takes effect until the creator accepts the proposal. Breath-length limits are measured in code once there are 30 breaths of material. Sponsored scripts are kept out of the core profile. Earlier profiles are kept and can be restored.
+- **Material & visual RedNote video ingestion**: scripts written by hand (`.txt`, `.md`, `.docx`), subtitle files (`.srt`, `.vtt`), and video/audio files (`.mp4`, `.mov`, `.m4a`, `.mp3`, `.wav`) on both Start and Library, with inline video preview and visual keyframes. Videos can be transcribed offline on an Apple-chip Mac, analyzed for speech + tone + `花字` via Gemini, transcribed via OpenAI, or ingested with zero API key via ChatGPT/Gemini copy-paste. Subtitle files and videos carry timestamps, so speaking rate is measured from them.
+- **Voice learning**: an AI reads the material and proposes a voice profile. Code then looks up every phrase the proposal attributes to the creator in that material. The review shows what was found, what was not, what the AI wanted to ban although the creator says it, and all 21 descriptive Voice DNA fields (with notes linked to the entries they describe). Nothing takes effect until the creator accepts the proposal. Breath-length limits are measured in code once there are 30 breaths of material. Sponsored scripts are kept out of the core profile. Earlier profiles are kept and can be restored.
+- **References beside the editor** (参考 / References): while editing a script, open the side panel to see items pinned to that script, which items the AI draft's prompt saw, related library items on the same topic, and a full-text search of the library — all computed locally in code without calling an AI.
+- **Line tools & structured AI read-through**: per-line **Openings**, **Reword**, and **Shorten** proposals plus a script-wide **AI read-through** critic pass with structured, inspectable reasons. Every proposal runs through the deterministic rule checks first and waits for **Use this** (with Undo).
 - **Drafting**: every draft is anchored on her own best-performing scripts as examples. A script can have up to 8 target keywords; her past scripts on those topics are then used as the examples first, and the editor shows whether each keyword ended up in the spoken lines or in the drafted title options, caption or hashtags. The title options, cover text, caption and hashtags that the AI drafts with a script are shown under it, to read and copy.
 - **Lessons from edits**: each AI draft lists which of the creator's scripts its prompt contained. The app shows what the creator then changed in the draft, counting wording only, and a change can be remembered. Remembered changes go into later draft prompts, and a phrase removed in more than one script is offered for the never-say list.
 - **Topic ideas**: ranks her past videos by interactions and suggests what to film next. Each idea must cite her own videos; citations that do not match a real title are removed. Tracked trend keywords are passed in as a second signal, and an idea can only name keywords that are actually tracked.
@@ -175,7 +179,8 @@ Then ask in chat, for example: *"Use Learn My Voice to write a 60-second script 
 - **Teleprompter**: full screen, adjustable speed and size.
 - **Mark as posted**: a script written in the studio that was filmed and posted becomes one library item, with the day it was posted, an optional link (kept as text, never opened) and its numbers. The numbers count at once wherever her own results are used. The day the numbers were read is kept beside them and shown as days after posting; nothing is adjusted or projected. The wording does not count as hers until she confirms it, or attaches the video's subtitle file or a transcript, because the text may have begun as an AI's draft. The page says how many lines are still exactly as the AI wrote them, counted in code. An opening that is still the AI's sentence is never listed among her own openings.
 - **Word list** (设置 / Settings): the checks flag advertising wording that may be a problem, and each finding says what its entry rests on: an article of the Advertising Law that was read, or that no source was checked. A separate kind of finding, labelled "hint only", marks wording that may sound written rather than spoken; it is never counted as a problem. Any entry can be switched off, and you can add phrases of your own. The list is this project's own: it is not legal advice and not a statement of Xiaohongshu's rules, and a script with no finding is not thereby allowed.
-- **Exports**: 剪映 / CapCut kit, subtitle `.srt`, voiceover text, shot list, on-screen text list.
+- **Backup and restore** (设置 / Settings): packs scripts, library items, the creator profile, the active and earlier voice profiles, tracked keywords, remembered edits, and word-list changes into one portable backup file (API keys are never included). Restoring previews the archive first and saves an automatic backup of current data so a restore can be undone.
+- **Exports**: 剪映 / CapCut kit, subtitle `.srt`, voiceover text, shot list, on-screen text list, standalone `.html` teleprompter.
 
 ![Topic ideas](docs/images/ideas-zh.png)
 
@@ -202,8 +207,8 @@ generator reports limits for drafts produced on macOS, so this needs testing aga
 ## Data and privacy
 
 - Everything is stored in `data/` inside the project folder: scripts, library, the creator profile from setup, voice profile, settings. The folder is git-ignored, and on macOS and Linux it is closed to the other accounts on the computer.
-- API keys are stored in `data/config.json` with owner-only permissions and are never sent back to the browser.
-- The web server listens on `127.0.0.1` only, rejects requests with an unexpected Host header, and refuses writes sent by other websites.
+- API keys are encrypted at rest via `studio/keystore.py` (Windows DPAPI or a `0600` key in your OS application-config folder on macOS/Linux) rather than stored in plaintext in `data/config.json`, and are never sent back to the browser or included in backups. If `data/` is moved to another machine, sealed keys are preserved untouched until you enter a key on that machine.
+- The web server listens on `127.0.0.1` only, requires a per-launch local capability token and port-scoped session cookie, checks `Host` and `Sec-Fetch-Site` headers, and refuses requests from other websites. See [docs/SECURITY_NOTES.md](docs/SECURITY_NOTES.md) for details.
 - AI steps send the creator profile, her voice profile, her notes and parts of her past scripts to whichever AI you chose. With a local model nothing leaves the computer.
 - A video added for transcription is copied into `data/uploads/` and transcribed on this Mac. The copy is deleted when the transcription ends, whatever the outcome; only the text and timing are kept. The programs that transcribe are started under macOS rules that deny them the network, and where those rules cannot be set up nothing is transcribed.
 - Setting up transcription downloads software from pypi.org and one speech model from huggingface.co, about 2 GB in all, into `local_tools/whisper/` inside the project folder. Nothing about the creator is sent.
@@ -221,6 +226,9 @@ generator reports limits for drafts produced on macOS, so this needs testing aga
 | `studio/corpus.py` | Reading her scripts, measured statistics, performance ranking |
 | `studio/creator.py`, `studio/setup.py` | The creator profile from setup, and where setup stands |
 | `studio/evidence.py` | Looks up what a proposed voice profile claims in the creator's own material |
+| `studio/refs.py`, `studio/web/refs.js` | References panel beside the script editor (pins, draft basis, related items, search) |
+| `studio/keystore.py` | OS-backed sealing for API keys and Windows `data/` ACL restriction |
+| `docs/QUICKSTART.md`, `docs/QUICKSTART.zh-CN.md` | Bilingual 5-minute Quick Start Guide with screenshots |
 | `studio/learning.py` | Compares an AI draft with the creator's version |
 | `studio/timing.py` | Subtitle files, and speaking rate measured from their timestamps |
 | `studio/transcribe.py`, `studio/whisper_worker.py`, `studio/jobs.py` | On-device transcription and its background jobs |

@@ -217,7 +217,11 @@ def parse_stage1_reply(
             raw_line = (
                 beat.get("verbatim_transcript_zh_en")
                 if beat.get("verbatim_transcript_zh_en") is not None
-                else (beat.get("spoken_script_zh") if beat.get("spoken_script_zh") is not None else beat.get("text"))
+                else (
+                    beat.get("spoken_script_zh")
+                    if beat.get("spoken_script_zh") is not None
+                    else (beat.get("spoken_zh") if beat.get("spoken_zh") is not None else beat.get("text"))
+                )
             )
             line = _normalize_beat_line(raw_line, mode)
             if not line:

@@ -136,6 +136,32 @@ be read again then.
   forgotten each time the app was closed; that follows from how the app starts its core and was not seen. The
   app now keeps these with its settings, and the page arrives with them, so a dark choice is dark from the
   first moment.
+- **Visual RedNote video and audio ingestion on both Start and Library.** Video and audio files (`.mp4`, `.mov`,
+  `.m4a`, `.mp3`, `.wav`) can now be added directly on both **开始 / Start** (Step 2) and **素材库 / Library**,
+  with inline video preview and a visual keyframe strip. Creators can choose offline on-device Whisper on an
+  Apple-chip Mac, Gemini multimodal analysis (spoken lines, delivery tone and burned-in `花字` callouts), OpenAI
+  audio transcription, or zero-API-key ChatGPT / Gemini copy-paste ingestion, and play back while confirming the
+  transcript.
+- **Resilient manual JSON reply and `.json` file import.** Copy-and-paste dialogs now accept `.json` files chosen
+  from disk or dragged and dropped (for when ChatGPT provides a downloadable `.json` file instead of inline text),
+  strip prose around fenced code blocks, tolerate trailing commas, comments and macOS smart quotes, and let a
+  saved JSON reply be imported directly on Step 3 of Start and on **我的声音 / Voice** if the dialog was closed.
+- **References beside the script editor.** Opening **参考 / References** beside a script shows up to 8 items
+  pinned to that script, which items an AI draft's prompt contained, library items on the same topic (by target
+  keywords and title words), and a full-text search of the library. Nothing calls an AI or leaves the computer,
+  and unconfirmed transcripts or AI openings are explicitly labelled.
+- **Full 21-field Voice DNA review and structured critic reasons.** The voice proposal review now lists every
+  free-text field under its own name in Chinese and English, links descriptive notes to the entries they describe
+  so an unchecked entry takes its note with it, and requests inspectable structured reasons during the **AI
+  read-through** critic pass.
+- **Single-file backup and restore.** On **设置 / Settings**, **备份和恢复 / Backup and restore** packs scripts,
+  library items, the creator profile, the active and earlier voice profiles, tracked keywords, remembered edits
+  and word-list changes into one archive (API keys are never included). Restoring checks the file first, shows
+  its counts beside what is currently stored, and keeps an automatic backup beforehand so a restore can be
+  undone.
+- **Bilingual Quick Start Guide.** Added step-by-step guides in English (`docs/QUICKSTART.md`) and Simplified
+  Chinese (`docs/QUICKSTART.zh-CN.md`) with screenshots of the setup flow, voice review, references panel and
+  CapCut / 剪映 export.
 
 **Changed**
 
@@ -191,6 +217,17 @@ be read again then.
 - Every answer carries a content security policy and forbids framing. At most 4 MB of a provider's answer is
   read. A request to a local model never goes through a proxy.
 - Text from the library can no longer close a block of a prompt.
+- **Local capability token, sealed API keys, supply-chain hashes and fuzzing.** Each server launch generates a
+  per-launch local capability token (`X-Studio-Token`) and port-scoped `HttpOnly; SameSite=Strict` session
+  cookie with `Sec-Fetch-Site` checks; API keys are encrypted at rest via `studio/keystore.py` (Windows DPAPI or
+  a `0600` key in the OS application-config folder on macOS/Linux) with non-destructive preservation if moved to
+  another machine, and `icacls` restricts `data/` on Windows; outbound provider and local-model calls refuse HTTP
+  redirects and scrub secrets from errors; Apple Silicon transcription pins SHA-256 digests on all PyPI wheels
+  and tightens the macOS `sandbox-exec` worker seal to default-deny `/Users` and `/Volumes`; the Tauri desktop
+  shell tightens CSP, navigation schemes and download filename sanitization; Voice DNA approval (`created_at` /
+  `keep`), voice history restore, editable post copy, and RedNote `views`-based ranking lift when interaction
+  breakdowns are absent are fixed; and `tools/fuzz.py` exercises parsers, model replies, provider answers and
+  server requests.
 
 **State of this release**
 
