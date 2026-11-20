@@ -1413,7 +1413,8 @@ class RequestTest(ServerCase):
         self.assertEqual(rows(copy), rows(self.store.db_path))
         self.assertNotIn(SECRET.encode("utf-8"), data)
         # only what was made is handed out, and only the newest two are kept waiting
-        for wrong in ("0" * 12, "../state.json", made["id"].upper()):
+        upper_wrong = "ABCDEF123456" if made["id"].upper() == made["id"] else made["id"].upper()
+        for wrong in ("0" * 12, "../state.json", upper_wrong):
             status, answer, _ = self.send("GET", "/api/backup/%s/file" % wrong)
             self.assertEqual(status, 404, wrong)
         ids = [self.send("POST", "/api/backup", {})[1]["id"] for _ in range(2)]

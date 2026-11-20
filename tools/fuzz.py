@@ -1921,6 +1921,8 @@ add("recordings", "WAV headers and Whisper worker output", make_recordings, run_
 def _worker_loop() -> int:
     env = Env()
     try:
+        sys.stdout.write('{"ready":true}\n')
+        sys.stdout.flush()
         for raw_line in sys.stdin:
             raw_line = raw_line.strip()
             if not raw_line:
@@ -1956,6 +1958,12 @@ class _Child:
         self._answers: "queue.Queue[Optional[str]]" = queue.Queue()
         self._reader = threading.Thread(target=self._pump, daemon=True)
         self._reader.start()
+        try:
+            ready = self._answers.get(timeout=60.0)
+            if not ready or not json.loads(ready).get("ready"):
+                self.close()
+        except Exception:       # noqa: BLE001
+            self.close()
 
     def _pump(self) -> None:
         assert self.proc.stdout is not None

@@ -530,8 +530,12 @@ class RealChromeManualJsonFlowTest(unittest.TestCase):
         )
 
         # 1. Open Step 3 (Your Voice): verify #vo-import-json is available even before AI settings are configured
-        cdp.eval_js("(async () => { setupUi.open = 'voice'; location.hash = '#/start'; await renderSetup('voice'); return true; })()")
-        cdp.wait_for("Boolean(document.getElementById('vo-import-json'))")
+        cdp.eval_js(
+            "(async () => { setupUi.open = 'voice';"
+            " if (location.hash !== '#/start') { location.hash = '#/start'; } else { await renderSetup('voice'); }"
+            " return true; })()"
+        )
+        cdp.wait_for("location.hash === '#/start' && Boolean(document.getElementById('vo-import-json'))")
         cdp.eval_js("document.getElementById('vo-import-json').click()")
         cdp.wait_for("Boolean(document.getElementById('mb-reply')) && !document.getElementById('modal').hidden")
         # replyOnly mode has no Step 1 prompt box

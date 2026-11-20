@@ -838,8 +838,15 @@ class RealChromeEndToEndUiTest(TempStoreCase):
         self.assertEqual(cdp.eval_js("location.search"), "")
 
         # 2. Open Setup -> Voice step cleanly, verify free-text checkboxes, uncheck the second sentence habit, and click #rv-approve (BUG-01).
-        cdp.eval_js("(async () => { setupUi.open = 'voice'; location.hash = '#/start'; await renderSetup('voice'); return true; })()")
-        cdp.wait_for("Boolean(document.getElementById('rv-approve')) && document.querySelectorAll('.ev input[data-free-path]').length >= 3")
+        cdp.eval_js(
+            "(async () => { setupUi.open = 'voice';"
+            " if (location.hash !== '#/start') { location.hash = '#/start'; } else { await renderSetup('voice'); }"
+            " return true; })()"
+        )
+        cdp.wait_for(
+            "location.hash === '#/start' && Boolean(document.getElementById('rv-approve'))"
+            " && document.querySelectorAll('.ev input[data-free-path]').length >= 3"
+        )
         free_count = cdp.eval_js("document.querySelectorAll('.ev input[data-free-path]').length")
         self.assertGreaterEqual(free_count, 3)
         unchecked_ok = cdp.eval_js("""(() => {
