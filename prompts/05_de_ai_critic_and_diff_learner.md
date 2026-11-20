@@ -10,6 +10,12 @@ Even top frontier models occasionally slip 2–3 subtle "AI-smelling" phrases (`
 > counted in code, `studio/voicematch.py`), and it does not return a rewritten script (it proposes single lines, each
 > checked by the application's rules and applied only if the creator picks it). Learning from edits (5B) is done in
 > code without a model (`studio/learning.py`).
+>
+> What is taken from 5A beyond the repaired line is its reasons, asked for in the Critic Addendum of
+> `08_line_editor.md`: the kind of problem (`issue_category` below, without `COMPLIANCE_RISK`: advertising wording is
+> the word list's to flag, with its sources), the words pointed at, and what the critic says about how the creator
+> talks. Each is looked up in code before it is shown, and `why_fixed_en_zh` is shown marked as an AI's reading.
+> `compliance_passed` is not asked for: nothing in the application says that a script is allowed.
 
 ---
 

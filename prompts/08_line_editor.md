@@ -23,7 +23,9 @@ What makes this different from asking a chat product to "rewrite this in my voic
 
 The critic in `05_de_ai_critic_and_diff_learner.md` (5A) was designed to return a voice score and a whole
 rewritten script. Neither is used here, for reasons 1 and 2. The application's critic is the `CRITIC` task
-of this prompt.
+of this prompt. What is taken from 5A is its reasons: the kind of problem it sees in a line, the words it
+points at, and what it says about how the creator talks. They are asked for in the Critic Addendum at the
+end of this file, and each is looked up in code before the creator sees it.
 
 ---
 
@@ -114,4 +116,51 @@ Return ONLY valid JSON matching this schema:
     }
   ]
 }
+```
+
+---
+
+## Critic Addendum
+
+Added to the end of the user prompt when the task is `CRITIC`, and only then: the other three tasks read
+exactly what they read before. It asks the critic to say why it picked a line, in a form the application
+can check. What the application does with each field before the creator sees it (`studio/suggest.py`):
+
+- `issue` is kept only when it is one of the names below, and is shown as the AI's reading. Beside it the
+  page says whether the application's own rule checks found the same kind of thing in that line.
+- `flagged` is shown only when those words really stand in the line. It is then looked up in the creator's
+  own material.
+- Every `voice_claims` phrase is looked up in the non-sponsored material the creator wrote or confirmed
+  (for `OPENS_WITH`, in the openings of that material). The page shows how often it was found. A claim the
+  material does not bear out is shown as the AI's opinion; one it contradicts is shown as contradicted.
+- `why_zh` and `why_en` are shown marked as the AI's reading. Nothing in them is checked.
+
+```xml
+<critic_reasons>
+The task is CRITIC. Besides the fields of the schema above, every suggestion says why you picked its line, in three more fields. The application looks each of them up before the creator sees it, and shows what it cannot confirm as your opinion. Put nothing there that you did not read in the blocks above.
+
+- `issue`: the ONE kind of problem you see in the line as it stands. Exactly one of these names:
+  TRANSLATIONESE (reads like translated English, 翻译腔), BOOKISH_MANDARIN (written rather than spoken, 书面语), GENERIC_XHS_SLOP (a generic marketing account's wording, 营销号), CADENCE_TOO_LONG (a breath longer than `Longest breath allowed`), UNNATURAL_CODESWITCH (English mixed in where this creator does not mix it in), STIFF_AD_TONE (sounds like an advertisement), NOT_THEIR_VOICE (unlike this creator as the Voice DNA and the creator's own scripts show them).
+- `flagged`: the words of the line that are the problem, copied character for character from that line's `spoken_script_zh` in <script>, at most {{max_flagged_chars}} characters. "" when it is the line as a whole.
+- `voice_claims`: what you say about how this creator talks, as phrases that can be searched for in the creator's own scripts. At most {{max_claims}}; [] when your reading rests on none. Each one is {"claim": "SAYS" | "NEVER_SAYS" | "OPENS_WITH", "phrase": "..."}:
+  SAYS: the creator says this phrase. NEVER_SAYS: the creator never says it. OPENS_WITH: the creator opens videos with it.
+  `phrase` is the words themselves (然后, 嘛, 其实), at most {{max_claim_chars}} characters, never a description of them. A sentence-final particle on its own is looked for at the end of breaths.
+
+For this task `why_zh` and `why_en` say what in the line sounds written, translated or unlike the creator, and what you changed. The creator sees them marked as an AI's reading.
+
+Return no score, no verdict on the whole script and no rewritten script. A field that is neither named here nor in the schema above is thrown away.
+
+A CRITIC suggestion therefore looks like this:
+
+{
+  "line_no": 4,
+  "spoken_script_zh": "The repaired line, with / between breaths",
+  "english_partner_translation": "Natural English meaning of the repaired line",
+  "why_zh": "一句话：哪里不像口语或不像本人，改了什么",
+  "why_en": "One sentence: what sounded written or unlike the creator, and what changed",
+  "issue": "BOOKISH_MANDARIN",
+  "flagged": "the exact words in the line",
+  "voice_claims": [{"claim": "NEVER_SAYS", "phrase": "the exact words"}]
+}
+</critic_reasons>
 ```

@@ -101,7 +101,32 @@ Object.assign(I18N.zh, {
   cr_fit: '{inside}/{n} 口气在你平常的长度里', cr_fit_new: '你的素材里没出现过：{list}',
   cr_match: '像你的程度 {from} → {to}', cr_one_breath: '每口气都念得完', cr_not_one_breath: '还有一口气太长', cr_units: '{n} 字',
   cr_note: '这些句子是 AI 写的。程序只查了规则和说话习惯，好不好由你判断。你采用的句子不会被算成你自己的改法。',
-  cr_left_out: '另有 {n} 条没法用（空的、和原句一样或重复），没有列出。',
+  cr_left_out: '另有 {n} 条没法用或超出条数上限（空的、和原句一样、重复或过多），没有列出。',
+  cr_findings_more: '另有 {n} 处规则提示未展开。',
+  cr_ai_reading: 'AI 的看法：{why}',
+  cr_issue_TRANSLATIONESE: 'AI 判断：翻译腔', cr_issue_BOOKISH_MANDARIN: 'AI 判断：书面语',
+  cr_issue_GENERIC_XHS_SLOP: 'AI 判断：营销号套话', cr_issue_CADENCE_TOO_LONG: 'AI 判断：一口气太长',
+  cr_issue_UNNATURAL_CODESWITCH: 'AI 判断：夹英文不自然', cr_issue_STIFF_AD_TONE: 'AI 判断：像硬广',
+  cr_issue_NOT_THEIR_VOICE: 'AI 判断：不像你平时说话',
+  cr_rules_agree_yes: '（规则检查也标了这类问题）', cr_rules_agree_no: '（规则检查没标这类词）',
+  cr_flagged: 'AI 指出的词：「{p}」', cr_flagged_in_own: '（你的非商单素材里出现 {c} 次 / {s} 篇）',
+  cr_flagged_not_in_own: '（你的 {of} 篇非商单素材里没出现过）',
+  cr_flagged_missing: 'AI 指出的词不在原句里，已略去。',
+  cr_claim_says_ok: 'AI 说你会说「{p}」· 素材核对：{of} 篇里出现 {c} 次（{s} 篇）',
+  cr_claim_says_miss: 'AI 说你会说「{p}」· {of} 篇素材里未找到（仅是 AI 的看法）',
+  cr_claim_says_none: 'AI 说你会说「{p}」· 还没有素材可核对（仅是 AI 的看法）',
+  cr_claim_never_ok: 'AI 说你从不说「{p}」· 素材核对：{of} 篇里出现 0 次',
+  cr_claim_never_bad: 'AI 说你从不说「{p}」· 与素材不符：{of} 篇里其实出现了 {c} 次（{s} 篇）',
+  cr_claim_never_none: 'AI 说你从不说「{p}」· 还没有素材可核对（仅是 AI 的看法）',
+  cr_claim_opens_ok: 'AI 说你常以「{p}」开场 · 素材核对：{of} 个开场里出现 {s} 次',
+  cr_claim_opens_miss: 'AI 说你常以「{p}」开场 · {of} 个开场里未找到（仅是 AI 的看法）',
+  cr_claim_opens_none: 'AI 说你常以「{p}」开场 · 还没有开场可核对（仅是 AI 的看法）',
+  cr_in_dna_uses: '（也在你的声音档案里）', cr_in_dna_banned: '（也在你的禁用词里）',
+  cr_worse_head: '按计数这句改法比原句退步：{list}。',
+  cr_worse_rules: '规则问题 {from} → {to} 处', cr_worse_hints: '书面语提示 {from} → {to} 处',
+  cr_worse_voice_match: '像你的程度 {from} → {to}',
+  cr_worse_length: '在平常长度里的气口 {fi}/{fb} → {ti}/{tb}',
+  cr_worse_unfamiliar: '未见过的词 {from} → {to} 个',
   cr_critic_none: 'AI 没有挑出要改的句子。这不等于脚本没有问题，只是它没发现。',
   cr_line_no: '第 {n} 句', cr_now: '现在',
   cr_stale: '这句后来又改过了，这批建议已经对不上。', cr_save_first: '还没保存成功，请稍后再试。',
@@ -124,7 +149,32 @@ Object.assign(I18N.en, {
   cr_fit: '{inside} of {n} breaths within {@names} usual length', cr_fit_new: 'Never in {@names} material: {list}',
   cr_match: 'Voice match {from} → {to}', cr_one_breath: 'Every breath can be said in one go', cr_not_one_breath: 'One breath is still too long', cr_units: '{n} units',
   cr_note: 'An AI wrote these lines. The program checked only the rules and the speech habits; whether a line is good is for {@name} to judge. A line that is taken is not counted as {@names} own edit.',
-  cr_left_out: '{n} more could not be used (empty, the same as the line, or repeated) and are not listed.',
+  cr_left_out: '{n} more could not be used or exceeded the limit (empty, the same as the line, repeated, or past the cap) and are not listed.',
+  cr_findings_more: '{n} more rule findings on this proposal are not listed.',
+  cr_ai_reading: 'The AI\'s reading: {why}',
+  cr_issue_TRANSLATIONESE: 'AI reading: translated phrasing', cr_issue_BOOKISH_MANDARIN: 'AI reading: written rather than spoken',
+  cr_issue_GENERIC_XHS_SLOP: 'AI reading: generic marketing phrasing', cr_issue_CADENCE_TOO_LONG: 'AI reading: breath too long',
+  cr_issue_UNNATURAL_CODESWITCH: 'AI reading: unnatural code-switching', cr_issue_STIFF_AD_TONE: 'AI reading: stiff ad tone',
+  cr_issue_NOT_THEIR_VOICE: 'AI reading: unlike {@names} voice',
+  cr_rules_agree_yes: ' (rule checks flagged this too)', cr_rules_agree_no: ' (rule checks did not flag this)',
+  cr_flagged: 'Pointed at: “{p}”', cr_flagged_in_own: ' (in {@names} material: {c}× across {s} items)',
+  cr_flagged_not_in_own: ' (0× in {@names} {of} items)',
+  cr_flagged_missing: 'The words the AI pointed at do not stand in this line and were dropped.',
+  cr_claim_says_ok: 'AI says {@name} says “{p}” · checked: {c}× in {s} of {of} items',
+  cr_claim_says_miss: 'AI says {@name} says “{p}” · not found in {of} items (the AI\'s opinion)',
+  cr_claim_says_none: 'AI says {@name} says “{p}” · no material to check yet (the AI\'s opinion)',
+  cr_claim_never_ok: 'AI says {@name} never says “{p}” · checked: 0× in {of} items',
+  cr_claim_never_bad: 'AI says {@name} never says “{p}” · contradicted: {c}× in {s} of {of} items',
+  cr_claim_never_none: 'AI says {@name} never says “{p}” · no material to check yet (the AI\'s opinion)',
+  cr_claim_opens_ok: 'AI says {@name} opens with “{p}” · checked: in {s} of {of} openings',
+  cr_claim_opens_miss: 'AI says {@name} opens with “{p}” · not found in {of} openings (the AI\'s opinion)',
+  cr_claim_opens_none: 'AI says {@name} opens with “{p}” · no openings to check yet (the AI\'s opinion)',
+  cr_in_dna_uses: ' (also in {@names} voice profile)', cr_in_dna_banned: ' (also in {@names} never-say list)',
+  cr_worse_head: 'Worse than the line now by the counts: {list}.',
+  cr_worse_rules: 'rule findings {from} → {to}', cr_worse_hints: 'written-style hints {from} → {to}',
+  cr_worse_voice_match: 'voice match {from} → {to}',
+  cr_worse_length: 'breaths in usual length {fi}/{fb} → {ti}/{tb}',
+  cr_worse_unfamiliar: 'unfamiliar words {from} → {to}',
   cr_critic_none: 'The AI picked out no line to change. That does not mean the script has no problems, only that it found none.',
   cr_line_no: 'Line {n}', cr_now: 'now',
   cr_stale: 'This line was changed afterwards, so these proposals no longer match it.', cr_save_first: 'The script is not saved yet. Please try again in a moment.',
@@ -289,7 +339,63 @@ function craftChecksHtml(item, result) {
   }
   (item.patterns || []).forEach((p) => chips.push(`<span class="tag">${esc(t('pat_' + p))}</span>`));
   const issues = item.findings.map(wlIssueHtml).join('');      // wordlist.js: drawn as in the editor, hints set apart
-  return `<div class="craft-checks">${chips.join('')}</div>${issues ? `<div class="issues">${issues}</div>` : ''}`;
+  const more = item.findings_left_out ? `<p class="hint">${esc(tf('cr_findings_more', { n: item.findings_left_out }))}</p>` : '';
+  return `<div class="craft-checks">${chips.join('')}</div>${issues ? `<div class="issues">${issues}</div>` : ''}${more}`;
+}
+
+function craftClaimText(c) {
+  const args = { p: c.phrase, c: c.count, s: c.scripts, of: c.of };
+  let base = '';
+  if (c.claim === 'never_says') {
+    base = tf(c.found === null ? 'cr_claim_never_none' : (c.holds ? 'cr_claim_never_ok' : 'cr_claim_never_bad'), args);
+  } else if (c.claim === 'opens_with') {
+    base = tf(c.found === null ? 'cr_claim_opens_none' : (c.holds ? 'cr_claim_opens_ok' : 'cr_claim_opens_miss'), args);
+  } else {
+    base = tf(c.found === null ? 'cr_claim_says_none' : (c.holds ? 'cr_claim_says_ok' : 'cr_claim_says_miss'), args);
+  }
+  const dna = c.in_dna === 'uses' ? t('cr_in_dna_uses') : (c.in_dna === 'banned' ? t('cr_in_dna_banned') : '');
+  return base + dna;
+}
+
+function craftWorseHtml(worse) {
+  if (!Array.isArray(worse) || !worse.length) return '';
+  const total = (p) => (p ? p.errors + p.reviews : 0);
+  const parts = worse.map((w) => {
+    if (w.what === 'rules') return tf('cr_worse_rules', { from: total(w.from), to: total(w.to) });
+    if (w.what === 'length') return tf('cr_worse_length', { fi: w.from[0], fb: w.from[1], ti: w.to[0], tb: w.to[1] });
+    return tf('cr_worse_' + w.what, { from: w.from, to: w.to });
+  });
+  return `<div class="cr-note" data-critic="worse">${esc(tf('cr_worse_head', { list: parts.join(craftSep()) }))}</div>`;
+}
+
+function craftReadingHtml(item) {
+  const r = item.reading;
+  if (!r) return '';
+  const chips = [];
+  if (r.issue && I18N[lang]['cr_issue_' + r.issue]) {
+    const agree = r.rules_agree === true ? t('cr_rules_agree_yes') : (r.rules_agree === false ? t('cr_rules_agree_no') : '');
+    chips.push(`<span class="tag" data-critic="issue">${esc(t('cr_issue_' + r.issue) + agree)}</span>`);
+  }
+  if (r.flagged) {
+    const lk = r.flagged_lookup;
+    const rec = lk && lk.found !== null
+      ? (lk.found ? tf('cr_flagged_in_own', { c: lk.count, s: lk.scripts }) : tf('cr_flagged_not_in_own', { of: lk.of }))
+      : '';
+    chips.push(`<span class="tag" data-critic="flagged">${esc(tf('cr_flagged', { p: r.flagged }) + rec)}</span>`);
+  }
+  (r.claims || []).forEach((c) => {
+    chips.push(`<span class="tag ${c.holds === true ? 'ok' : 'warn'}" data-critic="claim">${esc(craftClaimText(c))}</span>`);
+  });
+  const missing = r.flagged_missing ? `<div class="hint" data-critic="flagged-missing">${esc(t('cr_flagged_missing'))}</div>` : '';
+  return `${chips.length ? `<div class="craft-checks" data-critic="reading">${chips.join('')}</div>` : ''}${missing}`;
+}
+
+function craftWhyText(item) {
+  const rObj = item.reason && typeof item.reason === 'object' ? item.reason : null;
+  const plain = typeof item.reason === 'string' ? item.reason : (rObj && typeof rObj.text === 'string' ? rObj.text : '');
+  const zh = item.why_zh || (rObj && rObj.why_zh) || plain;
+  const en = item.why_en || (rObj && rObj.why_en) || plain;
+  return lang === 'en' ? (en || zh) : (zh || en);
 }
 
 function craftItemHtml(item, n, result) {
@@ -298,12 +404,16 @@ function craftItemHtml(item, n, result) {
     return `<div class="craft-item used" data-n="${n}"><span class="meta">${where} · ${esc(t('cr_used'))}</span>
       <button type="button" class="btn ghost" data-craft-do="undo" data-n="${n}">${esc(t('cr_undo'))}</button></div>`;
   }
-  const why = lang === 'en' ? (item.why_en || item.why_zh) : (item.why_zh || item.why_en);
+  const why = craftWhyText(item);
+  const whyLine = why
+    ? `<div class="meta" data-critic="why">${esc(result.kind === 'critic' ? tf('cr_ai_reading', { why }) : why)}</div>`
+    : '';
   return `<div class="craft-item" data-n="${n}">
     ${result.kind === 'critic' ? `<div class="meta">${where} · ${esc(t('cr_now'))}：<del>${esc(item.original)}</del></div>` : ''}
     <div class="craft-text">${esc(item.text)} <span class="meta">${esc(tf('cr_units', { n: item.units }))}</span></div>
-    ${why ? `<div class="meta">${esc(why)}</div>` : ''}
+    ${whyLine}
     ${lang === 'en' && item.english ? `<div class="meta">${esc(item.english)}</div>` : ''}
+    ${result.kind === 'critic' ? craftReadingHtml(item) + craftWorseHtml(item.worse) : ''}
     ${craftChecksHtml(item, result)}
     <div class="row"><button type="button" class="btn primary" data-craft-do="use" data-n="${n}">${esc(t('cr_use'))}</button></div></div>`;
 }
