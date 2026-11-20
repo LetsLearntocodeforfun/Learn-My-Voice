@@ -91,6 +91,11 @@ class Jobs:
         with self._lock:
             return [self._public(j) for j in self._jobs.values() if j["kind"] == kind and j["status"] == "running"]
 
+    def unfinished(self) -> int:
+        """How many jobs of any kind have not finished: running, or waiting their turn. A backup is not restored meanwhile."""
+        with self._lock:
+            return sum(1 for j in self._jobs.values() if j["status"] == "running")
+
     def wait(self, job_id: str, timeout: float = 30.0) -> Optional[Dict[str, Any]]:
         """Block until a job finishes (for tests)."""
         deadline = time.time() + timeout

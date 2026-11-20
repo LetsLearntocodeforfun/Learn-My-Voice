@@ -519,6 +519,25 @@ input[type=date] { border: 1px solid var(--line-2); border-radius: 10px; padding
   .sv-grid, .vi-review-split:has(.vi-review-media) { grid-template-columns: 1fr; }
 }
 
+/* ---- backup and restore (backup.js): the Settings section, and the notice over a page whose data was replaced ---- */
+#bk-box { margin-top: 36px; }
+#bk-box h2 { font-size: 20px; margin: 0 0 4px; }
+#bk-box > .hint { margin-bottom: 10px; }
+#bk-box h4 { font-size: 14px; margin: 18px 0 4px; }
+#bk-box .banner { margin: 12px 0; }
+#bk-box .card .hint { overflow-wrap: anywhere; }
+#bk-made, #bk-last { margin: 10px 0 0; overflow-wrap: anywhere; }
+.bk-preview { margin: 14px 0 4px; padding: 14px 16px; background: var(--bg); border-radius: 12px; }
+.bk-preview h4 { margin-top: 0; }
+.bk-preview .row { margin-top: 12px; }
+table.bk-table { table-layout: fixed; margin-bottom: 8px; }
+table.bk-table td, table.bk-table th { text-align: left; overflow-wrap: anywhere; }
+.bk-auto { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 8px 0; border-top: 1px solid var(--line); font-size: 14px; }
+.bk-auto .btn { font-size: 13px; padding: 5px 14px; flex: none; }
+#bk-done .btn { margin-left: 8px; font-size: 13px; padding: 4px 12px; }
+#bk-stale { position: fixed; inset: 0; z-index: 130; background: var(--scrim); display: grid; place-items: center; padding: 20px; }
+@media (max-width: 720px) { .bk-auto { flex-wrap: wrap; } }
+
 /* ---- references beside the script editor (refs.js): the creator's own material, pinned or found by plain rules ----
    Every colour in this block is one of the variables at the top of this sheet, so that a change of those (another
    look, a dark mode) reaches the panel without a change here. */

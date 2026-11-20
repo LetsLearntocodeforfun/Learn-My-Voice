@@ -414,9 +414,11 @@ function renderSettings() {
     <div class="row" style="margin-top:24px"><button class="btn primary big" id="save">${esc(t('save'))}</button></div>
     ${lookCard}
     <div id="wl-box"></div>
+    <div id="bk-box"></div>
     ${mcpCard}
     <p class="hint" id="build-line" style="margin-top:28px">${esc(buildLine())}</p></div>`;
   wlPaintSettings(document.getElementById('wl-box'));     // wordlist.js: the word list behind the wording findings
+  bkPaintSettings(document.getElementById('bk-box'));     // backup.js: back up everything, and restore a backup
   document.querySelectorAll('#look-card [data-pick]').forEach((button) => {
     button.onclick = () => {
       const name = button.dataset.pick.split(':')[0];

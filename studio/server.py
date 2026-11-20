@@ -16,8 +16,9 @@ Writes from another website are kept out in three ways, checked in this order:
 3. PUT and DELETE cannot be sent across sites at all without that permission,
    whatever they carry.
 
-The one write that is not JSON is the video upload (``PUT /api/uploads``, the
-raw file as the body). It is covered by 1 and 3, and must also declare
+The two writes that are not JSON are the video upload (``PUT /api/uploads``) and
+a backup file that is to be restored (``PUT /api/restore/file``), each with the
+raw file as the body. They are covered by 1 and 3, and must also declare
 ``application/octet-stream``, which a form cannot send either.
 
 Every answer forbids being shown in a frame and carries a content security
@@ -55,6 +56,7 @@ from typing import Any, Dict, List, Optional, Tuple
 from . import checks, corpus, creator, exports, keyword_import, llm, pipeline, textstats, timing, transcribe, trends
 from . import buildinfo, hooks, outside, posted, refs, suggest, video_ingest, wordlist
 from . import setup as setup_status
+from . import backup
 from .jobs import JobError, Jobs, Progress
 from .store import (
     HISTORY_ID,
@@ -377,6 +379,10 @@ class App:
         # None, or what a trial of the desktop app is told and tells: see ``start_window_check``.
         self.window_check: Optional[Dict[str, Any]] = None
         self.jobs = Jobs()
+        # Backing up everything and restoring a backup (studio/backup.py). Made here, at the start: it first finishes
+        # undoing a restore the app was closed in the middle of. Every request to the API passes through it
+        # (``Handler._gated_api``).
+        self.backups = backup.Backups(store, self.jobs)
         self.max_upload_bytes = MAX_UPLOAD_BYTES
         self.install_lock = threading.Lock()
         self.discover_lock = threading.Lock()
@@ -458,19 +464,37 @@ class Handler(BaseHTTPRequestHandler):
     def log_message(self, *args: Any) -> None:  # keep the terminal quiet
         pass
 
-    def _send(self, status: int, body: bytes, content_type: str, extra: Optional[Dict[str, str]] = None) -> None:
+    def _head(self, status: int, length: int, content_type: str, extra: Optional[Dict[str, str]] = None) -> None:
+        """Send the status line and the headers every answer carries. The body, ``length`` bytes of it, follows."""
         self.send_response(status)
         self.send_header("Content-Type", content_type)
-        self.send_header("Content-Length", str(len(body)))
+        self.send_header("Content-Length", str(length))
         self.send_header("Cache-Control", "no-store")
         self.send_header("X-Content-Type-Options", "nosniff")
         self.send_header("X-Frame-Options", "DENY")                         # no page may show this app inside a frame
         self.send_header("Referrer-Policy", "no-referrer")
         self.send_header("Content-Security-Policy", CONTENT_SECURITY_POLICY)
+        # Which data this answer is about. It changes when a backup is restored; a page that was open before then
+        # learns here that what it shows is no longer what is stored (studio/backup.py, studio/web/backup.js).
+        self.send_header(backup.EPOCH_HEADER, self.app.backups.epoch)
         for key, value in (extra or {}).items():
             self.send_header(key, value)
         self.end_headers()
+
+    def _send(self, status: int, body: bytes, content_type: str, extra: Optional[Dict[str, str]] = None) -> None:
+        self._head(status, len(body), content_type, extra)
         self.wfile.write(body)
+
+    def _send_file(self, path: Path, name: str) -> None:
+        """Send the file at ``path`` as a download called ``name``, a piece at a time: it is never held in memory whole."""
+        try:
+            source = open(str(path), "rb")
+        except OSError:
+            raise ApiError(404, "not_found")
+        with source:
+            self._head(200, os.fstat(source.fileno()).st_size, "application/octet-stream",
+                       {"Content-Disposition": "attachment; filename*=UTF-8''" + urllib.parse.quote(name)})
+            shutil.copyfileobj(source, self.wfile, UPLOAD_CHUNK)
 
     def _json(self, payload: Any, status: int = 200) -> None:
         """Send ``payload`` as JSON a browser can read: ``NaN`` and ``Infinity`` are never sent.
@@ -683,7 +707,7 @@ class Handler(BaseHTTPRequestHandler):
                 if self._check_auth(method, split.path, split.query):
                     return
                 if split.path.startswith("/api/"):
-                    self._api(method, split.path)
+                    self._gated_api(method, split.path)
                 elif method == "GET":
                     self._static(split.path)
                 else:
@@ -1004,6 +1028,136 @@ class Handler(BaseHTTPRequestHandler):
         ideas = pipeline.apply_ideas(store, result, focus=focus, lookup=lookup)
         return self._json({"performance": corpus.performance(store.list_samples()), "result": ideas})
 
+    # ---- backing up everything, and restoring a backup (studio/backup.py) ------
+    def _gated_api(self, method: str, path: str) -> None:
+        """Every request to ``/api/`` runs inside ``Backups.passage``.
+
+        That is what lets a restore replace the data in one step: for that moment requests wait here. It is also
+        where a change sent by a page that was open before a restore is refused: such a page names, in
+        ``backup.EPOCH_HEADER``, data that is no longer there. A request that names none is served as it always was.
+        """
+        try:
+            with self.app.backups.passage(method != "GET", self.headers.get(backup.EPOCH_HEADER)):
+                self._api(method, path)
+        except backup.Refused as exc:
+            raise ApiError(exc.status, exc.code, exc.message, exc.message_zh, extra=exc.extra)
+
+    def _receive_backup(self) -> Path:
+        """Write the body of ``PUT /api/restore/file`` to a file in the app's backup folder and return where it is.
+
+        Like a video it is written as it arrives and never held in memory, under a name made here. It has to
+        state its size, and one over ``backup.MAX_BACKUP_BYTES`` is refused before a byte of it is read.
+        """
+        app = self.app
+        if (self.headers.get("Content-Type") or "").split(";")[0].strip().lower() != "application/octet-stream":
+            raise ApiError(415, "octet_stream_required")
+        length = _stated_length(self.headers.get("Content-Length"))
+        if self.headers.get("Transfer-Encoding") or length is None:
+            raise ApiError(411, "length_required", "The upload must state its size", "上传时必须说明文件大小")
+        if length == 0:
+            raise ApiError(400, "empty_upload", "The file is empty", "这个文件是空的")
+        if length > backup.MAX_BACKUP_BYTES:
+            limit = "%d MB" % (backup.MAX_BACKUP_BYTES // (1024 * 1024))
+            raise ApiError(413, "backup_too_large", "This file is larger than a backup can be (%s), so it was not read." % limit,
+                           "这个文件超过了备份的大小上限（%s），所以没有读取。" % limit, extra={"limit": backup.MAX_BACKUP_BYTES})
+        try:
+            free = shutil.disk_usage(str(app.store.data_dir)).free
+        except OSError:
+            free = None
+        if free is not None and length > free:
+            raise ApiError(507, "disk_full", "There is not enough free space on this computer for the file",
+                           "这台电脑的剩余空间放不下这个文件")
+        target = app.backups.arriving()
+        self.connection.settimeout(UPLOAD_IDLE_SEC)
+        self._body_read = True
+        received, whole = 0, False
+        try:
+            with os.fdopen(os.open(str(target), os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600), "wb") as out:
+                while received < length:
+                    try:
+                        chunk = self.rfile.read(min(UPLOAD_CHUNK, length - received))
+                    except OSError:                 # the browser went away, or sent nothing for too long
+                        chunk = b""
+                    if not chunk:
+                        break
+                    out.write(chunk)
+                    received += len(chunk)
+            if received != length:
+                raise ApiError(400, "incomplete_upload", "The upload stopped before the whole file arrived",
+                               "文件没有传完就中断了")
+            whole = True
+        except OSError:
+            raise ApiError(507, "upload_not_saved", "The file could not be saved on this computer",
+                           "文件没能保存到这台电脑上")
+        finally:
+            if not whole:
+                _remove(target)
+        return target
+
+    def _backup_api(self, method: str, path: str) -> None:
+        """One file that holds everything the creator made or taught the app, and restoring such a file.
+
+        - ``GET /api/backup``: what a backup made now would hold, the automatic backups, what was last restored.
+        - ``POST /api/backup``: make a backup. The answer names it (``id``); ``GET /api/backup/<id>/file`` then
+          sends it as a download. That is what a browser does.
+        - ``POST /api/backup/save``: make a backup and put it where exports are put, the way they are: into the
+          Downloads folder, under a name that is not taken, or beside the data folder when Downloads cannot be
+          written to. The desktop app's page asks for this in place of a download. Answers with where it is.
+        - ``PUT /api/restore/file``: the backup file is the body. It is checked as hostile input and nothing is
+          replaced. Answers with ``restore_id``, what the file holds and what is here now.
+        - ``POST /api/restore/automatic`` ``{"name"}``: the same for one of the automatic backups.
+        - ``POST /api/restore`` ``{"restore_id"}``: replace everything with the checked backup, all of it or none.
+        - ``DELETE /api/restore/<id>``: forget a checked backup that is not going to be restored.
+
+        Each is the creator's click in the app. There is deliberately no MCP tool for any of them.
+        """
+        app = self.app
+        backups = app.backups
+        route = (method, path)
+        if route == ("GET", "/api/backup"):
+            return self._json(backups.info())
+        if route == ("POST", "/api/backup"):
+            return self._json(backups.make(), 201)
+        if route == ("POST", "/api/backup/save"):
+            made = backups.make()
+            downloads = app.outside.downloads_folder()
+            try:
+                # The name is taken first, with nothing in the file, and the backup is then copied into it a piece
+                # at a time: it may be large, and what puts a file into Downloads takes its content whole.
+                saved = app.outside.save(made["name"], b"", [downloads, Path(app.store.data_dir).resolve().parent / "exports"])
+                try:
+                    shutil.copyfile(str(backups.made(made["id"])["path"]), str(saved))
+                    if os.name == "posix":
+                        os.chmod(str(saved), 0o600)         # the creator's whole material: not for the other accounts
+                except BaseException:
+                    _remove(saved)
+                    raise
+            except (OSError, TypeError) as exc:
+                raise ApiError(507, "export_not_saved", "The file could not be saved on this computer: %s" % exc,
+                               "文件没能存到这台电脑上：%s" % exc)
+            finally:
+                backups.forget_made(made["id"])
+            app.remember_saved(saved)
+            return self._json(dict(made, name=saved.name, folder=str(saved.parent), path=str(saved),
+                                   in_downloads=saved.parent == Path(downloads)), 201)
+        m = re.fullmatch(r"/api/backup/([0-9a-f]{12})/file", path)
+        if m and method == "GET":
+            found = backups.made(m.group(1))
+            if found is None:
+                raise ApiError(404, "not_found", "That backup is no longer waiting to be fetched. Make it again.",
+                               "那份备份已经不在等待下载了，请重新备份一次。")
+            return self._send_file(found["path"], found["name"])
+        if route == ("PUT", "/api/restore/file"):
+            return self._json(backups.stage(self._receive_backup()))
+        if route == ("POST", "/api/restore/automatic"):
+            return self._json(backups.stage_automatic(self._read_json().get("name")))
+        if route == ("POST", "/api/restore"):
+            return self._json(backups.restore(self._read_json().get("restore_id")))
+        m = re.fullmatch(r"/api/restore/([0-9a-f]{12})", path)
+        if m and method == "DELETE":
+            return self._json({"ok": True, "discarded": backups.discard(m.group(1))})
+        raise ApiError(404, "not_found")
+
     # ---- api ----------------------------------------------------------------
     def _api(self, method: str, path: str) -> None:
         app = self.app
@@ -1011,6 +1165,8 @@ class Handler(BaseHTTPRequestHandler):
         route = (method, path)
         if method == "POST":
             self._read_json()       # every POST must be JSON, also one that needs nothing from its body
+        if path == "/api/backup" or path.startswith(("/api/backup/", "/api/restore")):
+            return self._backup_api(method, path)       # one file that holds everything, and restoring one
 
         if route == ("GET", "/api/state"):
             _, is_example = store.load_dna()
@@ -1745,6 +1901,7 @@ class StudioServer(ThreadingHTTPServer):
         # Also reached from the constructor when the port is taken, before ``app`` exists.
         if self.app is not None:
             self.app.uploads.close()        # uploads still waiting are not kept once the app has closed
+            self.app.backups.close()        # nor is a backup that was made or checked and then not fetched or restored
             self.app.remove_token_file()
         super().server_close()
 
