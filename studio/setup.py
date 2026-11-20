@@ -132,6 +132,54 @@ def voice_history(store: Store) -> List[Dict[str, Any]]:
     return history
 
 
+def _voice_from_times(store: Store, organic_since: Tuple[float, ...]) -> Dict[str, Any]:
+    dna, is_example = store.load_dna()
+    pending = store.load_pending()
+    if is_example:
+        voice = {"state": VOICE_PENDING if pending else VOICE_EXAMPLE, "learned_at": None,
+                 "based_on": _count(pending.get("based_on")) if pending else 0,
+                 "new_since": 0, "has_pending": pending is not None}
+        if store.dna_unreadable():
+            voice["unreadable"] = True      # their own profile file is there but cannot be read; the example is in use
+        return voice
+    summary = pipeline.profile_summary(dna)
+    learned_at = summary.get("learned_at")
+    based_on = summary.get("based_on", summary.get("organic_scripts_analyzed"))
+    since = _learned_time(summary)
+    return {
+        # A profile of the creator's own is in use, whether or not a newer proposal is also waiting.
+        "state": VOICE_ACTIVE,
+        "learned_at": learned_at if isinstance(learned_at, str) else None,
+        "based_on": _count(based_on),
+        "new_since": sum(1 for t in organic_since if t > since) if since is not None else 0,
+        "has_pending": pending is not None,
+    }
+
+
+def _material_summary(store: Store) -> Tuple[Dict[str, Any], Tuple[float, ...]]:
+    version = store.samples_version()
+    cached = getattr(store, "_setup_material_cache", None)
+    if cached is not None and cached[0] == version:
+        return dict(cached[1]), cached[2]
+    samples = store.list_samples()
+    organic = _organic(samples)
+    clauses = corpus.voice_stats(s["text"] for s in organic)["clauses"]
+    measured = pipeline.measured_rate(samples)
+    organic_since = tuple(_usable_since(s) for s in organic)
+    material = {
+        "done": len(organic) >= MATERIAL_DONE_AT,
+        "total": len(samples),
+        "organic": len(organic),
+        "unreviewed": sum(1 for s in samples if s.get("needs_review") and not corpus.waits_as_posted_script(s)),
+        "clauses": clauses,
+        "enough_for_cadence": clauses >= pipeline.MIN_CLAUSES_FOR_MEASURED_CADENCE,
+        "timed_sec": _timed_seconds(samples),
+        "measured_rate": measured["speaking_rate_cpm"] if measured else None,
+    }
+    store._setup_material_cache = (version, dict(material), organic_since)
+    return material, organic_since
+
+
 def status(store: Store) -> Dict[str, Any]:
     """The setup status the page shows.
 
@@ -166,30 +214,20 @@ def status(store: Store) -> Dict[str, Any]:
     """
     who = store.load_creator()
     page = creator.for_page(who)
-    samples = store.list_samples()
-    organic = _organic(samples)
-    clauses = corpus.voice_stats(s["text"] for s in organic)["clauses"]
-    measured = pipeline.measured_rate(samples)
+    material, organic_since = _material_summary(store)
     settings = store.public_settings()
-    voice = _voice(store, organic)
+    voice = _voice_from_times(store, organic_since)
     drafts = store.count_ai_drafts()
 
     done = {
         "creator": creator.is_set(who),
-        "material": len(organic) >= MATERIAL_DONE_AT,
+        "material": material["done"],
         "voice": voice["state"] == VOICE_ACTIVE,
         "script": drafts > 0,
     }
     return {
         "creator": {"done": done["creator"], "name": page["name"], "niches": page["niches"]},
-        "material": {
-            "done": done["material"], "total": len(samples), "organic": len(organic),
-            "unreviewed": sum(1 for s in samples if s.get("needs_review") and not corpus.waits_as_posted_script(s)),
-            "clauses": clauses,
-            "enough_for_cadence": clauses >= pipeline.MIN_CLAUSES_FOR_MEASURED_CADENCE,
-            "timed_sec": _timed_seconds(samples),
-            "measured_rate": measured["speaking_rate_cpm"] if measured else None,
-        },
+        "material": material,
         "ai": {"configured": settings["configured"], "manual": settings["manual"]},
         "voice": voice,
         "first_script": {"done": done["script"], "count": drafts},

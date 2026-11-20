@@ -409,7 +409,8 @@ class InstallTest(Sandbox):
 
     @mac_pipeline
     def test_install_from_nothing_then_again(self):
-        with mock.patch.dict(os.environ, {"HF_TOKEN": "secret", "PIP_INDEX_URL": "http://elsewhere.example", "HTTPS_PROXY": "http://proxy:8080"}):
+        with mock.patch.dict(os.environ, {"HF_TOKEN": "secret", "PIP_INDEX_URL": "http://elsewhere.example",
+                                          "HTTPS_PROXY": "http://proxy:8080", "SSL_CERT_FILE": "/tmp/evil.pem"}):
             seen = self.install()
         python = str(self.home / "venv" / "bin" / "python")
         self.assertEqual(self.tools.kinds(), ["venv", "pip", "pip", "say", "afconvert", "worker"])
@@ -417,17 +418,19 @@ class InstallTest(Sandbox):
         venv, pip_self, pip_packages = (c[0] for c in self.tools.calls[:3])
         self.assertEqual(venv, [sys.executable, "-I", "-m", "venv", str(self.home / "venv")])   # made with the Python running the app
         common = [python, "-I", "-m", "pip", "--isolated", "--disable-pip-version-check", "--no-input", "--no-cache-dir",
-                  "install", "--index-url", "https://pypi.org/simple", "--only-binary", ":all:"]
-        self.assertEqual(pip_self, common + ["pip==26.0.1"])                      # pip upgraded inside the environment only
+                  "install", "--index-url", "https://pypi.org/simple", "--only-binary", ":all:", "--require-hashes"]
+        self.assertEqual(pip_self, common + ["--no-deps", "-r", str(self.home / "requirements.txt")])
         self.assertEqual(pip_packages, common + ["--no-deps", "-r", str(self.home / "requirements.txt")])
 
-        pins = (self.home / "requirements.txt").read_text().split()
+        req_lines = [line for line in (self.home / "requirements.txt").read_text().splitlines() if line.strip()]
+        pins = [line.split()[0] for line in req_lines]
+        self.assertTrue(all("--hash=sha256:" in line for line in req_lines))
         self.assertEqual(pins, list(transcribe.PACKAGES))
         self.assertTrue(all(p.count("==") == 1 and not p.startswith("torch") for p in pins))    # exact pins, torch left out
         self.assertTrue({"mlx-whisper==0.4.3", "mlx==0.29.3", "numpy==2.0.2", "numba==0.60.0"} <= set(pins))
 
         for _, env, _ in self.tools.calls:                                        # nothing secret or stray reaches a child
-            self.assertFalse({"HF_TOKEN", "PIP_INDEX_URL"} & set(env))
+            self.assertFalse({"HF_TOKEN", "PIP_INDEX_URL", "SSL_CERT_FILE", "REQUESTS_CA_BUNDLE"} & set(env))
         pip_env = self.tools.of("pip")[0][1]
         self.assertEqual((pip_env["NETRC"], pip_env["HTTPS_PROXY"]), (os.devnull, "http://proxy:8080"))
         self.assertNotIn("HTTPS_PROXY", self.tools.of("worker")[0][1])            # the worker gets no route out
@@ -461,7 +464,7 @@ class InstallTest(Sandbox):
         sealed = {kind: seal for kind, seal in zip(self.tools.kinds(), self.tools.seals)}
         self.assertEqual((sealed["venv"], sealed["pip"]), (None, None))           # setup itself is what uses the network
         self.assertEqual(sealed["say"], {"rules": transcribe.NETWORK_SEAL, "places": {}})
-        self.assertEqual(sealed["worker"], {"rules": transcribe.NETWORK_SEAL, "places": {}})
+        self.assertEqual(sealed["worker"]["rules"], transcribe.WORKER_SEAL)
         self.assertEqual(sealed["afconvert"]["rules"], transcribe.AUDIO_SEAL)
 
     def test_setup_does_not_start_where_the_seal_cannot_be_set_up(self):
@@ -639,17 +642,22 @@ class TranscribeFileTest(Sandbox):
         self.assertEqual(self.tools.kinds(), ["afconvert", "worker"])
         audio, worker = self.tools.seals
         convert = self.tools.calls[0][0]
-        self.assertEqual(worker, {"rules": transcribe.NETWORK_SEAL, "places": {}})
+        self.assertEqual(worker["rules"], transcribe.WORKER_SEAL)
+        self.assertEqual(sorted(worker["places"]), ["HOME", "ROOT_DIR", "SCRATCH", "STUDIO_DIR", "TEMP", "WAV", "WHISPER_HOME", "WORKER"])
         self.assertEqual(audio["rules"], transcribe.AUDIO_SEAL)
         self.assertEqual(sorted(audio["places"]), ["HOME", "SCRATCH", "SOURCE", "TEMP"])
         self.assertEqual(audio["places"]["SOURCE"], transcribe._kernel_path(source))
         self.assertEqual(audio["places"]["SOURCE"], convert[-2])                   # the one file it may read is the one it is given
         self.assertEqual(audio["places"]["SCRATCH"], os.path.realpath(os.path.dirname(convert[-1])))
-        for rules in (transcribe.NETWORK_SEAL, transcribe.AUDIO_SEAL):
+        for rules in (transcribe.NETWORK_SEAL, transcribe.AUDIO_SEAL, transcribe.WORKER_SEAL):
             self.assertIn("(deny network*)", rules)
             self.assertNotIn("allow network", rules)
+        self.assertIn("com.apple.lsd.", transcribe.WORKER_SEAL)
         self.assertTrue(transcribe.AUDIO_SEAL.startswith(transcribe.NETWORK_SEAL))
+        self.assertTrue(transcribe.WORKER_SEAL.startswith(transcribe.NETWORK_SEAL))
         self.assertIn('(deny file-read-data (subpath "/Users") (subpath "/Volumes")', transcribe.AUDIO_SEAL)
+        self.assertIn('(deny file-read-data (subpath "/Users") (subpath "/Volumes")', transcribe.WORKER_SEAL)
+        self.assertIn('(deny file-write* (subpath "/Users") (subpath "/Volumes")', transcribe.WORKER_SEAL)
         self.assertTrue(transcribe.AUDIO_SEAL.endswith('(allow file-read-data (literal (param "SOURCE")) (subpath (param "SCRATCH")))'))
         self.assertNotIn(str(source), transcribe.AUDIO_SEAL)                      # a file name is never pasted into the rules
         self.assertEqual(self.seal.call_args_list[-1], mock.call(fresh=True))     # and the seal was tried just before
@@ -774,15 +782,23 @@ class RealAudioToolTest(unittest.TestCase):
         (home / "model").mkdir()
         (home / "model" / "config.json").write_text("{}")
         (home / "installed.json").write_text(json.dumps({"packages": list(transcribe.PACKAGES), "revision": transcribe.MODEL_REVISION}))
-        seen = self.tmp / "seen.json"
+        seen = home / "seen.json"
+        blocked = self.tmp / "blocked.json"
         worker = self.tmp / "whisper_worker.py"
         worker.write_text(
             "import json, os, sys, wave\n"
             "w = wave.open(sys.argv[sys.argv.index('--wav') + 1])\n"
             "shape = [w.getnchannels(), w.getsampwidth(), w.getframerate(), w.getnframes()]\n"
-            "json.dump({'argv': sys.argv[1:], 'env': dict(os.environ), 'shape': shape, 'flags': sys.flags.isolated}, open(%r, 'w'))\n"
+            "outside_blocked = False\n"
+            "try:\n"
+            "    open(%r, 'w').write('x')\n"
+            "except PermissionError:\n"
+            "    outside_blocked = True\n"
+            "json.dump({'argv': sys.argv[1:], 'env': dict(os.environ), 'shape': shape, 'flags': sys.flags.isolated,"
+            " 'outside_blocked': outside_blocked}, open(%r, 'w'))\n"
             "print('chatter from a library')\n"
-            "print(json.dumps({'segments': [{'start': 0.0, 'end': 0.9, 'text': '\\u597d\\u5566'}], 'language': 'zh'}))\n" % str(seen))
+            "print(json.dumps({'segments': [{'start': 0.0, 'end': 0.9, 'text': '\\u597d\\u5566'}], 'language': 'zh'}))\n"
+            % (str(blocked), str(seen)))
         with contextlib.ExitStack() as stack:
             for name, value in (("HOME", home), ("WORKER", worker), ("MODEL_FILES", (("config.json", 2, ""),)),
                                 ("_platform_problem", lambda: None)):
@@ -792,7 +808,8 @@ class RealAudioToolTest(unittest.TestCase):
         self.assertEqual(result, {"segments": [{"start": 0.0, "end": 0.9, "text": "好啦"}], "language": "zh",
                                   "duration_sec": 1.0, "model": transcribe.MODEL, "unclear_dropped": 0})
         record = json.loads(seen.read_text())
-        self.assertEqual((record["shape"], record["flags"]), ([1, 2, 16000, 16000], 1))
+        self.assertEqual((record["shape"], record["flags"], record["outside_blocked"]), ([1, 2, 16000, 16000], 1, True))
+        self.assertFalse(blocked.exists())
         self.assertEqual((record["env"]["HF_HUB_OFFLINE"], "HF_TOKEN" in record["env"]), ("1", False))
         self.assertFalse(Path(record["argv"][1]).parent.exists())                 # the WAV it read has been deleted
 

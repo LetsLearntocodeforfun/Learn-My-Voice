@@ -255,10 +255,15 @@ def line_changes(ai_lines: Any, final_lines: Any) -> List[Dict[str, Any]]:
             free_ai.difference_update(run)
 
     # 3. Reworded lines: most alike first, nearest position on ties.
+    # real_quick_ratio() and quick_ratio() are true upper bounds on ratio(), skipping O(K^2) alignment on unrelated lines.
     scored = []
     for i in sorted(free_ai):
+        a_key = ai[i].key
         for j in sorted(free_final):
-            ratio = difflib.SequenceMatcher(None, ai[i].key, final[j].key, autojunk=False).ratio()
+            matcher = difflib.SequenceMatcher(None, a_key, final[j].key, autojunk=False)
+            if matcher.real_quick_ratio() < SIMILAR_ENOUGH or matcher.quick_ratio() < SIMILAR_ENOUGH:
+                continue
+            ratio = matcher.ratio()
             if ratio >= SIMILAR_ENOUGH:
                 scored.append((-ratio, abs(i - j), i, j))
     for _, _, i, j in sorted(scored):

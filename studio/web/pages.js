@@ -125,7 +125,7 @@ Object.assign(I18N.zh, {
   kw_label: '目标关键词', kw_hint: '想让这篇带上的热词或搜索词，最多 8 个',
   kw_ph: '输入一个关键词', kw_add: '添加', kw_suggest: '正在跟踪的热词：', kw_none: '还没选关键词',
   kw_missing: '还没用到', kw_in_spoken: '口播', kw_in_title: '备选标题', kw_in_caption: '正文', kw_in_hashtags: '话题',
-  post_title: '发布文案', post_hint: 'AI 写初稿时一起写的。这里可以看、可以复制，不能修改。',
+  post_title: '发布文案', post_hint: 'AI 写初稿时一起生成的，这里可以直接修改并一键复制。',
   post_titles: '备选标题', post_covers: '封面文字', post_caption: '正文', post_hashtags: '话题',
   post_copy: '复制', post_copy_failed: '复制失败，请选中文字后手动复制。',
   idea_trends: '相关热词',
@@ -162,7 +162,7 @@ Object.assign(I18N.en, {
   kw_label: 'Target keywords', kw_hint: 'trend or search terms to work into this script, up to 8',
   kw_ph: 'Type a keyword', kw_add: 'Add', kw_suggest: 'Tracked trends:', kw_none: 'No keywords chosen',
   kw_missing: 'not used yet', kw_in_spoken: 'spoken', kw_in_title: 'title options', kw_in_caption: 'caption', kw_in_hashtags: 'hashtags',
-  post_title: 'Post copy', post_hint: 'Written by the AI together with the draft. It can be read and copied here, not edited.',
+  post_title: 'Post copy', post_hint: 'Written by the AI together with the draft. Edit any field here or copy it directly.',
   post_titles: 'Title options', post_covers: 'Cover text', post_caption: 'Caption', post_hashtags: 'Hashtags',
   post_copy: 'Copy', post_copy_failed: 'Copy failed. Select the text and copy it by hand.',
   idea_trends: 'Trend keywords',
@@ -487,7 +487,7 @@ async function renderLibrary() {
 }
 
 /* ---------- voice actions ---------- */
-function paintVoiceActions(dna, isExample) {
+async function paintVoiceActions(dna, isExample) {
   const el = document.getElementById('voice-actions');
   if (!el) return;
   const ready = appState.settings.configured && appState.sample_count > 0;
@@ -506,7 +506,7 @@ function paintVoiceActions(dna, isExample) {
   el.innerHTML = `${rateBox}
     <div class="row"><button class="btn primary big" id="learn" ${ready ? '' : 'disabled'}>${esc(t(isExample ? 'learn_btn' : 'learn_again'))}</button>
       ${!isExample && source.organic_scripts_analyzed ? `<span class="meta">${esc(tf('learn_source', { n: source.organic_scripts_analyzed }))} · ${esc(source.learned_at || '')}</span>` : ''}</div>
-    ${hint ? `<p class="hint">${hint}</p>` : ''}`;
+    ${hint ? `<p class="hint">${hint}</p>` : ''}<div id="voice-history"></div>`;
   document.getElementById('learn').onclick = (e) => busy(e.currentTarget, appState.settings.manual ? e.currentTarget.textContent : t('learning'), async () => {
     if (!(await aiRun('voice', {}))) return;
     setupUi.open = 'voice';        // the result is a proposal: review it item by item before it takes effect
@@ -520,6 +520,30 @@ function paintVoiceActions(dna, isExample) {
       await router();
     } catch (err) { showError(err); }
   };
+  try {
+    const { history } = await api('GET', '/api/voice/history');
+    const $hist = document.getElementById('voice-history');
+    if ($hist && Array.isArray(history) && history.length) {
+      const itemsHtml = history.map((item) => {
+        const desc = (lang === 'zh' ? item.essence_zh : (item.essence_en || item.essence_zh)) || '';
+        const meta = [item.based_on ? tf('learn_source', { n: item.based_on }) : '', item.learned_at || fmtDate(item.saved_at)].filter(Boolean).join(' · ');
+        return `<div class="row" style="margin-top:10px;align-items:center">
+          <div class="spacer"><div><strong>${esc(meta)}</strong></div>${desc ? `<div class="meta">${esc(desc)}</div>` : ''}</div>
+          <button type="button" class="btn" data-restore-id="${esc(item.id)}">${esc(t('v_history_restore'))}</button></div>`;
+      }).join('');
+      $hist.innerHTML = `<div class="card" style="margin-top:16px"><h3>${esc(t('v_history_title'))}</h3><p class="hint">${esc(t('v_history_sub'))}</p>${itemsHtml}</div>`;
+      $hist.onclick = async (e) => {
+        const btn = e.target.closest('[data-restore-id]');
+        if (!btn) return;
+        if (!(await askConfirm(t('v_history_confirm'), { ok: t('v_history_restore'), danger: true }))) return;
+        try {
+          await api('POST', '/api/voice/history/' + encodeURIComponent(btn.dataset.restoreId) + '/restore', {});
+          toast(t('v_history_restored'));
+          await router();
+        } catch (err) { showError(err); }
+      };
+    }
+  } catch (err) { /* history panel is optional */ }
 }
 
 /* ---------- ideas ---------- */
@@ -629,7 +653,7 @@ async function copyPlain(text) {
   return ok;
 }
 
-/* `post` is the model's rednote_post_package, saved as it came, so every field is checked before use. */
+/* `post` is the model's rednote_post_package, saved as it came, and editable in place. */
 function paintPost(el, post) {
   if (!el) return;
   const p = post && typeof post === 'object' ? post : {};
@@ -642,22 +666,50 @@ function paintPost(el, post) {
   const caption = str(p.caption_body_zh);
   const hashtags = list(p.hashtags_zh).map(str).filter(Boolean);
   if (!titles.length && !covers.length && !caption && !hashtags.length) { el.innerHTML = ''; return; }
-  const copies = [];
-  const row = (zh, en) => {
-    copies.push(zh);
-    return `<div class="post-row"><div class="text">${esc(zh)}${lang === 'en' && en ? `<small>${esc(en)}</small>` : ''}</div>
-      <button type="button" class="btn ghost" data-copy="${copies.length - 1}">${esc(t('post_copy'))}</button></div>`;
+  const inputRow = (kind, idx, zh, en, multiline) => {
+    const field = multiline
+      ? `<textarea rows="3" data-post-kind="${kind}" data-post-idx="${idx}">${esc(zh)}</textarea>`
+      : `<input type="text" data-post-kind="${kind}" data-post-idx="${idx}" value="${esc(zh)}">`;
+    return `<div class="post-row"><div class="text" style="flex:1">${field}${lang === 'en' && en ? `<small>${esc(en)}</small>` : ''}</div>
+      <button type="button" class="btn ghost" data-copy-post="1">${esc(t('post_copy'))}</button></div>`;
   };
   const part = (key, html) => (html ? `<h4>${esc(t(key))}</h4>${html}` : '');
   el.innerHTML = `<div class="card post"><h3>${esc(t('post_title'))}</h3><p class="hint">${esc(t('post_hint'))}</p>
-    ${part('post_titles', titles.map((o) => row(o.zh, o.en)).join(''))}
-    ${part('post_covers', covers.map((c) => row(c, '')).join(''))}
-    ${part('post_caption', caption ? row(caption, str(p.caption_body_en)) : '')}
-    ${part('post_hashtags', hashtags.length ? row(hashtags.join(' '), '') : '')}</div>`;
+    ${part('post_titles', titles.map((o, i) => inputRow('title', i, o.zh, o.en, false)).join(''))}
+    ${part('post_covers', covers.map((c, i) => inputRow('cover', i, c, '', false)).join(''))}
+    ${part('post_caption', caption ? inputRow('caption', 0, caption, str(p.caption_body_en), true) : '')}
+    ${part('post_hashtags', hashtags.length ? inputRow('hashtags', 0, hashtags.join(' '), '', false) : '')}</div>`;
+  el.querySelectorAll('textarea').forEach(autoGrow);
+  el.oninput = (e) => {
+    const input = e.target;
+    const kind = input && input.dataset ? input.dataset.postKind : '';
+    if (!kind || !cur || !cur.script) return;
+    if (input.tagName === 'TEXTAREA') autoGrow(input);
+    const next = Object.assign({}, cur.script.post || {});
+    const idx = Number(input.dataset.postIdx || 0);
+    if (kind === 'title') {
+      const arr = list(next.title_options).map((o) => (typeof o === 'string' ? { title_zh: o, title_en: '' } : Object.assign({}, o)));
+      if (arr[idx]) arr[idx].title_zh = input.value;
+      next.title_options = arr;
+    } else if (kind === 'cover') {
+      const arr = list(next.cover_thumbnail_text_options_zh).slice();
+      arr[idx] = input.value;
+      next.cover_thumbnail_text_options_zh = arr;
+    } else if (kind === 'caption') {
+      next.caption_body_zh = input.value;
+    } else if (kind === 'hashtags') {
+      next.hashtags_zh = input.value.split(/\s+/).map((x) => x.trim()).filter(Boolean);
+    }
+    cur.script.post = next;
+    scheduleSave();
+  };
   el.onclick = async (e) => {
-    const btn = e.target.closest('[data-copy]');
+    const btn = e.target.closest('[data-copy-post]');
     if (!btn) return;
-    toast(t((await copyPlain(copies[Number(btn.dataset.copy)])) ? 'mb_copied' : 'post_copy_failed'));
+    const row = btn.closest('.post-row');
+    const field = row && row.querySelector('input, textarea');
+    const val = field ? field.value : '';
+    toast(t((await copyPlain(val)) ? 'mb_copied' : 'post_copy_failed'));
   };
 }
 
@@ -774,5 +826,5 @@ async function renderTrends(data) {
 }
 
 window.addEventListener('hashchange', router);
-window.addEventListener('beforeunload', () => { if (dirty) saveNow(); });
+window.addEventListener('beforeunload', () => { if (dirty) saveNow({ keepalive: true }); });
 router();

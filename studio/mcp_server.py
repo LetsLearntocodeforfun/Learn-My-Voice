@@ -19,8 +19,8 @@ import traceback
 from pathlib import Path
 from typing import Any, BinaryIO, Callable, Dict, List, Optional
 
-from . import checks, corpus, creator, exports, llm, pipeline, trends
-from .store import StaleScript, Store, TextTooLong
+from . import checks, corpus, creator, exports, llm, outside, pipeline, trends
+from .store import StaleScript, Store, TextTooLong, _owner_only
 
 PROTOCOL_VERSIONS = ("2025-06-18", "2025-03-26", "2024-11-05")
 SERVER_INFO = {"name": "learn-my-voice", "title": "Learn My Voice", "version": "0.5.0"}
@@ -28,6 +28,8 @@ MCP_CORPUS_CHARS = 20000
 # The most library text one get_voice_learning_brief call may ask for: what the app's own voice prompt holds.
 # The number is chosen by the model on the other end, so it has a ceiling.
 MCP_MAX_CORPUS_CHARS = pipeline.LEARN_CORPUS_CHARS
+MAX_MCP_LINE_BYTES = 12 * 1024 * 1024
+MAX_MCP_BATCH = 64
 
 INSTRUCTIONS = (
     "Learn My Voice plans and writes Xiaohongshu (RedNote) video scripts in one creator's own voice. "
@@ -296,8 +298,13 @@ def t_export_jianying_kit(store: Store, args: Dict[str, Any]) -> Dict[str, Any]:
     filename, data, _ctype = exports.export_file(script, "jianying", dna, lang)
     folder = store.data_dir / "exports"
     folder.mkdir(exist_ok=True)
-    target = folder / re.sub(r'[/\\:*?"<>|\x00-\x1f]', "_", filename)
-    target.write_bytes(data)
+    _owner_only(folder, 0o700)
+    try:
+        clean_name = re.sub(r'[/\\:*?"<>|\x00-\x1f]', "_", filename)
+        target = outside.save(clean_name, data, [folder])
+    except OSError as exc:
+        raise ToolError("Could not save export kit: %s" % exc)
+    _owner_only(target, 0o600)
     return {
         "saved_to": str(target),
         "contains": "Subtitle .srt, on-screen text .srt (if any), voiceover text for 文稿匹配, shot list, instructions.",
@@ -515,23 +522,33 @@ def handle(store: Store, message: Any) -> Optional[Dict[str, Any]]:
 
 
 def serve(store: Store, stdin: BinaryIO, stdout: BinaryIO) -> None:
-    """Read newline-delimited JSON-RPC from stdin until it closes."""
-    for raw in stdin:
-        line = raw.strip()
-        if not line:
-            continue
-        reply: Any
-        try:
-            message = json.loads(line.decode("utf-8"))
-        except (ValueError, UnicodeDecodeError):
-            reply = _error(None, -32700, "Parse error")
+    """Read newline-delimited JSON-RPC from stdin until it closes, within bounded memory."""
+    while True:
+        raw = stdin.readline(MAX_MCP_LINE_BYTES + 1)
+        if not raw:
+            break
+        if len(raw) > MAX_MCP_LINE_BYTES:
+            while raw and not raw.endswith(b"\n"):
+                raw = stdin.readline(65536)
+            reply: Any = _error(None, -32700, "Message exceeds maximum size")
         else:
-            if isinstance(message, list):
-                reply = [r for r in (handle(store, m) for m in message) if r is not None] or None
+            line = raw.strip()
+            if not line:
+                continue
+            try:
+                message = llm.loads_strict(line.decode("utf-8"))
+            except (ValueError, UnicodeDecodeError):
+                reply = _error(None, -32700, "Parse error")
             else:
-                reply = handle(store, message)
+                if isinstance(message, list):
+                    if not message or len(message) > MAX_MCP_BATCH:
+                        reply = _error(None, -32600, "Invalid Request: empty or oversized batch")
+                    else:
+                        reply = [r for r in (handle(store, m) for m in message) if r is not None] or None
+                else:
+                    reply = handle(store, message)
         if reply is not None:
-            stdout.write(json.dumps(reply).encode("ascii") + b"\n")  # ASCII-escaped: always one line
+            stdout.write(json.dumps(reply, allow_nan=False).encode("ascii") + b"\n")  # ASCII-escaped: always one line
             stdout.flush()
 
 

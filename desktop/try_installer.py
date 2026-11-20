@@ -447,6 +447,7 @@ def try_installer(installer: Path, shots: Optional[Path], label: str) -> Dict[st
         checks.append("the installed app starts and its core listens on this computer only")
         if not base.startswith("http://127.0.0.1:"):
             raise Failed("the core listens at %s, not on 127.0.0.1" % base)
+        trial.set_token(trial.read_token(data))
         trial.use(base, version, checks)
         as_the_desktop_app(base, data, runtime.get("python"), checks)
         wait_for(data / RUNNING_FILE, process, True, "the installed app")
@@ -471,6 +472,7 @@ def try_installer(installer: Path, shots: Optional[Path], label: str) -> Dict[st
         usual = default_data_folder()
         process = start(program, None, log)
         note = wait_for(usual / RUNNING_FILE, process, False, "the app, started a second time")
+        trial.set_token(trial.read_token(usual))
         if not answers(str(note["url"]).rstrip("/")):
             raise Failed("started a second time, the app's core did not answer")
         if trial.ask(str(note["url"]).rstrip("/"), "GET", "/api/window-check")[0] != 404:

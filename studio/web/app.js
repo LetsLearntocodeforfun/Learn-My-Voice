@@ -136,7 +136,14 @@ const I18N = {
     connect: '连接并读取模型', model: '模型', pick_model: '请选择模型', save: '保存', connected: '已连接',
     not_connected: '未连接', settings_saved: '已保存', current: '当前使用',
     err_ai_not_configured: '还没连接 AI，请先到「设置」。', err_notes_required: '先写一点想法吧。',
-    err_key_required: '请先填写密钥。', err_default: '出错了，请再试一次。',
+    err_key_required: '请先填写密钥。', err_bad_model: '模型名称格式不正确。',
+    err_unauthorized: '访问口令已失效，请重新打开工作台启动链接。',
+    err_stale_script: '这篇脚本刚刚在别处被改过了，这次没有覆盖保存。请刷新后再改。',
+    dna_unreadable_warn: '保存的声音档案文件损坏或无法读取，当前暂时使用示例档案。你可以在下方恢复以前保存的档案，或重新学习。',
+    v_history_title: '以前保存的声音档案', v_history_sub: '换新档案时旧档案都会留着，随时可以换回来。',
+    v_history_restore: '恢复这份档案', v_history_restored: '已恢复以前的声音档案',
+    v_history_confirm: '要用这份以前的档案替换当前正在使用的声音档案吗？（当前档案也会留在这里）',
+    err_default: '出错了，请再试一次。',
   },
   en: {
     brand: 'Learn My Voice', nav_scripts: 'Scripts', nav_voice: 'Voice', nav_settings: 'Settings', lang_btn: '中文',
@@ -173,7 +180,14 @@ const I18N = {
     connect: 'Connect and list models', model: 'Model', pick_model: 'Choose a model', save: 'Save', connected: 'connected',
     not_connected: 'not connected', settings_saved: 'Saved', current: 'In use',
     err_ai_not_configured: 'AI is not connected. Open Settings first.', err_notes_required: 'Write a few notes first.',
-    err_key_required: 'Enter a key first.', err_default: 'Something went wrong. Please try again.',
+    err_key_required: 'Enter a key first.', err_bad_model: 'Invalid model name.',
+    err_unauthorized: 'Studio session token expired. Re-open the launch link printed at startup.',
+    err_stale_script: 'This script was changed somewhere else (another tab or an AI app). Reload to see the newer version.',
+    dna_unreadable_warn: 'The saved voice profile file could not be read, so the example profile is currently in use. Restore an earlier profile below or learn again.',
+    v_history_title: 'Earlier voice profiles', v_history_sub: 'Replaced profiles are kept here and can be restored at any time.',
+    v_history_restore: 'Restore', v_history_restored: 'Restored earlier voice profile',
+    v_history_confirm: 'Replace the active voice profile with this earlier one? (The current profile will also be kept here.)',
+    err_default: 'Something went wrong. Please try again.',
   },
 };
 
@@ -317,8 +331,16 @@ document.addEventListener('click', (e) => {
   openOutside(url.href);
 });
 
-async function api(method, path, body) {
-  const opts = { method, headers: {} };
+const STUDIO_TOKEN = document.documentElement.getAttribute('data-token') || '';
+function studioHeaders(extra) {
+  const h = Object.assign({}, extra || {});
+  if (STUDIO_TOKEN) h['X-Studio-Token'] = STUDIO_TOKEN;
+  return h;
+}
+
+async function api(method, path, body, extraOpts) {
+  const opts = { method, headers: studioHeaders() };
+  if (extraOpts && extraOpts.keepalive) opts.keepalive = true;
   if (body !== undefined) { opts.headers['Content-Type'] = 'application/json'; opts.body = JSON.stringify(body); }
   const res = await fetch(path, opts);
   const data = await res.json().catch(() => ({}));
@@ -497,13 +519,18 @@ async function flushSave() {
 
 const lintBody = (s) => ({ lines: s.lines, target_sec: s.target_sec, keywords: s.keywords || [], post: s.post });
 
-async function saveNow() {
+async function saveNow(opts) {
   if (!cur) return;
   dirty = false;
   const s = cur.script;
   const seq = ++lintSeq;
+  const payload = { title: s.title, target_sec: s.target_sec, lines: s.lines, keywords: s.keywords || [] };
+  if (s.post && typeof s.post === 'object') payload.post = s.post;
+  if (typeof s.updated_at === 'number') payload.base_updated_at = s.updated_at;
   try {
-    await api('PUT', '/api/scripts/' + s.id, { title: s.title, target_sec: s.target_sec, lines: s.lines, keywords: s.keywords || [] });
+    const saved = await api('PUT', '/api/scripts/' + s.id, payload, opts);
+    if (saved && typeof saved.updated_at === 'number') s.updated_at = saved.updated_at;
+    if (opts && opts.keepalive) return;
     const lint = await api('POST', '/api/lint', lintBody(s));
     if (seq !== lintSeq || !cur || cur.script.id !== s.id) return;
     cur.findings = lint.findings;
@@ -515,7 +542,11 @@ async function saveNow() {
     paintChecks();
     poAfterSave(s);     // posted.js: a posted script that was edited says so
     if (!dirty) setSaved('saved');
-  } catch (e) { dirty = true; setSaved('save_failed'); }
+  } catch (e) {
+    dirty = true;
+    setSaved('save_failed');
+    if (e && e.code === 'stale_script') showError(e);
+  }
 }
 
 function setSaved(key) { const el = document.getElementById('saved'); if (el) el.textContent = t(key); }
@@ -669,7 +700,7 @@ async function renderScript(id) {
 
 /* ---------- voice ---------- */
 async function renderVoice() {
-  const { dna, is_example } = await api('GET', '/api/dna');
+  const { dna, is_example, unreadable } = await api('GET', '/api/dna');
   const get = (path, d) => path.split('.').reduce((o, k) => (o && o[k] !== undefined ? o[k] : undefined), dna) ?? d;
   const hasCjk = (s) => /[\u4e00-\u9fff]/.test(s);
   const clean = (x) => {
@@ -690,8 +721,11 @@ async function renderVoice() {
   const row = (key, html) => (html ? `<dt>${esc(t(key))}</dt><dd>${html}</dd>` : '');
   /* Named after the partner in the creator profile; gone once the profile says nobody appears; neutral before setup. */
   const partnerKey = creatorProfile() ? (partnerName() ? 'v_partner' : '') : 'v_partner_any';
+  const bannerHtml = unreadable
+    ? `<div class="banner">${esc(t('dna_unreadable_warn'))}</div>`
+    : (is_example ? `<div class="banner">${esc(t('example_voice'))}</div>` : '');
   $view.innerHTML = `<div class="wrap"><h1>${esc(t('voice_title'))}</h1><p class="sub">${esc(t('voice_sub'))}</p>
-    ${is_example ? `<div class="banner">${esc(t('example_voice'))}</div>` : ''}
+    ${bannerHtml}
     <div class="card"><dl class="kv">
       ${row('v_essence', esc(get(lang === 'zh' ? 'persona_summary.one_line_essence_zh' : 'persona_summary.one_line_essence_en', '')))}
       ${row('v_rate', esc(get('cadence_and_syntax.target_speaking_rate_cpm', '')) + ' ' + esc(t('v_rate_u')))}

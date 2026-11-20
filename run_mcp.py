@@ -9,7 +9,8 @@ this file by absolute path:
 import sys
 from pathlib import Path
 
-sys.path.insert(0, str(Path(__file__).resolve().parent))
+root = str(Path(__file__).resolve().parent)
+sys.path[:] = [root] + [p for p in sys.path if p not in ("", ".") and p != root]
 
 from studio.mcp_server import main  # noqa: E402
 

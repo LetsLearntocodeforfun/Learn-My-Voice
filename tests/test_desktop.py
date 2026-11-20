@@ -57,10 +57,15 @@ class TempCase(unittest.TestCase):
         self.addCleanup(shutil.rmtree, str(self.tmp), True)
 
 
-def answers(port):
+def answers(port, data_dir=None):
     try:
+        headers = {}
+        if data_dir is not None:
+            token_path = Path(data_dir) / "server-token"
+            if token_path.is_file():
+                headers["X-Studio-Token"] = token_path.read_text(encoding="utf-8").strip()
         conn = http.client.HTTPConnection("127.0.0.1", port, timeout=5)
-        conn.request("GET", "/api/state")
+        conn.request("GET", "/api/state", headers=headers)
         status = conn.getresponse().status
         conn.close()
         return status == 200
@@ -126,11 +131,12 @@ class StopsWithItsParentTest(TempCase):
     def test_started_as_the_shell_starts_it_the_core_ends_when_the_shell_is_gone(self):
         process = self.start("--exit-with-parent", stdin=subprocess.PIPE)
         port = self.address(process)
-        self.assertTrue(answers(port))
+        self.assertFalse(answers(port))                                          # unauthenticated local probe is refused
+        self.assertTrue(answers(port, self.tmp / "data"))
         self.assertIsNone(process.poll())
         process.stdin.close()                                                    # what happens when the shell ends, however it ends
         self.assertEqual(process.wait(15), 0)
-        self.assertFalse(answers(port))
+        self.assertFalse(answers(port, self.tmp / "data"))
         self.assertTrue((self.tmp / "data").is_dir())                            # its data is where it was told to keep it
 
     def test_without_that_option_closed_input_does_not_stop_it(self):
@@ -138,7 +144,7 @@ class StopsWithItsParentTest(TempCase):
         port = self.address(process)
         time.sleep(0.5)
         self.assertIsNone(process.poll())
-        self.assertTrue(answers(port))
+        self.assertTrue(answers(port, self.tmp / "data"))
         process.terminate()
         process.wait(15)
 
@@ -169,7 +175,12 @@ class ShellFilesTest(unittest.TestCase):
         self.assertFalse((SHELL / "capabilities").exists())
         self.assertIs(self.config["app"]["withGlobalTauri"], False)
         self.assertEqual(self.config["app"]["windows"], [])                     # the shell opens its one window itself, on the core's address
-        self.assertEqual(self.config["app"]["security"]["csp"], "default-src 'self'")
+        self.assertEqual(
+            self.config["app"]["security"]["csp"],
+            "default-src 'none'; script-src 'self'; style-src 'self'; base-uri 'none'; form-action 'none'",
+        )
+        self.assertNotIn('"data"', self.rust.split(".on_navigation")[1].split(".on_download")[0])
+        self.assertNotIn('"blob"', self.rust.split(".on_navigation")[1].split(".on_download")[0])
         self.assertNotIn("plugins", self.config)
         wanted = re.findall(r"^([a-z][a-z0-9_-]*) = ", self.cargo.split("[dependencies]")[1].split("[profile")[0], re.M)
         self.assertEqual(wanted, ["tauri", "tauri-plugin-single-instance", "open", "serde_json"])       # a new one is a decision, not a habit
@@ -218,7 +229,7 @@ class ShellFilesTest(unittest.TestCase):
         self.assertNotIn("Cargo.lock", (ROOT / ".gitignore").read_text(encoding="utf-8"))
         override = SHELL / "release.conf.json"
         plain = build.tauri_command("npx", "dmg", override, locked=False)
-        self.assertEqual(plain, ["npx", "--yes", build.TAURI_CLI, "build", "--ci", "--bundles", "dmg", "--config", str(override)])
+        self.assertEqual(plain, ["npx", "--yes", "--ignore-scripts", build.TAURI_CLI, "build", "--ci", "--bundles", "dmg", "--config", str(override)])
         self.assertEqual(build.tauri_command("npx", "dmg", override, locked=True), plain + ["--", "--locked"])
         self.assertRegex(build.TAURI_CLI, r"^@tauri-apps/cli@\d+\.\d+\.\d+$")     # the tool that builds is one exact version too
 

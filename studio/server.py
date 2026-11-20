@@ -31,12 +31,15 @@ from __future__ import annotations
 import argparse
 import base64
 import binascii
+import hmac
 import html
+import http.cookies
 import json
 import math
 import mimetypes
 import os
 import re
+import secrets
 import shutil
 import socket
 import sys
@@ -54,9 +57,23 @@ from . import checks, corpus, creator, exports, keyword_import, llm, pipeline, t
 from . import buildinfo, hooks, outside, posted, suggest, wordlist
 from . import setup as setup_status
 from .jobs import JobError, Jobs, Progress
-from .store import HISTORY_ID, MANUAL_PROVIDER, PROVIDERS, ROOT, StaleScript, Store, TextTooLong, clean_file_name, kept_value
+from .store import (
+    HISTORY_ID,
+    MANUAL_PROVIDER,
+    PROVIDERS,
+    ROOT,
+    StaleScript,
+    Store,
+    TextTooLong,
+    _owner_only,
+    clean_file_name,
+    kept_value,
+)
 
 WEB_DIR = Path(__file__).with_name("web")
+SERVER_TOKEN_FILE = "server-token"
+SESSION_COOKIE_NAME = "studio_session"
+TOKEN_HEADER = "X-Studio-Token"
 MAX_BODY = 12 * 1024 * 1024  # room for a base64 .docx
 MAX_REMEMBERED_FILES = 200   # exported files of this run that can still be shown in the file manager
 MAX_WINDOW_REPORT = 200_000  # characters of what the window check may report
@@ -135,23 +152,19 @@ class ApiError(Exception):
         self.extra = dict(extra or {})
 
 
-def page_with_keeps(page: bytes, kept: Dict[str, str]) -> bytes:
-    """The app's page with what the core keeps for it (``Store.load_page_keeps``) written onto its ``<html>`` element.
-
-    ``data-kept`` holds all of it as JSON; app.js reads it before it draws anything, so the language and the
-    look are the chosen ones from the first moment, also at an address the page has never been opened at
-    (inside the desktop app the port differs at every start). The look is written out as ``data-theme`` and
-    ``data-accent`` too, which the stylesheet reads: the window is not white for a moment for somebody who chose
-    dark. With nothing kept, or a page that does not begin as expected, the page is sent as it is.
-    """
-    if not kept or page.count(PAGE_OPENING) != 1:
+def page_with_keeps(page: bytes, kept: Dict[str, str], token: str = "") -> bytes:
+    """The app's page with what the core keeps for it (``Store.load_page_keeps``) written onto its ``<html>`` element."""
+    if (not kept and not token) or page.count(PAGE_OPENING) != 1:
         return page
-    opening = '<html lang="%s" data-kept="%s"' % (
-        "en" if kept.get("lang") == "en" else "zh-CN", html.escape(json.dumps(kept, ensure_ascii=True, sort_keys=True), quote=True))
-    if kept.get("theme") in ("light", "dark"):
-        opening += ' data-theme="%s"' % kept["theme"]
-    if kept.get("accent", "blue") != "blue":
-        opening += ' data-accent="%s"' % html.escape(kept["accent"], quote=True)
+    opening = '<html lang="%s"' % ("en" if kept.get("lang") == "en" else "zh-CN")
+    if kept:
+        opening += ' data-kept="%s"' % html.escape(json.dumps(kept, ensure_ascii=True, sort_keys=True), quote=True)
+        if kept.get("theme") in ("light", "dark"):
+            opening += ' data-theme="%s"' % kept["theme"]
+        if kept.get("accent", "blue") != "blue":
+            opening += ' data-accent="%s"' % html.escape(kept["accent"], quote=True)
+    if token:
+        opening += ' data-token="%s"' % html.escape(token, quote=True)
     return page.replace(PAGE_OPENING, (opening + ">").encode("ascii"))
 
 
@@ -294,11 +307,17 @@ class App:
     """
 
     def __init__(self, store: Store, transport: Optional[llm.Transport] = None, transcriber: Any = None,
-                 outside_world: Any = None) -> None:
+                 outside_world: Any = None, require_token: bool = False) -> None:
         self.store = store
         self.transport = transport
         self.transcriber = transcriber if transcriber is not None else transcribe
         self.outside = outside_world if outside_world is not None else outside
+        self.require_token = bool(require_token)
+        self.token = secrets.token_urlsafe(32)
+        self.session_cookie = secrets.token_urlsafe(32)
+        self.token_path = Path(store.data_dir) / SERVER_TOKEN_FILE
+        if self.require_token:
+            self._write_token_file()
         # Files this run of the app put into the Downloads folder. Only these can be shown in the file manager
         # on request, so the page cannot make the app point at any other place on the computer.
         self.saved_files: List[str] = []
@@ -310,6 +329,27 @@ class App:
         self.discover_lock = threading.Lock()
         self.uploads = Uploads(store.uploads_dir)
         self.uploads.clear_leftovers()
+
+    def _write_token_file(self) -> None:
+        folder = Path(self.store.data_dir)
+        folder.mkdir(parents=True, exist_ok=True)
+        _owner_only(folder)
+        tmp = folder / ("%s.%s.tmp" % (SERVER_TOKEN_FILE, uuid.uuid4().hex))
+        fd = os.open(str(tmp), os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+        try:
+            os.write(fd, (self.token + "\n").encode("ascii"))
+        finally:
+            os.close(fd)
+        try:
+            os.chmod(str(tmp), 0o600)
+        except OSError:
+            pass
+        os.replace(str(tmp), str(self.token_path))
+        _owner_only(self.token_path)
+
+    def remove_token_file(self) -> None:
+        if self.require_token:
+            _remove(self.token_path)
 
     def remember_saved(self, path: Path) -> None:
         self.saved_files.append(str(path))
@@ -454,6 +494,56 @@ class Handler(BaseHTTPRequestHandler):
         if not settings["configured"]:
             raise ApiError(400, "ai_not_configured")
 
+    def _has_valid_header_token(self) -> Optional[bool]:
+        sent = self.headers.get(TOKEN_HEADER)
+        if sent is None:
+            return None
+        return hmac.compare_digest(sent.strip(), self.app.token)
+
+    def _has_valid_session_cookie(self) -> bool:
+        raw = self.headers.get("Cookie")
+        if not raw:
+            return False
+        jar = http.cookies.SimpleCookie()
+        try:
+            jar.load(raw)
+        except http.cookies.CookieError:
+            return False
+        morsel = jar.get(SESSION_COOKIE_NAME)
+        return bool(morsel and hmac.compare_digest(morsel.value, self.app.session_cookie))
+
+    def _check_auth(self, method: str, path: str) -> bool:
+        """Enforce capability token & session cookie; returns True if response was already sent (302 bootstrap)."""
+        header_ok = self._has_valid_header_token()
+        if header_ok is False:
+            raise ApiError(401, "unauthorized", "Missing or invalid studio token", "缺少或无效的工作台口令")
+        if not self.app.require_token:
+            return False
+        if path.startswith("/api/"):
+            if method != "GET":
+                if header_ok is not True:
+                    raise ApiError(401, "unauthorized", "Missing studio token", "缺少工作台口令")
+            elif header_ok is not True and not self._has_valid_session_cookie():
+                raise ApiError(401, "unauthorized", "Missing studio token", "缺少工作台口令")
+            return False
+        # Static page / asset request (GET)
+        query_tokens = self.query.get("token") or []
+        if query_tokens:
+            candidate = query_tokens[0]
+            if not hmac.compare_digest(candidate, self.app.token):
+                raise ApiError(401, "unauthorized", "Invalid launch token", "启动口令无效")
+            clean_q = [(k, v) for k, vals in self.query.items() if k != "token" for v in vals]
+            dest = "/" + (path or "").lstrip("/")
+            if clean_q:
+                dest += "?" + urllib.parse.urlencode(clean_q)
+            cookie = "%s=%s; Path=/; HttpOnly; SameSite=Strict" % (SESSION_COOKIE_NAME, self.app.session_cookie)
+            self._send(302, b"", "text/plain; charset=utf-8", {"Location": dest, "Set-Cookie": cookie})
+            return True
+        if header_ok is not True and not self._has_valid_session_cookie():
+            raise ApiError(401, "unauthorized", "Open Studio using the launch link printed at startup.",
+                           "请使用启动时显示的访问链接打开工作台。")
+        return False
+
     def _dispatch(self, method: str) -> None:
         self._body, self._body_read = None, False
         try:
@@ -467,12 +557,24 @@ class Handler(BaseHTTPRequestHandler):
                     raise ApiError(403, "bad_origin")      # a write sent by a page that is not this app
                 split = urllib.parse.urlsplit(self.path)
                 self.query = urllib.parse.parse_qs(split.query)
+                fetch_site = (self.headers.get("Sec-Fetch-Site") or "").strip().lower()
+                if fetch_site and fetch_site not in ("same-origin", "none"):
+                    if method != "GET" or split.path.startswith("/api/"):
+                        raise ApiError(403, "bad_origin")
+                if self._check_auth(method, split.path):
+                    return
                 if split.path.startswith("/api/"):
                     self._api(method, split.path)
                 elif method == "GET":
                     self._static(split.path)
                 else:
                     raise ApiError(405, "method_not_allowed")
+            except TextTooLong as exc:
+                self._drain_unread()
+                payload = {"error": exc.code, "message": exc.message, "limit": exc.limit}
+                if exc.message_zh:
+                    payload["message_zh"] = exc.message_zh
+                self._json(payload, 413)
             except ApiError as exc:
                 self._drain_unread()
                 payload = dict(exc.extra, error=exc.code, message=exc.message)
@@ -643,7 +745,11 @@ class Handler(BaseHTTPRequestHandler):
                 ctype += "; charset=utf-8"
         body = target.read_bytes()
         if name == "index.html":
-            body = page_with_keeps(body, self.app.store.load_page_keeps())
+            body = page_with_keeps(
+                body,
+                self.app.store.load_page_keeps(),
+                token=self.app.token if self.app.require_token else "",
+            )
         self._send(200, body, ctype)
 
     # ---- copy-and-paste mode ------------------------------------------------
@@ -707,8 +813,8 @@ class Handler(BaseHTTPRequestHandler):
             state = {
                 "settings": store.public_settings(), "dna_is_example": is_example,
                 "creator": creator.for_page(store.load_creator()),
-                "video_formats": list(pipeline.VIDEO_FORMATS), "sample_count": len(store.list_samples()),
-                "trend_count": len(store.list_trends()),
+                "video_formats": list(pipeline.VIDEO_FORMATS), "sample_count": store.samples_count(),
+                "trend_count": store.trends_count(),
                 # Whether the AI service in settings can search the web itself (``llm.can_search``): the one-prompt
                 # flow then looks current keywords up before suggesting ideas.
                 "lookup_available": llm.can_search(store.load_config().get("provider") or ""),
@@ -845,7 +951,11 @@ class Handler(BaseHTTPRequestHandler):
                 key = str(body.get("key") or "").strip()
                 base_url = (llm.normalize_local_base(str(body["base_url"]))
                             if provider == "local" and body.get("base_url") else None)
-                model = str(body.get("model") or "").strip()
+                raw_model = str(body.get("model") or "").strip()
+                try:
+                    model = llm.validate_model_name(raw_model) if raw_model else ""
+                except llm.LLMError as exc:
+                    raise ApiError(400, exc.code, str(exc))
 
                 def choose(config: Dict[str, Any]) -> None:
                     if base_url is not None:
@@ -1396,16 +1506,18 @@ class StudioServer(ThreadingHTTPServer):
         # Also reached from the constructor when the port is taken, before ``app`` exists.
         if self.app is not None:
             self.app.uploads.close()        # uploads still waiting are not kept once the app has closed
+            self.app.remove_token_file()
         super().server_close()
 
 
 def make_server(port: int, store: Store, transport: Optional[llm.Transport] = None,
-                transcriber: Any = None, outside_world: Any = None) -> StudioServer:
+                transcriber: Any = None, outside_world: Any = None,
+                require_token: bool = False) -> StudioServer:
     """A server on 127.0.0.1. ``transport``, ``transcriber`` and ``outside_world`` stand in, in tests, for the
     model, for Whisper, and for the Downloads folder, the file manager and the browser."""
     server = StudioServer(("127.0.0.1", port), Handler)
     server.daemon_threads = True
-    server.app = App(store, transport, transcriber, outside_world)
+    server.app = App(store, transport, transcriber, outside_world, require_token=require_token)
     return server
 
 
@@ -1433,6 +1545,8 @@ def main(argv: Optional[List[str]] = None) -> int:
     parser.add_argument("--no-browser", action="store_true")
     parser.add_argument("--exit-with-parent", action="store_true",
                         help="stop when standard input ends. The desktop app starts the core like this, so that it never outlives its window")
+    parser.add_argument("--no-auth-token", action="store_true",
+                        help="disable per-launch local capability token check")
     args = parser.parse_args(argv)
 
     # What is printed below is Chinese and English. Where the output cannot show Chinese (it is sent to a file or
@@ -1448,7 +1562,7 @@ def main(argv: Optional[List[str]] = None) -> int:
     server = None
     for port in range(args.port, args.port + 10):
         try:
-            server = make_server(port, store)
+            server = make_server(port, store, require_token=not args.no_auth_token)
             break
         except OSError:
             continue
@@ -1459,10 +1573,12 @@ def main(argv: Optional[List[str]] = None) -> int:
     if os.environ.get(WINDOW_CHECK_ENV) == "1":
         server.app.start_window_check()
     url = "http://127.0.0.1:%d/" % server.server_address[1]
-    # Sent at once also when the output is not a window: whoever started the app is waiting for this address.
-    print("工作台已启动 / Studio running: %s\n关闭这个窗口即可退出。/ Close this window to quit." % url, flush=True)
+    launch_url = "%s?token=%s" % (url, server.app.token) if server.app.require_token else url
+    # Line 1 keeps the exact ``http://127.0.0.1:<port>/`` format expected by the desktop shell.
+    print("工作台已启动 / Studio running: %s\n安全访问链接 / Launch link: %s\n关闭这个窗口即可退出。/ Close this window to quit."
+          % (url, launch_url), flush=True)
     if not args.no_browser:
-        webbrowser.open(url)
+        webbrowser.open(launch_url)
     if args.exit_with_parent:
         threading.Thread(target=_stop_when_input_ends, args=(server, sys.stdin), name="exit-with-parent", daemon=True).start()
     try:

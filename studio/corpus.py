@@ -212,7 +212,10 @@ def exemplars(samples: List[Dict[str, Any]], budget_chars: int = 6000, per_scrip
     """
     organic = [s for s in samples if not s.get("is_sponsored") and (s.get("text") or "").strip()]
     relevant = on_topic or (lambda sample: False)
-    organic.sort(key=lambda s: (bool(relevant(s)), interactions(s) or 0, s.get("created_at") or 0), reverse=True)
+    organic.sort(
+        key=lambda s: (bool(relevant(s)), interactions(s) or 0, s.get("views") or 0, s.get("created_at") or 0),
+        reverse=True,
+    )
     out: List[Dict[str, str]] = []
     used = 0
     for s in organic:

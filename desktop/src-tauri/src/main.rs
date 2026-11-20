@@ -42,6 +42,8 @@ const CORE_ARGUMENTS: [&str; 12] = [
 const RUNNING_FILE: &str = "desktop-running.json";
 /// Written into the data folder when the app could not start: what the window says, to be read without it.
 const PROBLEM_FILE: &str = "desktop-problem.txt";
+/// Written by the core into the data folder with owner-only permissions: the per-launch capability token.
+const TOKEN_FILE: &str = "server-token";
 
 #[derive(Default)]
 struct Core {
@@ -119,7 +121,12 @@ fn start_core(resources: &Path, data: &Path) -> Result<(Child, Url), String> {
     let announced = address.recv_timeout(START_TIMEOUT).ok();
     let parsed = announced.as_deref().and_then(|text| Url::parse(text).ok());
     match parsed {
-        Some(url) if url.scheme() == "http" && url.host_str() == Some("127.0.0.1") => Ok((child, url)),
+        Some(url) if url.scheme() == "http" && url.host_str() == Some("127.0.0.1") => {
+            let mut clean = url;
+            clean.set_query(None);
+            clean.set_fragment(None);
+            Ok((child, clean))
+        }
         _ => {
             let _ = child.kill();
             let _ = child.wait();
@@ -129,6 +136,29 @@ fn start_core(resources: &Path, data: &Path) -> Result<(Child, Url), String> {
                 .unwrap_or_default();
             Err(format!("The app's core did not start. What it printed:\n\n{said}"))
         }
+    }
+}
+
+/// Write a file inside the data folder with owner-only (`0600`) permissions on Unix.
+fn write_private(path: &Path, contents: &str) {
+    #[cfg(unix)]
+    {
+        use std::io::Write;
+        use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
+        if let Ok(mut file) = std::fs::OpenOptions::new()
+            .write(true)
+            .create(true)
+            .truncate(true)
+            .mode(0o600)
+            .open(path)
+        {
+            let _ = std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600));
+            let _ = file.write_all(contents.as_bytes());
+        }
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = std::fs::write(path, contents);
     }
 }
 
@@ -145,6 +175,11 @@ fn data_folder(app: &AppHandle) -> Result<PathBuf, String> {
     };
     std::fs::create_dir_all(&folder)
         .map_err(|error| format!("The folder for the app's data could not be made:\n{}\n{error}", folder.display()))?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let _ = std::fs::set_permissions(&folder, std::fs::Permissions::from_mode(0o700));
+    }
     Ok(folder)
 }
 
@@ -155,11 +190,11 @@ fn note_running(path: &Path, url: &Url, core_pid: u32, page_loaded: bool) {
         "core_pid": core_pid,
         "page_loaded": page_loaded,
     });
-    let _ = std::fs::write(path, note.to_string());
+    write_private(path, &note.to_string());
 }
 
-/// Start the core and remember it. Returns the address to show and the file that says the app is running.
-fn prepare(app: &AppHandle) -> Result<(Url, PathBuf, u32), String> {
+/// Start the core and remember it. Returns `(launch_url, clean_url, running_file, core_pid)`.
+fn prepare(app: &AppHandle) -> Result<(Url, Url, PathBuf, u32), String> {
     // On macOS this fails when the app is reached through a link (a folder that is really somewhere else):
     // the toolkit refuses that on purpose, because a link can be made to point at another program.
     let resources = app.path().resource_dir().map_err(|error| {
@@ -175,6 +210,13 @@ fn prepare(app: &AppHandle) -> Result<(Url, PathBuf, u32), String> {
     let core_pid = child.id();
     let running = data.join(RUNNING_FILE);
     note_running(&running, &url, core_pid, false);
+    let mut launch_url = url.clone();
+    if let Ok(raw_token) = std::fs::read_to_string(data.join(TOKEN_FILE)) {
+        let token = raw_token.trim();
+        if !token.is_empty() {
+            launch_url.query_pairs_mut().append_pair("token", token);
+        }
+    }
     let core = app.state::<Core>();
     if let Ok(mut slot) = core.child.lock() {
         *slot = Some(child);
@@ -182,7 +224,7 @@ fn prepare(app: &AppHandle) -> Result<(Url, PathBuf, u32), String> {
     if let Ok(mut slot) = core.running_file.lock() {
         *slot = Some(running.clone());
     };
-    Ok((url, running, core_pid))
+    Ok((launch_url, url, running, core_pid))
 }
 
 fn stop_core(app: &AppHandle) {
@@ -198,13 +240,89 @@ fn stop_core(app: &AppHandle) {
     }
 }
 
-/// A name in `folder` that is not taken: `name.zip`, then `name (2).zip`, and so on.
-fn free_name(folder: &Path, wanted: &OsStr) -> PathBuf {
-    let first = folder.join(wanted);
-    if !first.exists() {
-        return first;
+/// Sanitize a suggested download filename: strip directory components, control and BiDi override chars,
+/// reserved Windows device names, and cap UTF-8 byte length.
+fn sanitize_download_name(wanted: &OsStr) -> String {
+    let raw = wanted.to_string_lossy();
+    let cleaned: String = raw
+        .chars()
+        .filter(|ch| {
+            !ch.is_control()
+                && !matches!(
+                    *ch,
+                    '\u{200B}'..='\u{200F}'
+                        | '\u{202A}'..='\u{202E}'
+                        | '\u{2066}'..='\u{2069}'
+                        | '\u{FEFF}'
+                )
+        })
+        .map(|ch| {
+            if matches!(ch, '/' | '\\' | ':' | '*' | '?' | '"' | '<' | '>' | '|') {
+                '_'
+            } else {
+                ch
+            }
+        })
+        .collect();
+    let trimmed = cleaned.trim().trim_matches('.').trim();
+    if trimmed.is_empty() || trimmed == "." || trimmed == ".." {
+        return String::from("download");
     }
-    let asked = Path::new(wanted);
+    let mut truncated = String::new();
+    for ch in trimmed.chars() {
+        if truncated.len() + ch.len_utf8() > 180 {
+            break;
+        }
+        truncated.push(ch);
+    }
+    let stem_upper = Path::new(&truncated)
+        .file_stem()
+        .and_then(OsStr::to_str)
+        .unwrap_or("")
+        .trim_end_matches([' ', '.'])
+        .to_ascii_uppercase();
+    let reserved = matches!(
+        stem_upper.as_str(),
+        "CON"
+            | "PRN"
+            | "AUX"
+            | "NUL"
+            | "COM1"
+            | "COM2"
+            | "COM3"
+            | "COM4"
+            | "COM5"
+            | "COM6"
+            | "COM7"
+            | "COM8"
+            | "COM9"
+            | "LPT1"
+            | "LPT2"
+            | "LPT3"
+            | "LPT4"
+            | "LPT5"
+            | "LPT6"
+            | "LPT7"
+            | "LPT8"
+            | "LPT9"
+    );
+    if reserved {
+        format!("_{truncated}")
+    } else if truncated.is_empty() {
+        String::from("download")
+    } else {
+        truncated
+    }
+}
+
+/// A name in `folder` that is not taken: `name.zip`, then `name (2).zip`, and so on; `None` if all 999 exist.
+fn free_name(folder: &Path, wanted: &OsStr) -> Option<PathBuf> {
+    let safe = sanitize_download_name(wanted);
+    let first = folder.join(&safe);
+    if !first.exists() {
+        return Some(first);
+    }
+    let asked = Path::new(&safe);
     let stem = asked.file_stem().and_then(OsStr::to_str).unwrap_or("download").to_string();
     let ending = asked
         .extension()
@@ -214,24 +332,23 @@ fn free_name(folder: &Path, wanted: &OsStr) -> PathBuf {
     for number in 2..1000 {
         let next = folder.join(format!("{stem} ({number}){ending}"));
         if !next.exists() {
-            return next;
+            return Some(next);
         }
     }
-    first
+    None
 }
 
 /// The window on the core's page.
-fn open_window(app: &AppHandle, url: Url, running: PathBuf, core_pid: u32) -> tauri::Result<()> {
-    let home = url.origin();
-    let shown = url.clone();
+fn open_window(app: &AppHandle, launch_url: Url, shown: Url, running: PathBuf, core_pid: u32) -> tauri::Result<()> {
+    let home = shown.origin();
     let downloads = app.path().download_dir().ok();
-    WebviewWindowBuilder::new(app, "main", WebviewUrl::External(url))
+    WebviewWindowBuilder::new(app, "main", WebviewUrl::External(launch_url))
         .title("Learn My Voice")
         .inner_size(1280.0, 860.0)
         .min_inner_size(960.0, 640.0)
-        // The window only ever shows the core's own pages. A link to anywhere else opens in the browser.
+        // The window only ever shows the core's own pages (never data: or blob: documents).
         .on_navigation(move |target| {
-            if target.origin() == home || matches!(target.scheme(), "about" | "blob" | "data") {
+            if target.origin() == home || target.scheme() == "about" {
                 return true;
             }
             if matches!(target.scheme(), "http" | "https") {
@@ -239,19 +356,26 @@ fn open_window(app: &AppHandle, url: Url, running: PathBuf, core_pid: u32) -> ta
             }
             false
         })
-        // What the app exports goes to the Downloads folder, under a name that is not taken.
+        // What the app exports goes to the Downloads folder, under a sanitized name that is not taken.
         .on_download(move |_webview, event| {
             if let DownloadEvent::Requested { url, destination } = event {
-                if let Some(folder) = &downloads {
-                    let suggested = destination.file_name().map(|name| name.to_os_string());
-                    let from_address = url
-                        .path()
-                        .rsplit('/')
-                        .next()
-                        .filter(|text| !text.is_empty())
-                        .map(OsString::from);
-                    let name = suggested.or(from_address).unwrap_or_else(|| OsString::from("download"));
-                    *destination = free_name(folder, &name);
+                let Some(folder) = &downloads else {
+                    return false;
+                };
+                let suggested = destination.file_name().map(|name| name.to_os_string());
+                let from_address = url
+                    .path()
+                    .rsplit('/')
+                    .next()
+                    .filter(|text| !text.is_empty() && *text != "." && *text != "..")
+                    .map(OsString::from);
+                let name = suggested.or(from_address).unwrap_or_else(|| OsString::from("download"));
+                match free_name(folder, &name) {
+                    Some(target) => {
+                        *destination = target;
+                        return true;
+                    }
+                    None => return false,
                 }
             }
             true
@@ -290,11 +414,11 @@ fn main() {
         .setup(|app| {
             let handle = app.handle().clone();
             match prepare(&handle) {
-                Ok((url, running, core_pid)) => open_window(&handle, url, running, core_pid)?,
+                Ok((launch_url, shown, running, core_pid)) => open_window(&handle, launch_url, shown, running, core_pid)?,
                 Err(problem) => {
                     eprintln!("{problem}");
                     if let Ok(folder) = data_folder(&handle) {
-                        let _ = std::fs::write(folder.join(PROBLEM_FILE), &problem);
+                        write_private(&folder.join(PROBLEM_FILE), &problem);
                     }
                     open_problem(&handle, &problem)?
                 }

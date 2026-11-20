@@ -64,6 +64,7 @@ import tempfile
 import threading
 import time
 import urllib.error
+import urllib.parse
 import urllib.request
 import wave
 from pathlib import Path
@@ -108,6 +109,75 @@ PACKAGES: Tuple[str, ...] = (
     "scipy==1.13.1", "shellingham==1.5.4", "tiktoken==0.14.0", "tqdm==4.70.1", "typer==0.23.2",
     "typing-extensions==4.16.0", "urllib3==2.6.3",
 )
+# Official PyPI SHA-256 wheel digests for pip==26.0.1 and all 36 pinned arm64/universal2/py3 wheels.
+PACKAGE_HASHES: Dict[str, Tuple[str, ...]] = {
+    "pip==26.0.1": ("bdb1b08f4274833d62c1aa29e20907365a2ceb950410df15fc9521bad440122b",),
+    "annotated-doc==0.0.5": ("117bac03a25ede5df5440e855b32d556049ca169ead221505badf432fed4b101",),
+    "anyio==4.12.1": ("d405828884fc140aa80a3c667b8beed277f1dfedec42ba031bd6ac3db606ab6c",),
+    "certifi==2026.10.23": ("e9b54de76e530bb6cf0ccd036787103acb58fd42ba930ea8bf948ddbaa2f61d1",),
+    "charset-normalizer==3.5.2": (
+        "4275811936e2f06feff5e598fb42a1b7ae852da8e39605211892b56b81a34efd",
+        "75a3ceed0724d625d64b86ca20aba182e4df462e04c2414fc941c0f523f06aac",
+        "b6b751274acb69d77b3323d6b7dbaa3c7fdfc1eb829b7eb61d262f32e1af9685",
+    ),
+    "click==8.1.8": ("63c132bbbed01578a06712a2d1f497bb62d9c1c0d329b7903a866228027263b2",),
+    "exceptiongroup==1.3.1": ("a7a39a3bd276781e98394987d3a5701d0c4edffb633bb7a5144577f82c773598",),
+    "filelock==3.19.1": ("d38e30481def20772f5baf097c122c3babc4fcdb7e14e57049eb9d88c6dc017d",),
+    "fsspec==2025.10.0": ("7c7712353ae7d875407f97715f0e1ffcc21e33d5b24556cb1e090ae9409ec61d",),
+    "h11==0.16.0": ("63cf8bbe7522de3bf65932fda1d9c2772064ffb3dae62d55932da54b31cb6c86",),
+    "hf-xet==1.8.0": ("3e8934784425781f0f779b91044df441f3a7af4dab47375d7e3aeaecbb8eecb4",),
+    "httpcore==1.0.9": ("2d400746a40668fc9dec9810239072b40b4484b640a8c38fd654a024c7a1bf55",),
+    "httpx==0.28.1": ("d909fcccc110f8c7faf814ca82a9a4d816bc5a6dbfea25d6591d6985b8ba59ad",),
+    "huggingface-hub==1.8.0": ("d3eb5047bd4e33c987429de6020d4810d38a5bef95b3b40df9b17346b7f353f2",),
+    "idna==3.20": ("ab7ae7122974553370f0bdb919e1a960b2cd1bc1ef0276416d896db81c14582c",),
+    "llvmlite==0.43.0": ("18e9953c748b105668487b7c81a3e97b046d8abf95c4ddc0cd3c94f4e4651ae8",),
+    "markdown-it-py==3.0.0": ("355216845c60bd96232cd8d8c40e8f9765cc86f46880e43a8fd22dc1a1a8cab1",),
+    "mdurl==0.1.2": ("84008a41e51615a49fc9966191ff91509e3c40b939176e643fd50a5c2196b8f8",),
+    "mlx==0.29.3": (
+        "30a1da8b2aeb4f4b405759b108abbbe3b4f8c5924ac3d550006509bc7bcbfc49",
+        "ac2409a1ba79149143232a02ae5b1a201864413979a76d8f9d63107022e0dce5",
+        "c6778d023cc540a83a08caa750c9752523c24ddebd4201b2f34c9e0a2e109394",
+    ),
+    "mlx-metal==0.29.3": (
+        "106616f7f825851043c53d3dc186965c003985da9cbb6e5c034f35108fc1fc27",
+        "27b5a4d905202a71e84d9fd559ea0236813f6f960ef494e5cafe9c45df4c9d7c",
+        "f426d4b67f96b4d6f0ed50d5992933595aadb370dc3e9ed2410bafbc16229882",
+    ),
+    "mlx-whisper==0.4.3": ("6b82b6597a994643a3e5496c7bc229a672e5ca308458455bfe276e76ae024489",),
+    "more-itertools==10.8.0": ("52d4362373dcf7c52546bc4af9a86ee7c4579df9a8dc268be0a2f949d376cc9b",),
+    "numba==0.60.0": ("819a3dfd4630d95fd574036f99e47212a1af41cbcb019bf8afac63ff56834449",),
+    "numpy==2.0.2": (
+        "2b2955fa6f11907cf7a70dab0d0755159bca87755e831e47932367fc8f2f2d0b",
+        "423e89b23490805d2a5a96fe40ec507407b8ee786d66f7328be214f9679df6dd",
+    ),
+    "packaging==26.3": ("d7193f7c8e4e93f444fde0262bf90af30e16fa0ad0ad44cb553c87339b23cd1c",),
+    "pygments==2.21.0": ("2363c69b61c4a97c838da3b130dcd6468f4848992b21a82f2a63ec34377137d9",),
+    "pyyaml==6.0.3": ("c3355370a2c156cffb25e876646f149d5d68f5e0a3ce86a5084dd0b64a994917",),
+    "regex==2026.1.15": (
+        "0057de9eaef45783ff69fa94ae9f0fd906d629d0bd4c3217048f46d1daa32e9b",
+        "55b4ea996a8e4458dd7b584a2f89863b1655dd3d17b88b46cbb9becc495a0ec5",
+    ),
+    "requests==2.32.5": ("2462f94637a34fd532264295e186976db0f5d453d1cdd31473c85a6a161affb6",),
+    "rich==15.0.0": ("33bd4ef74232fb73fe9279a257718407f169c09b78a87ad3d296f548e27de0bb",),
+    "scipy==1.13.1": ("8335549ebbca860c52bf3d02f80784e91a004b71b059e3eea9678ba994796a24",),
+    "shellingham==1.5.4": ("7ecfff8f2fd72616f7481040475a65b2bf8af90a56c89140852d1120324e8686",),
+    "tiktoken==0.14.0": ("aa428a559d5fd02ae619aacaace86c7474a1f2702d2c01fc828908dd60f20f7a",),
+    "tqdm==4.70.1": ("c293e525e6fef9c20e8728fd4612df02a0aa31bb5fe91ecd93e123b1b7bffa73",),
+    "typer==0.23.2": ("e9c8dc380f82450b3c851a9b9d5a0edf95d1d6456ae70c517d8b06a50c7a9978",),
+    "typing-extensions==4.16.0": ("481caa481374e813c1b176ada14e97f1f67a4539ce9cfeb3f350d78d6370c2e8",),
+    "urllib3==2.6.3": ("bf272323e553dfb2e87d9bfd225ca7b0f467b919d7bbd355436d3fd37cb0acd4",),
+}
+
+
+def _requirements_text(specs: Sequence[str]) -> str:
+    lines: List[str] = []
+    for spec in specs:
+        hashes = PACKAGE_HASHES.get(spec, ())
+        if not hashes:
+            raise AssertionError("missing sha256 wheel digest for %s" % spec)
+        lines.append(" ".join([spec] + ["--hash=sha256:" + h for h in hashes]))
+    return "\n".join(lines) + "\n"
+
 
 ROOT = Path(__file__).resolve().parent.parent
 # The Pythons Apple ships with its developer tools, at the places the tools install them. /usr/bin/python3 is
@@ -146,33 +216,31 @@ NC = "/usr/bin/nc"
 # Apple marks sandbox-exec as deprecated but ships it with every macOS this app supports; on a Mac where
 # it is missing or will not take these rules, transcription refuses to run rather than run without them.
 #
-# NETWORK_SEAL: the program, and anything it starts, cannot open a network connection of any kind. No
-# connection out, none in and no listening port, for TCP, UDP and local (Unix) sockets alike, whether it
-# is asked for from Python, from compiled code inside a package or by a child process. Looking a name up
-# is network use too: the resolver's socket goes with the rest, and the last line closes the resolver's
-# other door, a system service.
-#
-# What it is not: a full cage. Everything else stays allowed, so a program written on purpose to get round
-# the rules could still ask another part of macOS to act for it. One such door was seen to be open on
-# macOS 26.7: Launch Services, the service that hands a web address to the browser, still answers a sealed
-# program. The rules make "the transcription programs use no network" true of the code that is installed,
-# including when a package misbehaves by itself. They are not a defence against a package that is hostile
-# on purpose; that needs rules that deny everything and allow only what transcription uses.
+# NETWORK_SEAL: the program, and anything it starts, cannot open a network connection of any kind, nor ask
+# mDNSResponder or LaunchServices to resolve names or open external URLs on its behalf.
 NETWORK_SEAL = (
     "(version 1)"
     "(allow default)"
     "(deny network*)"
     '(deny mach-lookup (global-name "com.apple.dnssd.service"))'
 )
-# AUDIO_SEAL: the same, and the program cannot read the contents of any file in the personal places (every
-# home folder, other disks, temporary folders) except the one file it was given and the folder it writes
-# into. The audio tool is the one program that opens a file that came from outside, and a video file can
-# name a different file as the place where its sound is kept. The four places are handed over with -D
-# (see _sealed_audio). Files outside those places (the system, installed programs) stay readable.
+# AUDIO_SEAL: the same, and the program cannot read personal files except SOURCE and SCRATCH.
 AUDIO_SEAL = NETWORK_SEAL + (
     '(deny file-read-data (subpath "/Users") (subpath "/Volumes") (subpath "/private/var/folders")'
     ' (subpath "/private/tmp") (subpath "/private/var/tmp") (subpath (param "HOME")) (subpath (param "TEMP")))'
     '(allow file-read-data (literal (param "SOURCE")) (subpath (param "SCRATCH")))'
+)
+# WORKER_SEAL: denies LaunchServices IPC as well, allows reading only its own script, studio/ code,
+# WHISPER_HOME, WAV, and SCRATCH, and allows writing only inside WHISPER_HOME and SCRATCH.
+WORKER_SEAL = NETWORK_SEAL + (
+    '(deny mach-lookup (global-name-prefix "com.apple.lsd."))'
+    '(deny file-read-data (subpath "/Users") (subpath "/Volumes") (subpath "/private/var/folders")'
+    ' (subpath "/private/tmp") (subpath "/private/var/tmp") (subpath (param "HOME")) (subpath (param "TEMP")))'
+    '(allow file-read-data (literal (param "WAV")) (literal (param "WORKER")) (literal (param "ROOT_DIR"))'
+    ' (subpath (param "STUDIO_DIR")) (subpath (param "WHISPER_HOME")) (subpath (param "SCRATCH")))'
+    '(deny file-write* (subpath "/Users") (subpath "/Volumes") (subpath "/private/var/folders")'
+    ' (subpath "/private/tmp") (subpath "/private/var/tmp") (subpath (param "HOME")) (subpath (param "TEMP")))'
+    '(allow file-write* (subpath (param "WHISPER_HOME")) (subpath (param "SCRATCH")))'
 )
 WORKER_REFUSED = "network_not_denied"   # the worker's answer when it finds it can reach the network (whisper_worker.REFUSED)
 
@@ -332,8 +400,8 @@ def _base_env() -> Dict[str, str]:
 
 def _install_env() -> Dict[str, str]:
     env = _base_env()
-    for key in ("HTTP_PROXY", "HTTPS_PROXY", "NO_PROXY", "ALL_PROXY", "http_proxy", "https_proxy", "no_proxy",
-                "all_proxy", "SSL_CERT_FILE", "REQUESTS_CA_BUNDLE"):
+    # SSL_CERT_FILE and REQUESTS_CA_BUNDLE are intentionally omitted so custom CA env injection cannot override system TLS roots.
+    for key in ("HTTP_PROXY", "HTTPS_PROXY", "NO_PROXY", "ALL_PROXY", "http_proxy", "https_proxy", "no_proxy", "all_proxy"):
         if key in os.environ:
             env[key] = os.environ[key]
     env["NETRC"] = os.devnull                       # pip must not send saved logins to the package index
@@ -401,6 +469,28 @@ def _sealed_audio(source: str, scratch: str, args: Sequence[Any]) -> List[Any]:
     return command + ["-p", AUDIO_SEAL] + list(args)
 
 
+def _sealed_worker(wav: str, scratch: str, args: Sequence[Any], worker_override: Optional[str] = None) -> List[Any]:
+    """``args`` as a command run under WORKER_SEAL: network denied, personal files unreadable and unwritable."""
+    whisper_home = _place(str(HOME), os.path.realpath(str(HOME)))
+    worker_file = worker_override or _place(str(WORKER), os.path.realpath(str(WORKER)))
+    studio_dir = _place(str(Path(__file__).resolve().parent), os.path.realpath(str(Path(__file__).resolve().parent)))
+    root_dir = _place(str(ROOT), os.path.realpath(str(ROOT)))
+    places = (
+        ("WAV", wav),
+        ("WORKER", worker_file),
+        ("ROOT_DIR", root_dir),
+        ("STUDIO_DIR", studio_dir),
+        ("WHISPER_HOME", whisper_home),
+        ("SCRATCH", scratch),
+        ("HOME", _place(os.path.expanduser("~"), "/Users")),
+        ("TEMP", _place(tempfile.gettempdir(), "/private/tmp")),
+    )
+    command: List[Any] = [SANDBOX_EXEC]
+    for name, value in places:
+        command += ["-D", "%s=%s" % (name, value)]
+    return command + ["-p", WORKER_SEAL] + list(args)
+
+
 # What _check_seal runs under the network seal: one attempt to connect to a port this app has open on
 # this computer's own address. Only "not permitted" (errno EPERM, which is what macOS answers under the
 # seal) counts as refused; a connection that works, or fails some other way, does not.
@@ -420,23 +510,7 @@ _SEAL_GIVEN, _SEAL_OTHER = "the file that was given", "a different file"
 
 
 def _check_seal() -> str:
-    """Try the seal out on this Mac. Returns ``""`` when it holds, else what went wrong (kept for a log).
-
-    Nothing about it is taken on trust. With a port open on this computer's
-    own address and two small files in a temporary folder:
-
-    1. A program started under the network seal tries to connect to that
-       port. macOS must answer "not permitted".
-    2. ``cat``, started under the audio seal and told that one of the files is
-       the one it was given, must fail to read the other file,
-    3. and must read the given one, so a real video can still be read.
-    4. ``nc``, started under the audio seal, tries the port as well.
-
-    At the end the port must not have seen a single connection. A missing
-    sandbox-exec, rules this version of macOS will not accept, or a seal that
-    does not actually seal all end up here as a reason, and transcription
-    then refuses to run.
-    """
+    """Try the seal out on this Mac. Returns ``""`` when it holds, else what went wrong (kept for a log)."""
     if not os.path.exists(SANDBOX_EXEC):
         return "%s is missing" % SANDBOX_EXEC
     listener = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
@@ -462,12 +536,16 @@ def _check_seal() -> str:
                                   timeout=SEAL_TIMEOUT)
             if code != 0 or out.strip() != "refused":
                 return "the network was not refused under the seal: exit %s %s %s" % (code, out.strip()[:80], err.strip()[-200:])
-            code, out, err = _run(_sealed_audio(given_at, room_at, [CAT, other_at]), env=env, timeout=SEAL_TIMEOUT)
-            if code == 0 or _SEAL_OTHER in out:
-                return "a different file could be read under the seal"
-            code, out, err = _run(_sealed_audio(given_at, room_at, [CAT, given_at]), env=env, timeout=SEAL_TIMEOUT)
-            if code != 0 or out != _SEAL_GIVEN:
-                return "the given file could not be read under the seal: exit %s %s" % (code, err.strip()[-200:])
+            for seal_fn in (
+                _sealed_audio,
+                lambda src, scr, cmd: _sealed_worker(src, scr, cmd, worker_override=src),
+            ):
+                code, out, err = _run(seal_fn(given_at, room_at, [CAT, other_at]), env=env, timeout=SEAL_TIMEOUT)
+                if code == 0 or _SEAL_OTHER in out:
+                    return "a different file could be read under the seal"
+                code, out, err = _run(seal_fn(given_at, room_at, [CAT, given_at]), env=env, timeout=SEAL_TIMEOUT)
+                if code != 0 or out != _SEAL_GIVEN:
+                    return "the given file could not be read under the seal: exit %s %s" % (code, err.strip()[-200:])
             _run(_sealed_audio(given_at, room_at, [NC, "-z", "-w", "2", "127.0.0.1", port]), env=env, timeout=SEAL_TIMEOUT)
         try:
             listener.accept()[0].close()
@@ -636,9 +714,20 @@ def status() -> Dict[str, Any]:
 
 # --------------------------------------------------------------------------- install
 
+class _HttpsRedirectHandler(urllib.request.HTTPRedirectHandler):
+    def redirect_request(self, req: Any, fp: Any, code: int, msg: str, headers: Any, newurl: str) -> Any:
+        target = urllib.parse.urljoin(req.full_url, newurl)
+        if urllib.parse.urlsplit(target).scheme.lower() != "https":
+            raise urllib.error.HTTPError(req.full_url, code, "Refusing non-HTTPS redirect", headers, fp)
+        return super().redirect_request(req, fp, code, msg, headers, target)
+
+
 def _open_url(url: str, headers: Dict[str, str]):
-    """Open a download. Returns an object with ``.status`` and ``.read(n)``. No login is ever sent."""
-    return urllib.request.urlopen(urllib.request.Request(url, headers=headers), timeout=60)
+    """Open a download over HTTPS only. Returns an object with ``.status`` and ``.read(n)``. No login is ever sent."""
+    if urllib.parse.urlsplit(url).scheme.lower() != "https":
+        raise urllib.error.URLError("HTTPS is required for model downloads")
+    opener = urllib.request.build_opener(_HttpsRedirectHandler())
+    return opener.open(urllib.request.Request(url, headers=headers), timeout=60)
 
 
 def _sha256(path: Path) -> str:
@@ -665,14 +754,24 @@ def _fetch_file(url: str, dest: Path, size: int, on_bytes: Callable[[int], None]
             if have and getattr(response, "status", 200) != 206:
                 have = 0                              # server sent the whole file again
             on_bytes(have)
+            oversized = False
             with open(str(part), "ab" if have else "wb") as handle:
                 while True:
-                    block = response.read(1024 * 1024)
+                    block = response.read(min(1024 * 1024, max(1, size - have + 1)))
                     if not block:
+                        break
+                    if have + len(block) > size:
+                        oversized = True
                         break
                     handle.write(block)
                     have += len(block)
                     on_bytes(have)
+            if oversized:
+                try:
+                    part.unlink()
+                except OSError:
+                    pass
+                raise _error("failed", "download_damaged", detail="oversized download for " + dest.name)
         finally:
             close = getattr(response, "close", None)
             if close:
@@ -720,8 +819,11 @@ def _pip(*args: str) -> List[Any]:
 
 
 def _pip_install(*args: str) -> None:
-    code, out, err = _run(_pip("install", "--index-url", INDEX_URL, "--only-binary", ":all:", *args),
-                          env=_install_env(), timeout=1800)
+    code, out, err = _run(
+        _pip("install", "--index-url", INDEX_URL, "--only-binary", ":all:", "--require-hashes", *args),
+        env=_install_env(),
+        timeout=1800,
+    )
     if code != 0:
         output = out + "\n" + err
         offline = any(hint in output for hint in _NETWORK_HINTS)
@@ -808,9 +910,10 @@ def install(progress: Optional[Callable[[str, Optional[float]], None]] = None) -
         notify("environment", 0.0)
         _make_environment()
         notify("packages", 0.03)
-        _pip_install(PIP_PIN)                         # upgrades pip inside this environment only
         requirements = HOME / "requirements.txt"
-        requirements.write_text("\n".join(PACKAGES) + "\n", encoding="utf-8")
+        requirements.write_text(_requirements_text((PIP_PIN,)), encoding="utf-8")
+        _pip_install("--no-deps", "-r", str(requirements))   # upgrades pip inside this environment with hash check
+        requirements.write_text(_requirements_text(PACKAGES), encoding="utf-8")
         _pip_install("--no-deps", "-r", str(requirements))
         notify("model", 0.12)
         _download_model(lambda fraction: notify("model", 0.12 + 0.8 * fraction))
@@ -945,9 +1048,16 @@ def _extract_audio(source: Path, wav: Path, scratch: Path) -> None:
 
 
 def _run_worker(wav: Path, timeout: float) -> Dict[str, Any]:
-    """Run the Whisper worker on a WAV, with the network denied by macOS, and return its checked reply."""
-    code, out, err = _run(_sealed([_venv_python(), "-I", WORKER, "--wav", wav, "--model", _model_dir()]),
-                          env=_worker_env(), timeout=timeout)
+    """Run the Whisper worker on a WAV, with network and personal files denied by macOS, and return its checked reply."""
+    wav_at = _place(str(wav), os.path.realpath(str(wav)))
+    scratch_at = _place(str(wav.parent), os.path.realpath(str(wav.parent)))
+    env = _worker_env()
+    env["TMPDIR"] = scratch_at
+    code, out, err = _run(
+        _sealed_worker(wav_at, scratch_at, [_venv_python(), "-I", WORKER, "--wav", wav, "--model", _model_dir()]),
+        env=env,
+        timeout=timeout,
+    )
     if code is None:
         raise _error("failed", "timeout", detail=err)
     payload: Any = None

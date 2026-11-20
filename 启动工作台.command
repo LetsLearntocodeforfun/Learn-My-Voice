@@ -11,4 +11,4 @@ if ! xcode-select -p >/dev/null 2>&1; then
   exit 1
 fi
 
-exec /usr/bin/python3 -m studio.server "$@"
+exec /usr/bin/python3 -X utf8 -B -E -s -m studio.server "$@"

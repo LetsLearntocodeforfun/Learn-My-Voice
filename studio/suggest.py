@@ -112,7 +112,7 @@ def suggest_prompt(store: Store, script_id: Any, kind: Any, line_index: Any = No
         "task": kind.upper(),
         "line_no": "null" if index is None else str(index + 1),
         "count": str(ASKED_FOR[kind]),
-        "max_breath_units": str(int(stats["hard_max"])),
+        "max_breath_units": str(int(stats["hard_max"] if stats["hard_max"] is not None else 16)),
         # Typed by the creator: encoded like every other value, as one JSON string.
         "instruction": pipeline._inline(clean_instruction(instruction) if kind == REWRITE else ""),
     })
@@ -196,10 +196,25 @@ def apply_suggest(store: Store, result: Any, script_id: Any, kind: Any, line_ind
     """
     script, index = _target(store, script_id, kind, line_index)
     raw = result.get("suggestions") if isinstance(result, dict) else None
+    if raw is None and kind == CRITIC and isinstance(result, dict) and isinstance(result.get("flagged_and_repaired_lines"), list):
+        raw = [
+            {
+                "line_no": item.get("line_no"),
+                "spoken_script_zh": item.get("spoken_script_zh") if item.get("spoken_script_zh") is not None else item.get("repaired_zh"),
+                "english_partner_translation": item.get("english_partner_translation") or item.get("repaired_english_translation") or "",
+                "why_zh": item.get("why_zh") or item.get("why_fixed_en_zh") or "",
+                "why_en": item.get("why_en") or item.get("why_fixed_en_zh") or "",
+            }
+            if isinstance(item, dict) else item
+            for item in result["flagged_and_repaired_lines"]
+        ]
     raw = raw if isinstance(raw, list) else []
+    max_raw = 64
+    left_out = max(0, len(raw) - max_raw)
+    raw = raw[:max_raw]
+    line_keys = [learning.spoken_key(str(line.get("spoken_script_zh") or "")) for line in script["lines"]]
     wanted: List[Tuple[int, Dict[str, str]]] = []
     seen = set()
-    left_out = 0
     for item in raw:
         if not isinstance(item, dict):
             left_out += 1
@@ -214,7 +229,7 @@ def apply_suggest(store: Store, result: Any, script_id: Any, kind: Any, line_ind
         value = item.get("spoken_script_zh")
         text = value.strip()[:MAX_SUGGESTION_CHARS] if isinstance(value, str) else ""
         key = learning.spoken_key(text)
-        same_as_now = key == learning.spoken_key(str(script["lines"][at].get("spoken_script_zh") or ""))
+        same_as_now = key == line_keys[at]
         # The critic gets one repair a line; for one line, the same words twice are one proposal.
         mark = at if kind == CRITIC else key
         if not key or same_as_now or mark in seen or len(wanted) >= MAX_SHOWN[kind]:

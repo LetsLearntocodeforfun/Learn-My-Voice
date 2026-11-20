@@ -6,9 +6,9 @@ set PYTHONUTF8=1
 cd /d "%~dp0"
 
 set "PY="
-py -3 -c "import sys; sys.exit(0 if sys.version_info >= (3, 9) else 1)" >nul 2>&1 && set "PY=py -3"
+py -3 -E -s -c "import sys; sys.exit(0 if sys.version_info >= (3, 9) else 1)" >nul 2>&1 && set "PY=py -3"
 if not defined PY (
-  python -c "import sys; sys.exit(0 if sys.version_info >= (3, 9) else 1)" >nul 2>&1 && set "PY=python"
+  python -E -s -c "import sys; sys.exit(0 if sys.version_info >= (3, 9) else 1)" >nul 2>&1 && set "PY=python"
 )
 if not defined PY (
   echo Python 3.9 or newer is needed and was not found.
@@ -18,5 +18,5 @@ if not defined PY (
   exit /b 1
 )
 
-%PY% -m studio.server %*
+%PY% -X utf8 -B -E -s -m studio.server %*
 if errorlevel 1 pause

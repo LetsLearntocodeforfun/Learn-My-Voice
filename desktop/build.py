@@ -226,7 +226,7 @@ def tauri_command(npx: str, bundle: str, override: Path, locked: bool) -> List[s
     that list, and fails instead of choosing others if the list no longer fits ``Cargo.toml``. Without the list
     Cargo picks the newest versions that fit, which is how the list was first made.
     """
-    command = [npx, "--yes", TAURI_CLI, "build", "--ci", "--bundles", bundle, "--config", str(override)]
+    command = [npx, "--yes", "--ignore-scripts", TAURI_CLI, "build", "--ci", "--bundles", bundle, "--config", str(override)]
     return command + ["--", "--locked"] if locked else command
 
 

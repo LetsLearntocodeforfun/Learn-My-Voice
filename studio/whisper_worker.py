@@ -31,6 +31,7 @@ import argparse
 import errno
 import io
 import json
+import os
 import socket
 import statistics
 import sys
@@ -228,7 +229,16 @@ def main(argv=None, engine=None, out=None):
     real_stdout, sys.stdout = sys.stdout, sys.stderr     # anything a library prints must not mix with the result
     block_network()
     try:
-        result, duration = (engine or run_whisper)(args.wav, args.model)
+        wav_path = os.path.abspath(args.wav)
+        model_path = os.path.abspath(args.model)
+        wav_dir = os.path.dirname(wav_path)
+        if wav_dir and os.path.isdir(wav_dir):
+            try:
+                os.chdir(wav_dir)
+            except OSError:
+                pass
+        result, duration = (engine or run_whisper)(wav_path if engine is None else args.wav,
+                                                   model_path if engine is None else args.model)
         segments, dropped = breath_groups(result.get("segments"))
         payload = {
             "segments": segments,

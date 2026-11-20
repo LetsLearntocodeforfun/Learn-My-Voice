@@ -237,6 +237,10 @@ def _plain_regex(phrase: str) -> Optional["re.Pattern[str]"]:
     return re.compile(_GAP.join(parts), re.IGNORECASE)
 
 
+def _compile_pattern(pattern: str) -> "re.Pattern[str]":
+    return re.compile(pattern)
+
+
 def ban_key(phrase: Any) -> str:
     """Comparison form of a blacklist entry: two entries with the same key ban exactly the same text.
 
@@ -363,31 +367,26 @@ def _across_lines(bans: List[_Rule], before: Tuple[Any, str, List[int], str, Lis
     return _dedupe_overlaps(hits)
 
 
-def lint_script(
-    script: Dict[str, Any],
+@dataclass(frozen=True)
+class CompiledRules:
+    hard_max: Optional[float]
+    cpm: Optional[float]
+    attested_english: frozenset
+    bans: Tuple[_Rule, ...]
+    phrases: Tuple[_Rule, ...]
+    patterns: Tuple[_Rule, ...]
+    tells: Tuple[_Rule, ...]
+    own: Tuple[str, ...]
+    rare_particles: Tuple[str, ...]
+
+
+def compile_rules(
     dna: Dict[str, Any],
-    *,
-    target_duration_sec: Optional[float] = None,
     lexicon: Optional[Dict[str, Any]] = None,
-    punctuation_breaks: bool = True,
-    duration_tolerance: float = 0.10,
     extra_allowed_english: Sequence[str] = (),
-) -> List[Finding]:
-    """Return all deterministic findings for ``script`` against ``dna``.
-
-    ``punctuation_breaks`` treats commas and sentence punctuation as breath
-    breaks in addition to ``/``. ``extra_allowed_english`` is for sponsor brand
-    names that the Voice DNA cannot know about.
-
-    ``lexicon`` is the word list to check with; the app passes ``wordlist.effective(store)``. Given none,
-    ``lexicon.json`` is read as it ships. Two of its groups are looked for on their own, after the rules:
-    ``own_phrases`` (the creator's own phrases, as they stand) and ``ai_tells`` (hints that a line may sound
-    written). A finding from either never takes a finding of the rules away and is never taken away by one.
-    """
+) -> CompiledRules:
+    """Build and cache-lookup all regexes and word sets for ``dna`` + ``lexicon`` once."""
     lexicon = lexicon if lexicon is not None else load_lexicon()
-    lines = _script_lines(script)
-    findings: List[Finding] = []
-
     hard_max = _number(_get(dna, "cadence_and_syntax.ideal_clause_length_chars.hard_max"))
     cpm = _number(_get(dna, "cadence_and_syntax.target_speaking_rate_cpm"))
     attested = _attested_strings(dna)
@@ -420,11 +419,11 @@ def lint_script(
     add_phrases(lexicon.get("generic_slop", []), GENERIC_XHS_SLOP, ERROR, "Lexicon generic cliché, not attested in Voice DNA", skip_attested=True)
     add_phrases(lexicon.get("audience_address_terms", []), GENERIC_XHS_SLOP, REVIEW, "Audience address term not in Voice DNA 'uses'", skip_attested=True)
     for entry in lexicon.get("translationese", []):
-        patterns.append((re.compile(entry["pattern"]), TRANSLATIONESE, entry.get("severity", ERROR), "Lexicon translationese / bookish pattern"))
+        patterns.append((_compile_pattern(entry["pattern"]), TRANSLATIONESE, entry.get("severity", ERROR), "Lexicon translationese / bookish pattern"))
     for entry in lexicon.get("compliance", []):
-        patterns.append((re.compile(entry["pattern"]), COMPLIANCE_RISK, entry.get("severity", REVIEW), entry.get("reason_en", "Lexicon compliance term")))
+        patterns.append((_compile_pattern(entry["pattern"]), COMPLIANCE_RISK, entry.get("severity", REVIEW), entry.get("reason_en", "Lexicon compliance term")))
     for entry in lexicon.get("ai_tells", []):
-        tells.append((re.compile(entry["pattern"]), AI_TELL, REVIEW, AI_TELL_DETAIL % entry.get("id", "")))
+        tells.append((_compile_pattern(entry["pattern"]), AI_TELL, REVIEW, AI_TELL_DETAIL % entry.get("id", "")))
     # The creator's own phrases, folded as a line is. They are looked for with str.find: nothing the creator
     # typed is ever compiled as a pattern, so nothing typed there can make a check run long or match more than itself.
     own_phrases = lexicon.get("own_phrases", [])
@@ -433,6 +432,54 @@ def lint_script(
 
     rare = _get(dna, "lexical_fingerprint.modal_particles.rare_or_zero", [])
     rare_particles = [p for p in (rare if isinstance(rare, (list, tuple)) else []) if isinstance(p, str) and p]
+    return CompiledRules(
+        hard_max=hard_max,
+        cpm=cpm,
+        attested_english=frozenset(attested_english),
+        bans=tuple(bans),
+        phrases=tuple(phrases),
+        patterns=tuple(patterns),
+        tells=tuple(tells),
+        own=tuple(own),
+        rare_particles=tuple(rare_particles),
+    )
+
+
+def lint_script(
+    script: Dict[str, Any],
+    dna: Dict[str, Any],
+    *,
+    target_duration_sec: Optional[float] = None,
+    lexicon: Optional[Dict[str, Any]] = None,
+    punctuation_breaks: bool = True,
+    duration_tolerance: float = 0.10,
+    extra_allowed_english: Sequence[str] = (),
+    compiled: Optional[CompiledRules] = None,
+) -> List[Finding]:
+    """Return all deterministic findings for ``script`` against ``dna``.
+
+    ``punctuation_breaks`` treats commas and sentence punctuation as breath
+    breaks in addition to ``/``. ``extra_allowed_english`` is for sponsor brand
+    names that the Voice DNA cannot know about.
+
+    ``lexicon`` is the word list to check with; the app passes ``wordlist.effective(store)``. Given none,
+    ``lexicon.json`` is read as it ships. Two of its groups are looked for on their own, after the rules:
+    ``own_phrases`` (the creator's own phrases, as they stand) and ``ai_tells`` (hints that a line may sound
+    written). A finding from either never takes a finding of the rules away and is never taken away by one.
+    """
+    rules = compiled if compiled is not None else compile_rules(dna, lexicon=lexicon, extra_allowed_english=extra_allowed_english)
+    lines = _script_lines(script)
+    findings: List[Finding] = []
+
+    hard_max = rules.hard_max
+    cpm = rules.cpm
+    attested_english = rules.attested_english
+    bans = list(rules.bans)
+    phrases = rules.phrases
+    patterns = rules.patterns
+    tells = rules.tells
+    own = rules.own
+    rare_particles = rules.rare_particles
 
     total_units = 0
     live_clip_sec = 0.0

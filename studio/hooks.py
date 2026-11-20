@@ -174,6 +174,9 @@ def library(samples: List[Dict[str, Any]]) -> Dict[str, Any]:
     organic = [s for s in samples if not s.get("is_sponsored")]
     totals = [float(total) for total in (corpus.interactions(s) for s in organic) if total is not None]
     usual = _middle(totals) or (sum(totals) / len(totals) if totals else None) or None
+    view_totals = [float(v) for v in (s.get("views") for s in organic) if v is not None]
+    usual_views = _middle(view_totals) or (sum(view_totals) / len(view_totals) if view_totals else None) or None
+    with_numbers = sum(1 for s in organic if corpus.interactions(s) is not None or s.get("views") is not None)
     openers = []
     written_by_ai = []
     for sample in organic:
@@ -184,27 +187,42 @@ def library(samples: List[Dict[str, Any]]) -> Dict[str, Any]:
         if not found["opening"]:
             continue
         total = corpus.interactions(sample)
+        views = sample.get("views")
+        rel_usual = _times_usual(total, usual) if total is not None else _times_usual(views, usual_views)
         opener = {"sample_id": sample["id"], "title": sample["title"], "opening": found["opening"],
                   "patterns": found["patterns"], "units": found["units"], "interactions": total,
-                  "times_usual": _times_usual(total, usual), "_at": sample.get("created_at") or 0}
+                  "times_usual": rel_usual, "_views": views, "_at": sample.get("created_at") or 0}
         if sample.get("origin") == corpus.ORIGIN_SCRIPT and opening_by_ai(sample, found["opening"]):
             written_by_ai.append(opener)        # the video's result is the creator's; the sentence is not
         elif not posted_waiting:
             openers.append(opener)              # a posted script still waiting: its wording is not yet said to be theirs
     for found_openers in (openers, written_by_ai):
-        found_openers.sort(key=lambda o: (o["interactions"] is not None, o["interactions"] or 0, o["_at"]), reverse=True)
+        found_openers.sort(
+            key=lambda o: (o["interactions"] is not None or o["_views"] is not None, o["interactions"] or 0, o["_views"] or 0, o["_at"]),
+            reverse=True,
+        )
     patterns = []
     for label in PATTERNS:
         having = [o for o in openers if label in o["patterns"]]
         if not having:
             continue
         numbered = [float(o["interactions"]) for o in having if o["interactions"] is not None]
-        middle = _middle(numbered) if len(numbered) >= MIN_FOR_PATTERN else None
-        patterns.append({"pattern": label, "videos": len(having), "with_numbers": len(numbered),
-                         "middle_interactions": middle, "times_usual": _times_usual(middle, usual)})
+        if numbered:
+            middle = _middle(numbered) if len(numbered) >= MIN_FOR_PATTERN else None
+            pat_times = _times_usual(middle, usual)
+            count_num = len(numbered)
+        else:
+            view_numbered = [float(o["_views"]) for o in having if o["_views"] is not None]
+            middle = None
+            view_middle = _middle(view_numbered) if len(view_numbered) >= MIN_FOR_PATTERN else None
+            pat_times = _times_usual(view_middle, usual_views)
+            count_num = len(view_numbered)
+        patterns.append({"pattern": label, "videos": len(having), "with_numbers": count_num,
+                         "middle_interactions": middle, "times_usual": pat_times})
     for opener in openers + written_by_ai:
         del opener["_at"]
-    answer = {"openers": openers, "patterns": patterns, "usual_interactions": usual, "videos_with_numbers": len(totals)}
+        del opener["_views"]
+    answer = {"openers": openers, "patterns": patterns, "usual_interactions": usual, "videos_with_numbers": with_numbers}
     if written_by_ai:
         answer["written_by_ai"] = written_by_ai
     return answer
@@ -218,7 +236,16 @@ def best(samples: List[Dict[str, Any]], limit: int = BEST_FOR_PROMPT) -> List[Di
     """
     found = library(samples)
     usual = found["usual_interactions"]         # compared as counted, not through the rounded ``times_usual``
-    wanted = [o for o in distinct(found["openers"]) if usual and o["interactions"] is not None and o["interactions"] >= usual]
+    if usual:
+        wanted = [o for o in distinct(found["openers"]) if o["interactions"] is not None and o["interactions"] >= usual]
+    else:
+        organic = {s["id"]: s.get("views") for s in samples if not s.get("is_sponsored")}
+        view_totals = [float(v) for v in organic.values() if v is not None]
+        usual_views = _middle(view_totals) or (sum(view_totals) / len(view_totals) if view_totals else None) or None
+        wanted = [
+            o for o in distinct(found["openers"])
+            if usual_views and organic.get(o["sample_id"]) is not None and float(organic[o["sample_id"]]) >= usual_views
+        ]
     return [{"title": o["title"], "opening": o["opening"]} for o in wanted[:max(0, limit)]]
 
 

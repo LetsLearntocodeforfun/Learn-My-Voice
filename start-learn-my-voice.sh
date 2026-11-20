@@ -5,8 +5,8 @@ cd "$(dirname "$0")" || exit 1
 
 for python in python3 python; do
   if command -v "$python" >/dev/null 2>&1 &&
-     "$python" -c 'import sys; sys.exit(0 if sys.version_info >= (3, 9) else 1)' >/dev/null 2>&1; then
-    exec "$python" -m studio.server "$@"
+     "$python" -E -s -c 'import sys; sys.exit(0 if sys.version_info >= (3, 9) else 1)' >/dev/null 2>&1; then
+    exec "$python" -X utf8 -B -E -s -m studio.server "$@"
   fi
 done
 

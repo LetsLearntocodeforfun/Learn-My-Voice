@@ -24,6 +24,8 @@ import uuid
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional, Tuple
 
+from . import keystore
+
 ROOT = Path(__file__).resolve().parent.parent
 EXAMPLE_DNA_PATH = ROOT / "schemas" / "voice_dna.example.json"
 CLOUD_PROVIDERS = ("gemini", "openai")
@@ -32,6 +34,7 @@ MANUAL_PROVIDER = "manual"  # copy-and-paste with a chat subscription: no key, n
 METRIC_FIELDS = ("views", "likes", "collects", "comments")
 MAX_KEYWORD_CHARS = 40
 MAX_KEYWORDS_PER_SCRIPT = 8
+MAX_TRENDS = 2000           # tracked trend keywords kept in SQLite; oldest unverified entries go first when full
 SAMPLE_KINDS = ("script", "subtitle", "video")   # typed or pasted text; a subtitle file; a video transcribed here
 MAX_SOURCE_NAME_CHARS = 200
 MAX_BRIEFS = 200            # records of what a prompt contained; the oldest are dropped
@@ -40,6 +43,12 @@ MAX_AI_SUGGESTIONS = 300    # texts an AI suggested for the lines of one script 
 # characters a minute this is more than 27 hours of speech in Chinese, and about 9 hours in English. It is
 # there so that one file somebody handed the creator cannot make every page slow or fill the database.
 MAX_SAMPLE_CHARS = 500000
+# Bounds on script fields stored in SQLite, preventing multi-megabyte script rows from slowing page loads.
+MAX_SCRIPT_TITLE_CHARS = 500
+MAX_NOTES_CHARS = 50000
+MAX_SCRIPT_LINES = 500
+MAX_LINE_CHARS = 5000
+MAX_POST_CHARS = 30000
 # Where a library item came from. "" is everything the creator brought in themselves. ORIGIN_SCRIPT is a script
 # written in this app that was marked as posted (studio/posted.py); it stays on the item when that script is deleted.
 ORIGIN_SCRIPT = "script"
@@ -81,7 +90,7 @@ HISTORY_ID = r"[0-9]{8}-[0-9]{6}(?:-[0-9]{1,6})?"     # the id of an earlier pro
 
 
 class TextTooLong(ValueError):
-    """The text of a library item is over MAX_SAMPLE_CHARS. Raised before anything is stored.
+    """The text of a library item or script field exceeds its configured maximum. Raised before anything is stored.
 
     ``code`` is what a page or an MCP tool can map; ``message`` (English) and ``message_zh`` are written to be shown.
     """
@@ -124,6 +133,8 @@ CREATE TABLE IF NOT EXISTS scripts (
     target_sec INTEGER NOT NULL DEFAULT 60,
     notes TEXT NOT NULL DEFAULT '',
     lines_json TEXT NOT NULL DEFAULT '[]',
+    line_count INTEGER,
+    preview TEXT,
     post_json TEXT NOT NULL DEFAULT '{}',
     ai_lines_json TEXT,
     status TEXT NOT NULL DEFAULT 'DRAFT',
@@ -197,6 +208,8 @@ CREATE INDEX IF NOT EXISTS ai_suggestions_by_script ON ai_suggestions (script_id
 _ADDED_COLUMNS = (
     ("scripts", "keywords_json", "TEXT NOT NULL DEFAULT '[]'"),    # before trend keywords existed
     ("scripts", "basis_json", "TEXT"),                             # before drafts recorded what they were based on
+    ("scripts", "line_count", "INTEGER"),                          # fast summary columns for list_scripts()
+    ("scripts", "preview", "TEXT"),
     ("samples", "kind", "TEXT NOT NULL DEFAULT 'script'"),         # before subtitle files and videos could be added
     ("samples", "timing_json", "TEXT"),
     ("samples", "source_name", "TEXT NOT NULL DEFAULT ''"),
@@ -223,17 +236,29 @@ _KEEP: Any = object()       # an argument left out: what is stored stays as it i
 
 def normalize_lines(lines: Any) -> List[Dict[str, Any]]:
     """Coerce arbitrary input into the Stage 4 line shape, renumbered from 1."""
+    if isinstance(lines, list) and len(lines) > MAX_SCRIPT_LINES:
+        raise TextTooLong(len(lines), MAX_SCRIPT_LINES)
     out: List[Dict[str, Any]] = []
     for raw in lines if isinstance(lines, list) else []:
         if not isinstance(raw, dict):
             continue
+        if len(out) >= MAX_SCRIPT_LINES:
+            raise TextTooLong(len(out) + 1, MAX_SCRIPT_LINES)
         line: Dict[str, Any] = {"line_no": len(out) + 1}
         for field in LINE_FIELDS:
             value = raw.get(field, "")
-            line[field] = value if isinstance(value, str) else ("" if value is None else str(value))
+            text = value if isinstance(value, str) else ("" if value is None else str(value))
+            if len(text) > MAX_LINE_CHARS:
+                raise TextTooLong(len(text), MAX_LINE_CHARS)
+            line[field] = text
         line["audio_mode"] = line["audio_mode"] or "VOICEOVER"
         out.append(line)
     return out
+
+
+def _script_summary(lines: List[Dict[str, Any]]) -> Tuple[int, str]:
+    preview = next((l.get("spoken_script_zh", "") for l in lines if l.get("spoken_script_zh")), "")
+    return len(lines), preview[:60]
 
 
 def _metric(value: Any) -> Optional[int]:
@@ -311,7 +336,10 @@ def loads_stored(text: str) -> Any:
     delete it. Read as ``null`` they can be shown, edited and removed. The same goes for a number written
     so large that it would be read as Infinity (``1e999``).
     """
-    return json.loads(text, parse_constant=_not_a_number, parse_float=_finite_or_none)
+    try:
+        return json.loads(text, parse_constant=_not_a_number, parse_float=_finite_or_none)
+    except RecursionError:
+        raise ValueError("JSON nested too deeply")
 
 
 def _as_object(data: bytes) -> Optional[Dict[str, Any]]:
@@ -334,14 +362,19 @@ def _json_object(text: Any) -> Optional[Dict[str, Any]]:
     return value if isinstance(value, dict) else None
 
 
-def _owner_only(root: Path) -> None:
+def _owner_only(root: Path, _mode: Optional[int] = None) -> None:
     """Take group and other access away from ``root`` and from every folder and file in it.
 
     Run each time the data folder is opened, so that a folder an earlier version created (0755, with files
     0644) is closed as well, and so is anything put there since. Only the group and other bits are cleared;
     what the owner may do stays as it was. Symbolic links are neither changed nor followed: what a link
-    points at may lie outside the folder and is not this app's to alter.
+    points at may lie outside the folder and is not this app's to alter. On Windows, where ``chmod`` does
+    not change NTFS permissions, ``keystore.restrict_windows_acl`` restricts directory inheritance to the
+    current user.
     """
+    if os.name == "nt" and root.is_dir() and not root.is_symlink():
+        keystore.restrict_windows_acl(root)
+
     def close(path: str) -> None:
         try:
             info = os.lstat(path)
@@ -351,9 +384,10 @@ def _owner_only(root: Path) -> None:
             pass                      # gone in the meantime, or not ours to change
 
     close(str(root))
-    for folder, folders, files in os.walk(str(root)):     # os.walk does not descend into linked folders
-        for name in folders + files:
-            close(os.path.join(folder, name))
+    if root.is_dir() and not root.is_symlink():
+        for folder, folders, files in os.walk(str(root)):     # os.walk does not descend into linked folders
+            for name in folders + files:
+                close(os.path.join(folder, name))
 
 
 # Windows does not let a file be replaced while anyone has it open: another save of the same file that is
@@ -432,6 +466,7 @@ class Store:
     def _db(self) -> sqlite3.Connection:
         db = sqlite3.connect(str(self.db_path), timeout=10)
         db.row_factory = sqlite3.Row
+        db.execute("PRAGMA busy_timeout = 10000")
         return db
 
     @staticmethod
@@ -499,12 +534,36 @@ class Store:
                 config.update(loaded)
         except (FileNotFoundError, ValueError):
             pass
-        if not isinstance(config.get("keys"), dict):
-            config["keys"] = {}
+        raw_keys = config.get("keys")
+        keys: Dict[str, str] = {}
+        if isinstance(raw_keys, dict):
+            for provider, secret in raw_keys.items():
+                if isinstance(provider, str) and isinstance(secret, str) and secret:
+                    keys[provider] = secret
+        sealed = config.pop("keys_sealed", None)
+        if isinstance(sealed, dict):
+            for provider, token in sealed.items():
+                if isinstance(provider, str):
+                    opened = keystore.unseal(token)
+                    if opened:
+                        keys[provider] = opened
+        config["keys"] = keys
         return config
 
     def save_config(self, config: Dict[str, Any]) -> None:
-        self._write_json(self.config_path, config, mode=0o600)
+        disk = dict(config)
+        raw_keys = disk.get("keys")
+        sealed: Dict[str, str] = {}
+        if isinstance(raw_keys, dict):
+            for provider, secret in raw_keys.items():
+                if isinstance(provider, str) and isinstance(secret, str) and secret:
+                    sealed[provider] = keystore.seal(secret)
+        disk["keys"] = {}
+        if sealed:
+            disk["keys_sealed"] = sealed
+        else:
+            disk.pop("keys_sealed", None)
+        self._write_json(self.config_path, disk, mode=0o600)
 
     def update_config(self, change: Callable[[Dict[str, Any]], None]) -> Dict[str, Any]:
         """Read the settings, let ``change`` alter them in place, and save them. Returns what was saved.
@@ -753,13 +812,21 @@ class Store:
             rows = db.execute("SELECT * FROM samples ORDER BY created_at DESC, rowid DESC").fetchall()
         return [self._sample_row(r) for r in rows]
 
+    def samples_count(self) -> int:
+        with self._db() as db:
+            return int(db.execute("SELECT COUNT(*) FROM samples").fetchone()[0])
+
     def samples_version(self) -> Tuple[Any, ...]:
         """A value that changes whenever the library changes: an item added, removed, edited, confirmed or
-        marked sponsored. Reading it costs four numbers, so something measured from the whole library
-        (``voicematch.reference_for``) can be kept until this value moves."""
+        marked sponsored. Reading it costs one aggregate row, so something measured from the whole library
+        (``voicematch.reference_for``, ``setup.status``) can be kept until this value moves."""
         with self._db() as db:
-            row = db.execute("SELECT COUNT(*), COALESCE(MAX(updated_at), 0), COALESCE(SUM(needs_review), 0),"
-                             " COALESCE(SUM(is_sponsored), 0) FROM samples").fetchone()
+            row = db.execute(
+                "SELECT COUNT(*), COALESCE(MAX(updated_at), 0), COALESCE(MAX(reviewed_at), 0),"
+                " COALESCE(SUM(needs_review), 0), COALESCE(SUM(is_sponsored), 0),"
+                " COALESCE(SUM(LENGTH(text)), 0), COALESCE(SUM(LENGTH(COALESCE(timing_json, ''))), 0),"
+                " COALESCE(SUM(LENGTH(COALESCE(ai_json, ''))), 0) FROM samples"
+            ).fetchone()
         return tuple(row)
 
     def get_sample(self, sample_id: str) -> Optional[Dict[str, Any]]:
@@ -807,8 +874,11 @@ class Store:
         text = text.replace("\r\n", "\n").strip()
         if len(text) > MAX_SAMPLE_CHARS:
             raise TextTooLong(len(text))
+        raw_title = (title or "").strip()
+        if len(raw_title) > MAX_SCRIPT_TITLE_CHARS:
+            raise TextTooLong(len(raw_title), MAX_SCRIPT_TITLE_CHARS)
         first_line = next((l.strip() for l in text.splitlines() if l.strip()), "")
-        title = (title or "").strip() or first_line[:20] or "未命名"
+        title = raw_title or first_line[:20] or "未命名"
         metrics = metrics or {}
         kind = kind if kind in SAMPLE_KINDS else SAMPLE_KINDS[0]
         now = time.time()
@@ -851,7 +921,10 @@ class Store:
         values: List[Any] = []
         now = time.time()
         if isinstance(changes.get("title"), str):
-            sets.append("title = ?"); values.append(changes["title"].strip() or "未命名")
+            new_title = changes["title"].strip()
+            if len(new_title) > MAX_SCRIPT_TITLE_CHARS:
+                raise TextTooLong(len(new_title), MAX_SCRIPT_TITLE_CHARS)
+            sets.append("title = ?"); values.append(new_title or "未命名")
         if isinstance(changes.get("text"), str):
             text = changes["text"].replace("\r\n", "\n").strip()
             if len(text) > MAX_SAMPLE_CHARS:
@@ -904,7 +977,10 @@ class Store:
                              _dumps(timing) if isinstance(timing, dict) else None, clean_file_name(source_name),
                              int(bool(needs_review)), None if needs_review else now, now]
         if isinstance(title, str) and title.strip():
-            sets.append("title = ?"); values.append(title.strip())
+            clean_t = title.strip()
+            if len(clean_t) > MAX_SCRIPT_TITLE_CHARS:
+                raise TextTooLong(len(clean_t), MAX_SCRIPT_TITLE_CHARS)
+            sets.append("title = ?"); values.append(clean_t)
         if ai_draft is not _KEEP:
             sets.append("ai_json = ?"); values.append(_dumps(ai_draft) if isinstance(ai_draft, dict) else None)
         if snapshot is not _KEEP:
@@ -928,6 +1004,10 @@ class Store:
         with self._db() as db:
             rows = db.execute("SELECT * FROM trends ORDER BY updated_at DESC, rowid DESC").fetchall()
         return [self._trend_row(r) for r in rows]
+
+    def trends_count(self) -> int:
+        with self._db() as db:
+            return int(db.execute("SELECT COUNT(*) FROM trends").fetchone()[0])
 
     def get_trend(self, trend_id: str) -> Optional[Dict[str, Any]]:
         with self._db() as db:
@@ -963,13 +1043,15 @@ class Store:
                 heat = _metric(item.get("heat")) or None
                 seen = float(item.get("seen_at") or now)
                 seen = seen if math.isfinite(seen) else now
+                src_url = str(item.get("source_url") or "")[:1000]
+                note_zh = str(item.get("note_zh") or "")[:500]
+                note_en = str(item.get("note_en") or "")[:500]
                 row = db.execute("SELECT * FROM trends WHERE key = ?", (key,)).fetchone()
                 if row is None:
                     db.execute(
                         "INSERT INTO trends (id, key, keyword, heat, source, source_url, note_zh, note_en,"
                         " created_at, updated_at) VALUES (?,?,?,?,?,?,?,?,?,?)",
-                        (uuid.uuid4().hex[:12], key, keyword, heat, source, str(item.get("source_url") or ""),
-                         str(item.get("note_zh") or ""), str(item.get("note_en") or ""), now, seen))
+                        (uuid.uuid4().hex[:12], key, keyword, heat, source, src_url, note_zh, note_en, now, seen))
                 elif row["source"] == "manual" and source != "manual":
                     continue                    # the creator's own keyword: an AI naming it changes nothing on it
                 elif source == "manual" and row["source"] != "manual":
@@ -977,17 +1059,24 @@ class Store:
                     db.execute(
                         "UPDATE trends SET heat = ?, source = 'manual', source_url = ?, note_zh = ?, note_en = ?,"
                         " updated_at = ? WHERE id = ?",
-                        (heat if heat is not None else row["heat"], str(item.get("source_url") or ""),
-                         str(item.get("note_zh") or ""), str(item.get("note_en") or ""),
+                        (heat if heat is not None else row["heat"], src_url, note_zh, note_en,
                          max(seen, row["updated_at"]), row["id"]))
                 else:
                     db.execute(
                         "UPDATE trends SET heat = ?, source = ?, source_url = ?, note_zh = ?, note_en = ?,"
                         " updated_at = ? WHERE id = ?",
                         (heat if heat is not None else row["heat"], source,
-                         str(item.get("source_url") or row["source_url"]), str(item.get("note_zh") or row["note_zh"]),
-                         str(item.get("note_en") or row["note_en"]), max(seen, row["updated_at"]), row["id"]))
+                         src_url or row["source_url"], note_zh or row["note_zh"],
+                         note_en or row["note_en"], max(seen, row["updated_at"]), row["id"]))
                 stored += 1
+            total = int(db.execute("SELECT COUNT(*) FROM trends").fetchone()[0])
+            if total > MAX_TRENDS:
+                db.execute(
+                    "DELETE FROM trends WHERE id IN ("
+                    "SELECT id FROM trends ORDER BY CASE WHEN source = 'manual' THEN 1 ELSE 0 END ASC,"
+                    " updated_at ASC, rowid ASC LIMIT ?)",
+                    (total - MAX_TRENDS,),
+                )
         return stored
 
     def update_trend(self, trend_id: str, heat: Any) -> Optional[Dict[str, Any]]:
@@ -1017,15 +1106,21 @@ class Store:
 
     def list_scripts(self) -> List[Dict[str, Any]]:
         with self._db() as db:
-            rows = db.execute("SELECT * FROM scripts ORDER BY updated_at DESC").fetchall()
+            rows = db.execute(
+                "SELECT id, title, target_sec, status, updated_at, line_count, preview,"
+                " CASE WHEN line_count IS NULL OR preview IS NULL THEN lines_json END AS legacy_lines_json"
+                " FROM scripts ORDER BY updated_at DESC"
+            ).fetchall()
         out = []
         for row in rows:
-            lines = loads_stored(row["lines_json"])
-            preview = next((l.get("spoken_script_zh", "") for l in lines if l.get("spoken_script_zh")), "")
+            if row["line_count"] is not None and row["preview"] is not None:
+                line_count, preview = int(row["line_count"]), str(row["preview"])
+            else:
+                line_count, preview = _script_summary(loads_stored(row["legacy_lines_json"] or "[]"))
             out.append({
                 "id": row["id"], "title": row["title"], "target_sec": row["target_sec"],
                 "status": row["status"], "updated_at": row["updated_at"],
-                "line_count": len(lines), "preview": preview[:60],
+                "line_count": line_count, "preview": preview,
             })
         return out
 
@@ -1066,19 +1161,29 @@ class Store:
                       basis: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
         """Save a new script. ``from_ai`` keeps the lines as the AI's draft, for later comparison with the
         creator's version; ``basis`` (what that draft's prompt contained) is only kept for an AI draft."""
+        raw_title = (title or "").strip()
+        if len(raw_title) > MAX_SCRIPT_TITLE_CHARS:
+            raise TextTooLong(len(raw_title), MAX_SCRIPT_TITLE_CHARS)
+        if len(notes) > MAX_NOTES_CHARS:
+            raise TextTooLong(len(notes), MAX_NOTES_CHARS)
         normalized = normalize_lines(lines) or normalize_lines([{}])
+        line_count, preview = _script_summary(normalized)
+        post_json = _dumps(post or {})
+        if len(post_json) > MAX_POST_CHARS:
+            raise TextTooLong(len(post_json), MAX_POST_CHARS)
         now = time.time()
         script_id = uuid.uuid4().hex[:12]
         first_note = next((l.strip() for l in notes.splitlines() if l.strip()), "")
-        title = title.strip() or first_note[:16] or default_title
+        title = raw_title or first_note[:16] or default_title
         lines_json = _dumps(normalized)
         basis_json = _dumps(basis) if (from_ai and isinstance(basis, dict)) else None
         with self._db() as db:
             db.execute(
-                "INSERT INTO scripts (id, title, video_format, target_sec, notes, lines_json, post_json,"
-                " ai_lines_json, keywords_json, basis_json, created_at, updated_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?)",
-                (script_id, title, video_format, int(target_sec), notes, lines_json,
-                 _dumps(post or {}), lines_json if from_ai else None,
+                "INSERT INTO scripts (id, title, video_format, target_sec, notes, lines_json, line_count, preview,"
+                " post_json, ai_lines_json, keywords_json, basis_json, created_at, updated_at)"
+                " VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                (script_id, title, video_format, int(target_sec), notes, lines_json, line_count, preview,
+                 post_json, lines_json if from_ai else None,
                  _dumps(normalize_keywords(keywords)), basis_json, now, now),
             )
         return self.get_script(script_id)  # type: ignore[return-value]
@@ -1113,21 +1218,31 @@ class Store:
         sets: List[str] = []
         values: List[Any] = []
         if isinstance(changes.get("title"), str):
-            sets.append("title = ?"); values.append(changes["title"].strip() or "未命名脚本")
+            new_title = changes["title"].strip()
+            if len(new_title) > MAX_SCRIPT_TITLE_CHARS:
+                raise TextTooLong(len(new_title), MAX_SCRIPT_TITLE_CHARS)
+            sets.append("title = ?"); values.append(new_title or "未命名脚本")
         if isinstance(changes.get("video_format"), str):
-            sets.append("video_format = ?"); values.append(changes["video_format"])
+            sets.append("video_format = ?"); values.append(changes["video_format"][:64])
         if isinstance(changes.get("status"), str):
-            sets.append("status = ?"); values.append(changes["status"])
+            sets.append("status = ?"); values.append(changes["status"][:64])
         target = changes.get("target_sec")
         if isinstance(target, (int, float)) and (not isinstance(target, float) or math.isfinite(target)):
             sets.append("target_sec = ?"); values.append(max(5, min(int(target), 900)))
         if "lines" in changes:
-            lines_json = _dumps(normalize_lines(changes["lines"]))
+            normalized = normalize_lines(changes["lines"])
+            line_count, preview = _script_summary(normalized)
+            lines_json = _dumps(normalized)
             sets.append("lines_json = ?"); values.append(lines_json)
+            sets.append("line_count = ?"); values.append(line_count)
+            sets.append("preview = ?"); values.append(preview)
             if by_ai:
                 sets.append("ai_lines_json = CASE WHEN ai_lines_json IS NULL THEN NULL ELSE ? END"); values.append(lines_json)
         if isinstance(changes.get("post"), dict):
-            sets.append("post_json = ?"); values.append(_dumps(changes["post"]))
+            post_json = _dumps(changes["post"])
+            if len(post_json) > MAX_POST_CHARS:
+                raise TextTooLong(len(post_json), MAX_POST_CHARS)
+            sets.append("post_json = ?"); values.append(post_json)
         if "keywords" in changes:
             sets.append("keywords_json = ?")
             values.append(_dumps(normalize_keywords(changes["keywords"])))

@@ -66,6 +66,8 @@ Object.assign(I18N.zh, {
   rv_absent: '你的素材里确实没出现过', rv_conflict: 'AI 说你不说，但出现过 {n} 次：{titles}。不会加入禁用。', rv_not_checkable: '这是一句描述，没法逐字核对',
   rv_summary_title: 'AI 的概括', rv_summary_d: '这部分是它读完后的判断，没法逐条核对。采用以后可以在「我的声音」里看。',
   rv_approve: '采用这份档案', rv_discard: '放弃这份提议', rv_approved: '已采用', rv_discarded: '已放弃',
+  err_stale_proposal: '这一页显示的不是现在保存的提议，可能已被新提议替换。已为你刷新。',
+  err_no_pending: '现在没有等你确认的声音档案。',
   evg_openers: '常用开头', evg_partner: '提到身边人的说法', evg_codeswitch: '中英混说的例子',
   evg_address: '怎么称呼观众', evg_nicknames: '怎么称呼身边的人', evg_colloquial: '口头习惯', evg_connectors: '连接词', evg_particles: '语气词',
   evg_praise: '夸东西的说法', evg_never_address: '不这样称呼观众', evg_never_connectors: '不用的书面连接词', evg_never_particles: '不用的语气词',
@@ -149,8 +151,10 @@ Object.assign(I18N.en, {
   rv_found: 'Found {n} times: {titles}', rv_found_sponsored: 'Only found in sponsored material: {titles}', rv_not_found: 'Not found in the material',
   rv_not_found_quote: 'This line was not found in the material, so it is not kept',
   rv_absent: 'Does not appear in the material', rv_conflict: 'The AI said this is never used, but it appears {n} times: {titles}. It will not be banned.', rv_not_checkable: 'A description, which cannot be checked word for word',
-  rv_summary_title: 'The AI\'s summary', rv_summary_d: 'This is its judgment after reading and cannot be checked item by item. After accepting, it is shown on the Voice page.',
+  rv_summary_title: 'The AI\'s summary', rv_summary_d: 'This is its judgment after reading and cannot be checked item by item. Ticked items are kept and shown on the Voice page.',
   rv_approve: 'Accept this profile', rv_discard: 'Discard the proposal', rv_approved: 'Accepted', rv_discarded: 'Discarded',
+  err_stale_proposal: 'This page was showing an older proposal that has since been replaced. Reloaded with the current one.',
+  err_no_pending: 'There is no proposed voice profile waiting to be accepted.',
   evg_openers: 'Typical openers', evg_partner: 'Mentions of people close to {@them}', evg_codeswitch: 'Examples of mixing English in',
   evg_address: 'Ways of addressing viewers', evg_nicknames: 'Names for people close to {@them}', evg_colloquial: 'Spoken habits', evg_connectors: 'Connectors', evg_particles: 'Particles',
   evg_praise: 'Ways of praising things', evg_never_address: 'Ways of addressing viewers that are not used', evg_never_connectors: 'Written-style connectors that are avoided', evg_never_particles: 'Particles that are not used',
@@ -457,7 +461,11 @@ async function startVideoJob(file) {
   const row = { name: file.name, state: 'uploading', stage: '', detail: '', jobId: null };
   materialJobs.push(row);
   try {
-    const res = await fetch('/api/uploads?name=' + encodeURIComponent(file.name), { method: 'PUT', headers: { 'Content-Type': 'application/octet-stream' }, body: file });
+    const res = await fetch('/api/uploads?name=' + encodeURIComponent(file.name), {
+      method: 'PUT',
+      headers: studioHeaders({ 'Content-Type': 'application/octet-stream' }),
+      body: file,
+    });
     const up = await res.json().catch(() => ({}));
     if (!res.ok) throw Object.assign(new Error(up.message || up.error || 'upload'), { message_zh: up.message_zh });
     const { job } = await api('POST', '/api/videos', { upload_id: up.upload_id, title: file.name.replace(/\.[^.]+$/, '') });
@@ -508,6 +516,7 @@ const EVIDENCE_GROUP_KEYS = {
 
 function reviewHtml(p) {
   const items = (p.report && p.report.items) || [];
+  const freeItems = ((p.report && p.report.unverified) || []).filter((f) => f && typeof f.path === 'string' && f.text);
   const sum = (p.report && p.report.summary) || {};
   const groups = [];
   items.forEach((it) => {
@@ -521,19 +530,19 @@ function reviewHtml(p) {
        as a quote that cannot be found is never kept as one. */
     const fixed = it.status === 'conflict' || (it.kind === 'quote' && it.status === 'not_found');
     const keep = !fixed && (it.status === 'found' || it.status === 'absent' || it.status === 'not_checkable');
-    return `<label class="ev ${esc(it.status)}"><input type="checkbox" data-path="${esc(it.path)}" ${keep ? 'checked' : ''} ${fixed ? 'disabled' : ''}>
+    const needsKeep = !fixed && (it.status === 'not_found' || it.status === 'not_checkable');
+    return `<label class="ev ${esc(it.status)}"><input type="checkbox" data-path="${esc(it.path)}"${needsKeep ? ' data-needs-keep="1"' : ''} ${keep ? 'checked' : ''} ${fixed ? 'disabled' : ''}>
       <span class="ev-text">${esc(it.text)}</span><span class="ev-status">${esc(evidenceStatusText(it))}</span></label>`;
   }).join('');
   /* A list of "never says" entries that all checked out is long and uneventful: fold it, but keep it one click away. */
   const group = (g) => (g.items.every((it) => it.status === 'absent')
     ? `<details class="ev-fold"><summary>${esc(label(g.name))} · ${g.items.length} · ${esc(t('rv_absent'))}</summary>${rows(g)}</details>`
     : `<h4>${esc(label(g.name))}</h4>${rows(g)}`);
-  const dna = p.dna || {};
-  const persona = dna.persona_summary || {};
-  const essence = (lang === 'zh' ? persona.one_line_essence_zh : (persona.one_line_essence_en || persona.one_line_essence_zh)) || '';
-  const habits = (((dna.cadence_and_syntax || {}).sentence_structure_habits) || []).filter((x) => typeof x === 'string');
-  const judgment = essence || habits.length ? `<div class="card soft"><h3>${esc(t('rv_summary_title'))}</h3><p class="hint">${esc(t('rv_summary_d'))}</p>
-      ${typeof essence === 'string' && essence ? `<p>${esc(essence)}</p>` : ''}${habits.length ? `<ul>${habits.map((h) => `<li>${esc(h)}</li>`).join('')}</ul>` : ''}</div>` : '';
+  const freeHtml = freeItems.map((f) =>
+    `<label class="ev free-text"><input type="checkbox" data-free-path="${esc(f.path)}" checked>
+      <span class="ev-text">${esc(f.text)}</span></label>`).join('');
+  const judgment = freeItems.length ? `<div class="card soft"><h3>${esc(t('rv_summary_title'))}</h3><p class="hint">${esc(t('rv_summary_d'))}</p>
+      ${freeHtml}</div>` : '';
   return `<div class="card review"><h3>${esc(t('rv_title'))}</h3><p class="hint">${esc(t('rv_intro'))}</p>
       <p>${esc(tf('rv_summary', { n: sum.checked || 0, f: sum.found || 0, m: sum.not_found || 0, a: sum.absent || 0, c: sum.conflict || 0 }))}</p>
       ${groups.map(group).join('')}</div>
@@ -572,11 +581,25 @@ async function paintStepVoice(el, s) {
   }));
   on('vo-next', () => renderSetup('script'));
   on('rv-approve', (e) => busy(e.currentTarget, e.currentTarget.textContent, async () => {
-    const rejected = Array.from(el.querySelectorAll('.ev input[data-path]')).filter((x) => !x.checked && !x.disabled).map((x) => x.dataset.path);
-    await api('POST', '/api/voice/approve', { rejected });
-    toast(t('rv_approved'));
-    setupUi.open = 'script';
-    await router();
+    const evBoxes = Array.from(el.querySelectorAll('.ev input[data-path]')).filter((x) => !x.disabled);
+    const freeBoxes = Array.from(el.querySelectorAll('.ev input[data-free-path]'));
+    const rejected = evBoxes.filter((x) => !x.checked).map((x) => x.dataset.path)
+      .concat(freeBoxes.filter((x) => !x.checked).map((x) => x.dataset.freePath));
+    const keep = evBoxes.filter((x) => x.checked && x.dataset.needsKeep === '1').map((x) => x.dataset.path)
+      .concat(freeBoxes.filter((x) => x.checked).map((x) => x.dataset.freePath));
+    try {
+      await api('POST', '/api/voice/approve', { created_at: p.created_at, keep, rejected });
+      toast(t('rv_approved'));
+      setupUi.open = 'script';
+      await router();
+    } catch (err) {
+      if (err && (err.code === 'stale_proposal' || err.code === 'no_pending')) {
+        showError(err);
+        await renderSetup('voice');
+        return;
+      }
+      throw err;
+    }
   }));
   on('rv-discard', async () => {
     try { await api('DELETE', '/api/voice/pending'); toast(t('rv_discarded')); await renderSetup('voice'); } catch (err) { showError(err); }

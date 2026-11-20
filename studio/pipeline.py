@@ -776,8 +776,8 @@ def ideas_prompt(store: Store, idea_count: int = 6, focus: Any = "") -> Tuple[st
     """
     samples = _usable_samples(store)
     perf = corpus.performance(samples)
-    ranked_ids = [r["id"] for r in perf["rows"]]
-    ordered = sorted(samples, key=lambda s: ranked_ids.index(s["id"]) if s["id"] in ranked_ids else len(ranked_ids))
+    rank_by_id = {r["id"]: idx for idx, r in enumerate(perf["rows"])}
+    ordered = sorted(samples, key=lambda s: rank_by_id.get(s["id"], len(rank_by_id)))
     history = [_history_entry(s) for s in ordered[:RECOMMEND_MAX_VIDEOS]]
     dna, is_example = store.load_dna()
     voice_summary: Any = "(no personal voice profile yet)" if (is_example or not isinstance(dna, dict)) else {

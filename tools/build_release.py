@@ -38,7 +38,7 @@ from typing import Any, Dict, List, Optional, Tuple
 ROOT = Path(__file__).resolve().parent.parent
 NAME = "learn-my-voice"
 # What a person who only wants to use the app has no use for. Everything else that is committed goes in.
-LEFT_OUT = (".github/", "tests/", "tools/", "desktop/", ".gitattributes", ".gitignore")
+LEFT_OUT = (".github/", "tests/", "tools/", "desktop/", ".gitattributes", ".gitignore", "AUDIT_AND_REMEDIATION_LOG.md")
 BUILD_FILE = "studio/build.json"
 LAUNCHERS = {"macos": "Start Learn My Voice.command", "windows": "Start Learn My Voice.bat", "linux": "start-learn-my-voice.sh"}
 SYSTEMS = (("macos", "macOS"), ("windows", "Windows"), ("linux", "Linux"))

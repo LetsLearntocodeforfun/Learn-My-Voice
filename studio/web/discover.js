@@ -157,7 +157,11 @@ function dvWav(audio) {
 
 /* Sends a recording to the local server and waits for the text. Throws an error that failText can show. */
 async function dvDictate(wav) {
-  const res = await fetch('/api/uploads?name=prompt.wav', { method: 'PUT', headers: { 'Content-Type': 'application/octet-stream' }, body: wav });
+  const res = await fetch('/api/uploads?name=prompt.wav', {
+    method: 'PUT',
+    headers: studioHeaders({ 'Content-Type': 'application/octet-stream' }),
+    body: wav,
+  });
   const up = await res.json().catch(() => ({}));
   if (!res.ok) throw Object.assign(new Error(up.message || up.error || 'upload'), { message_zh: up.message_zh });
   let { job } = await api('POST', '/api/dictation', { upload_id: up.upload_id });

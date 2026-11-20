@@ -158,11 +158,12 @@ def _log_ratio(total: float, baseline: float) -> float:
     return max(-LOG_CAP, min(LOG_CAP, math.log2(total / baseline)))
 
 
-def _flags(keyword: str, dna: Dict[str, Any], lexicon: Dict[str, Any]) -> List[str]:
+def _flags(keyword: str, dna: Dict[str, Any], lexicon: Dict[str, Any],
+           compiled: Optional[guardrails.CompiledRules] = None) -> List[str]:
     """"voice" if the keyword itself is something she never says; "compliance" if it is risky ad wording."""
     script = {"script_lines": [{"line_no": 1, "spoken_script_zh": keyword}]}
     flags = set()
-    for finding in guardrails.lint_script(script, dna, lexicon=lexicon):
+    for finding in guardrails.lint_script(script, dna, lexicon=lexicon, compiled=compiled):
         if finding.severity != guardrails.ERROR:
             continue
         if finding.category == guardrails.COMPLIANCE_RISK:
@@ -186,12 +187,18 @@ def score_trends(trend_rows: List[Dict[str, Any]], samples: List[Dict[str, Any]]
     now = time.time() if now is None else now
     weight = weight if weight in WEIGHTS else "balanced"
     w_trend, w_mine = WEIGHTS[weight]
-    hays = [(s, _Hay(s), corpus.interactions(s)) for s in samples if not s.get("is_sponsored")]
-    totals = sorted(float(total) for _, _, total in hays if total is not None)
+    hays = [(s, _Hay(s), corpus.interactions(s), s.get("views")) for s in samples if not s.get("is_sponsored")]
+    totals = sorted(float(total) for _, _, total, _ in hays if total is not None)
     baseline = _median(totals)
     if not baseline and totals:
         baseline = sum(totals) / len(totals)
     baseline = baseline or None
+
+    view_totals = sorted(float(views) for _, _, _, views in hays if views is not None)
+    views_baseline = _median(view_totals)
+    if not views_baseline and view_totals:
+        views_baseline = sum(view_totals) / len(view_totals)
+    views_baseline = views_baseline or None
 
     heats = [t["heat"] for t in trend_rows if t.get("heat")]
     top_heat = max(heats) if heats else 0
@@ -201,8 +208,11 @@ def score_trends(trend_rows: List[Dict[str, Any]], samples: List[Dict[str, Any]]
 
     known = sorted(s for s in (strength_of(t) for t in trend_rows) if s is not None)
     default_strength = _median(known) if known else 1.0
-    if dna and lexicon is None:
-        lexicon = wordlist.shipped()
+    compiled: Optional[guardrails.CompiledRules] = None
+    if dna:
+        if lexicon is None:
+            lexicon = wordlist.shipped()
+        compiled = guardrails.compile_rules(dna, lexicon=lexicon)
 
     scored = []
     for row in trend_rows:
@@ -213,28 +223,34 @@ def score_trends(trend_rows: List[Dict[str, Any]], samples: List[Dict[str, Any]]
         freshness = 0.5 ** (age_days / HALF_LIFE_DAYS)
         trend = (strength if heat_known else default_strength) * freshness
 
-        matched = [(relevance(keyword, hay), sample, total) for sample, hay, total in hays]
+        matched = [(relevance(keyword, hay), sample, total, views) for sample, hay, total, views in hays]
         matched = [m for m in matched if m[0] >= RELEVANT_AT]
-        numbered = [(rel, total) for rel, _, total in matched if total is not None]
+        log_ratios: List[Tuple[float, float]] = []
+        for rel, _, total, views in matched:
+            if total is not None and baseline:
+                log_ratios.append((rel, _log_ratio(float(total), baseline)))
+            elif total is None and views is not None and views_baseline:
+                log_ratios.append((rel, _log_ratio(float(views), views_baseline)))
+        with_numbers = sum(1 for _, _, total, views in matched if total is not None or views is not None)
         lift_raw, shrunk = None, 0.0
-        if baseline and numbered:
-            mass = sum(rel for rel, _ in numbered)
-            mean_log = sum(rel * _log_ratio(total, baseline) for rel, total in numbered) / mass
+        if log_ratios:
+            mass = sum(rel for rel, _ in log_ratios)
+            mean_log = sum(rel * lr for rel, lr in log_ratios) / mass
             lift_raw = 2 ** mean_log
             shrunk = mass * mean_log / (mass + PRIOR_VIDEOS)
         performance = min(1.0, max(0.0, 0.5 + shrunk / 4.0))
         score = w_trend * trend + w_mine * performance
 
-        matched.sort(key=lambda m: (m[0], m[2] if m[2] is not None else -1), reverse=True)
-        flags = _flags(keyword, dna, lexicon) if dna else []
+        matched.sort(key=lambda m: (m[0], m[2] if m[2] is not None else -1, m[3] if m[3] is not None else -1), reverse=True)
+        flags = _flags(keyword, dna, lexicon, compiled=compiled) if dna else []
         scored.append((score, {
             "id": row.get("id"), "keyword": keyword, "heat": row.get("heat"), "heat_known": heat_known,
             "source": row.get("source") or "manual", "source_url": row.get("source_url") or "",
             "note_zh": row.get("note_zh") or "", "note_en": row.get("note_en") or "",
             "updated_at": row.get("updated_at"), "age_days": round(age_days, 1),
             "freshness": round(freshness, 3), "stale": freshness < STALE_BELOW, "trend": round(trend, 3),
-            "her_videos": len(matched), "her_videos_with_numbers": len(numbered),
-            "evidence_titles": [sample["title"] for _, sample, _ in matched[:3]],
+            "her_videos": len(matched), "her_videos_with_numbers": with_numbers,
+            "evidence_titles": [sample["title"] for _, sample, _, _ in matched[:3]],
             "lift_raw": round(lift_raw, 2) if lift_raw is not None else None, "lift": round(2 ** shrunk, 2),
             "performance": round(performance, 3), "score": int(round(score * 100)),
             "flags": flags, "usable": "voice" not in flags,

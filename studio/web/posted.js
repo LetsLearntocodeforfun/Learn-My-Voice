@@ -410,7 +410,11 @@ async function poAttach(input) {
   poJobs[id] = { text: t('po_attach_working') };
   await router();
   try {
-    const res = await fetch('/api/uploads?name=' + encodeURIComponent(file.name), { method: 'PUT', headers: { 'Content-Type': 'application/octet-stream' }, body: file });
+    const res = await fetch('/api/uploads?name=' + encodeURIComponent(file.name), {
+      method: 'PUT',
+      headers: studioHeaders({ 'Content-Type': 'application/octet-stream' }),
+      body: file,
+    });
     const up = await res.json().catch(() => ({}));
     if (!res.ok) throw Object.assign(new Error(up.message || up.error || 'upload'), { detail: up.message, message_zh: up.message_zh });
     let job = (await api('POST', '/api/videos', { upload_id: up.upload_id, attach_to: id })).job;

@@ -572,9 +572,11 @@ class StartedForItTest(TempCase):
         return process, int(line[line.index("http://127.0.0.1:") + len("http://127.0.0.1:"):].split()[0].rstrip("/"))
 
     def ask(self, port, path):
+        token_file = self.tmp / "data" / "server-token"
+        headers = {"X-Studio-Token": token_file.read_text(encoding="utf-8").strip()} if token_file.exists() else {}
         conn = http.client.HTTPConnection("127.0.0.1", port, timeout=15)
         try:
-            conn.request("GET", path)
+            conn.request("GET", path, headers=headers)
             res = conn.getresponse()
             return res.status, json.loads(res.read().decode("utf-8"))
         finally:
@@ -604,8 +606,8 @@ class PageTest(unittest.TestCase):
                 self.assertEqual(re.findall(r"(?<![\w.$])%s\s*\(" % box, code), [], "%s uses %s()" % (name, box))
                 self.assertEqual(re.findall(r"window\.%s\s*\(" % box, code), [], "%s uses window.%s()" % (name, box))
         asked = sum(len(re.findall(r"await askConfirm\(", source)) for source in self.sources.values())
-        self.assertEqual(asked, 6)                                                      # the six places that used to call confirm()
-        for name in ("app.js", "pages.js", "setup.js"):                                 # every deletion starts with the focus on Cancel
+        self.assertEqual(asked, 7)                                                      # the six deletion/refresh prompts plus voice history restore
+        for name in ("app.js", "pages.js", "setup.js"):                                 # every deletion/overwrite starts with the focus on Cancel
             for call in re.findall(r"await askConfirm\((.*?)\)\)\)", self.sources[name]):
                 self.assertIn("danger: true", call, name)
 

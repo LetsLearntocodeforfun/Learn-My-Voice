@@ -76,10 +76,31 @@ def unpack(package: Path, into: Path) -> Tuple[Path, Dict[str, Any]]:
     return folders[0], build
 
 
-def ask(base: str, method: str, path: str, body: Any = None, raw: bool = False) -> Tuple[int, Any, Dict[str, str]]:
+_TOKEN = ""
+
+
+def set_token(token: str) -> None:
+    global _TOKEN
+    _TOKEN = token
+
+
+def read_token(data_dir: Path) -> str:
+    try:
+        return (data_dir / "server-token").read_text(encoding="utf-8").strip()
+    except OSError:
+        return ""
+
+
+def ask(base: str, method: str, path: str, body: Any = None, raw: bool = False,
+        token: Optional[str] = None) -> Tuple[int, Any, Dict[str, str]]:
     data = json.dumps(body).encode("utf-8") if body is not None else None
-    request = urllib.request.Request(base + path, data=data, method=method,
-                                     headers={"Content-Type": "application/json"} if data is not None else {})
+    req_headers: Dict[str, str] = {}
+    if data is not None:
+        req_headers["Content-Type"] = "application/json"
+    active = _TOKEN if token is None else token
+    if active:
+        req_headers["X-Studio-Token"] = active
+    request = urllib.request.Request(base + path, data=data, method=method, headers=req_headers)
     try:
         with _DIRECT.open(request, timeout=30) as response:
             payload, status, headers = response.read(), response.status, dict(response.headers.items())
@@ -167,19 +188,21 @@ def run_once(app: Path, command: List[str], version: str, how: str, checks: List
     base = "http://127.0.0.1:%d" % port
     try:
         deadline = time.time() + START_TIMEOUT_SEC
+        token = ""
         while True:
             if process.poll() is not None:
                 raise Failed("%s ended at once with code %s" % (how, process.returncode))
-            try:
-                with _DIRECT.open(base + "/", timeout=2) as response:
-                    if response.status == 200:
-                        break
-            except (OSError, urllib.error.URLError):
-                pass
+            token = read_token(app / "data")
+            if token and ask(base, "GET", "/", raw=True, token=token)[0] == 200:
+                break
             if time.time() > deadline:
                 raise Failed("%s did not answer within %d seconds" % (how, START_TIMEOUT_SEC))
             time.sleep(0.3)
         checks.append("%s starts the app" % how)
+        if ask(base, "GET", "/api/state", token="")[0] != 401:
+            raise Failed("unauthenticated local request to /api/state was not refused with 401")
+        checks.append("unauthenticated local requests are refused")
+        set_token(token)
         use(base, version, checks)
         # The check of the desktop app's window is a way for a script to steer the page. Started by a person the
         # app must not offer it, and the page must not be told to load it.
@@ -198,6 +221,7 @@ def run_once(app: Path, command: List[str], version: str, how: str, checks: List
         tail = log_path.read_bytes().decode("utf-8", "replace")[-1500:] if log_path.exists() else ""
         raise Failed("%s\n--- what the app printed ---\n%s" % (exc, tail))
     finally:
+        set_token("")
         stop(process)
     if not (app / "data").is_dir():
         raise Failed("the app did not keep its data in its own folder")
