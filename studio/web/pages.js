@@ -371,7 +371,11 @@ function renderSettings() {
          `<button type="button" class="chip" data-preset="${esc(k)}">${esc(k)}</button>`).join('')}</div>
        <p class="hint">${esc(t('local_hint'))}</p>`;
   } else {
-    access = `<label class="field" for="key">${esc(t('api_key'))}</label>
+    const unreadWarn = Array.isArray(st.keys_unreadable) && st.keys_unreadable.includes(p)
+      ? `<div class="banner" style="margin-top:14px">${esc(t('key_unreadable_warn'))}</div>` : '';
+    const plainWarn = st.keystore_unavailable_path
+      ? `<div class="banner" style="margin-top:14px">${esc(tf('key_plaintext_warn', { path: st.keystore_unavailable_path }))}</div>` : '';
+    access = `${unreadWarn}${plainWarn}<label class="field" for="key">${esc(t('api_key'))}</label>
        <input type="password" id="key" autocomplete="off" placeholder="${esc(t(st.keys[p] ? 'key_saved_ph' : 'key_ph'))}">`;
   }
   const modelPart = isManual ? '' : `

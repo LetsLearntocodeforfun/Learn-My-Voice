@@ -90,6 +90,20 @@ _HISTORY_FILE = re.compile(r"voice_dna-([0-9]{8}-[0-9]{6})(?:-([0-9]{1,6}))?\.(j
 HISTORY_ID = r"[0-9]{8}-[0-9]{6}(?:-[0-9]{1,6})?"     # the id of an earlier profile: the part of the name between "voice_dna-" and ".json"
 
 
+MAX_META_FIELD_CHARS = 64
+
+
+def _post_chars(value: Any) -> int:
+    """Count user-visible characters across all strings inside a post-copy dictionary."""
+    if isinstance(value, str):
+        return len(value)
+    if isinstance(value, dict):
+        return sum(_post_chars(v) for v in value.values())
+    if isinstance(value, (list, tuple)):
+        return sum(_post_chars(v) for v in value)
+    return 0
+
+
 class TextTooLong(ValueError):
     """The text of a library item or script field exceeds its configured maximum. Raised before anything is stored.
 
@@ -98,12 +112,52 @@ class TextTooLong(ValueError):
 
     code = "text_too_long"
 
-    def __init__(self, length: int, limit: Optional[int] = None) -> None:
-        self.length, self.limit = length, MAX_SAMPLE_CHARS if limit is None else limit
-        self.message = ("This text is too long for the library: it has {:,} characters and the limit is {:,}. "
-                        "Split it into parts and add them one at a time.".format(self.length, self.limit))
-        self.message_zh = ("这段文字太长，素材库放不下：它有 {:,} 个字符，上限是 {:,} 个。"
-                           "请分成几段，一段一段地添加。".format(self.length, self.limit))
+    def __init__(self, length: int, limit: Optional[int] = None, *,
+                 field: str = "sample", line_no: Optional[int] = None) -> None:
+        self.length = length
+        self.limit = MAX_SAMPLE_CHARS if limit is None else limit
+        self.field = field
+        self.line_no = line_no
+        if field == "script_title":
+            self.message = "The title is too long: it has {:,} characters and the limit is {:,}.".format(
+                self.length, self.limit)
+            self.message_zh = "标题太长了：现在有 {:,} 个字符，上限是 {:,} 个。".format(self.length, self.limit)
+        elif field == "notes":
+            self.message = "The notes are too long: they have {:,} characters and the limit is {:,}.".format(
+                self.length, self.limit)
+            self.message_zh = "想法备注太长了：现在有 {:,} 个字符，上限是 {:,} 个。".format(self.length, self.limit)
+        elif field == "script_lines":
+            self.message = "This script has too many lines: it has {:,} lines and the limit is {:,}.".format(
+                self.length, self.limit)
+            self.message_zh = "这篇脚本行数太多了：现在有 {:,} 行，上限是 {:,} 行。".format(self.length, self.limit)
+        elif field == "line":
+            if line_no is not None:
+                self.message = ("Line {line_no} is too long: one of its fields has {:,} characters "
+                                "and the limit is {:,}.").format(self.length, self.limit, line_no=line_no)
+                self.message_zh = "第 {line_no} 行太长了：其中一项有 {:,} 个字符，上限是 {:,} 个。".format(
+                    self.length, self.limit, line_no=line_no)
+            else:
+                self.message = ("A script line is too long: one of its fields has {:,} characters "
+                                "and the limit is {:,}.").format(self.length, self.limit)
+                self.message_zh = "脚本中有一行太长了：其中一项有 {:,} 个字符，上限是 {:,} 个。".format(
+                    self.length, self.limit)
+        elif field == "post":
+            self.message = "The post copy is too long: it has {:,} characters and the limit is {:,}.".format(
+                self.length, self.limit)
+            self.message_zh = "发布文案太长了：现在有 {:,} 个字符，上限是 {:,} 个。".format(self.length, self.limit)
+        elif field == "video_format":
+            self.message = "The video format name is too long: it has {:,} characters and the limit is {:,}.".format(
+                self.length, self.limit)
+            self.message_zh = "视频形式名称太长了：现在有 {:,} 个字符，上限是 {:,} 个。".format(self.length, self.limit)
+        elif field == "status":
+            self.message = "The script status is too long: it has {:,} characters and the limit is {:,}.".format(
+                self.length, self.limit)
+            self.message_zh = "脚本状态名称太长了：现在有 {:,} 个字符，上限是 {:,} 个。".format(self.length, self.limit)
+        else:
+            self.message = ("This text is too long for the library: it has {:,} characters and the limit is {:,}. "
+                            "Split it into parts and add them one at a time.".format(self.length, self.limit))
+            self.message_zh = ("这段文字太长，素材库放不下：它有 {:,} 个字符，上限是 {:,} 个。"
+                               "请分成几段，一段一段地添加。".format(self.length, self.limit))
         super().__init__(self.message)
 
 
@@ -241,22 +295,25 @@ _ONE_ITEM_A_SCRIPT = "CREATE UNIQUE INDEX IF NOT EXISTS samples_by_script ON sam
 _KEEP: Any = object()       # an argument left out: what is stored stays as it is
 
 
-def normalize_lines(lines: Any) -> List[Dict[str, Any]]:
+def normalize_lines(lines: Any, *, max_lines: int = MAX_SCRIPT_LINES,
+                    max_line_chars: int = MAX_LINE_CHARS) -> List[Dict[str, Any]]:
     """Coerce arbitrary input into the Stage 4 line shape, renumbered from 1."""
-    if isinstance(lines, list) and len(lines) > MAX_SCRIPT_LINES:
-        raise TextTooLong(len(lines), MAX_SCRIPT_LINES)
+    if not isinstance(lines, list):
+        return []
+    if len(lines) > max(max_lines * 4, 10000):
+        raise TextTooLong(len(lines), max_lines, field="script_lines")
+    valid_dicts = [raw for raw in lines if isinstance(raw, dict)]
+    if len(valid_dicts) > max_lines:
+        raise TextTooLong(len(valid_dicts), max_lines, field="script_lines")
     out: List[Dict[str, Any]] = []
-    for raw in lines if isinstance(lines, list) else []:
-        if not isinstance(raw, dict):
-            continue
-        if len(out) >= MAX_SCRIPT_LINES:
-            raise TextTooLong(len(out) + 1, MAX_SCRIPT_LINES)
-        line: Dict[str, Any] = {"line_no": len(out) + 1}
+    for raw in valid_dicts:
+        line_no = len(out) + 1
+        line: Dict[str, Any] = {"line_no": line_no}
         for field in LINE_FIELDS:
             value = raw.get(field, "")
             text = value if isinstance(value, str) else ("" if value is None else str(value))
-            if len(text) > MAX_LINE_CHARS:
-                raise TextTooLong(len(text), MAX_LINE_CHARS)
+            if len(text) > max_line_chars:
+                raise TextTooLong(len(text), max_line_chars, field="line", line_no=line_no)
             line[field] = text
         line["audio_mode"] = line["audio_mode"] or "VOICEOVER"
         out.append(line)
@@ -465,6 +522,7 @@ class Store:
         # Last, so the database just created is covered too. Until then a new one sits in a folder that is
         # already closed; a folder an earlier version left open is closed here, with everything in it.
         _owner_only(self.data_dir)
+        self._seal_legacy_plaintext_keys()
 
     @staticmethod
     def _columns(db: sqlite3.Connection, table: str) -> set:
@@ -533,39 +591,85 @@ class Store:
             raise ValueError("nested too deeply to read")
 
     # ---- settings -------------------------------------------------------
-    def load_config(self) -> Dict[str, Any]:
-        config: Dict[str, Any] = {"provider": "", "model": "", "keys": {}, "local_base_url": "", "trend_weight": "balanced"}
+    def _read_raw_config_dict(self) -> Dict[str, Any]:
         try:
             loaded = self._read_stored(self.config_path)
-            if isinstance(loaded, dict):
-                config.update(loaded)
-        except (FileNotFoundError, ValueError):
-            pass
-        raw_keys = config.get("keys")
-        keys: Dict[str, str] = {}
+            return loaded if isinstance(loaded, dict) else {}
+        except (FileNotFoundError, ValueError, OSError):
+            return {}
+
+    def _inspect_stored_keys(self, loaded: Optional[Dict[str, Any]] = None) -> Tuple[Dict[str, str], Dict[str, str], Dict[str, str]]:
+        """Return ``(active_keys, unopened_sealed, plain_keys)`` from ``config.json``.
+
+        When both a plaintext ``keys[p]`` and ``keys_sealed[p]`` exist (for instance after running an older
+        build on the same data folder), the plaintext key is the newer one and wins; it will be sealed on save.
+        """
+        data = self._read_raw_config_dict() if loaded is None else loaded
+        raw_keys = data.get("keys")
+        plain_keys: Dict[str, str] = {}
         if isinstance(raw_keys, dict):
             for provider, secret in raw_keys.items():
                 if isinstance(provider, str) and isinstance(secret, str) and secret:
-                    keys[provider] = secret
-        sealed = config.pop("keys_sealed", None)
-        if isinstance(sealed, dict):
-            for provider, token in sealed.items():
-                if isinstance(provider, str):
-                    opened = keystore.unseal(token)
-                    if opened:
-                        keys[provider] = opened
+                    plain_keys[provider] = secret
+        raw_sealed = data.get("keys_sealed")
+        active_keys: Dict[str, str] = {}
+        unopened_sealed: Dict[str, str] = {}
+        if isinstance(raw_sealed, dict):
+            for provider, token in raw_sealed.items():
+                if not isinstance(provider, str) or not isinstance(token, str) or not token:
+                    continue
+                if provider in plain_keys:
+                    continue
+                opened = keystore.unseal(token)
+                if opened:
+                    active_keys[provider] = opened
+                else:
+                    unopened_sealed[provider] = token
+        active_keys.update(plain_keys)
+        return active_keys, unopened_sealed, plain_keys
+
+    def _seal_legacy_plaintext_keys(self) -> None:
+        """Seal legacy plaintext keys left by an older build as soon as the store opens, if sealing works."""
+        with _CONFIG_LOCK:
+            loaded = self._read_raw_config_dict()
+            _, _, plain_keys = self._inspect_stored_keys(loaded)
+            if not plain_keys:
+                return
+            try:
+                keystore.seal(next(iter(plain_keys.values())))
+            except keystore.KeystoreUnavailable:
+                return
+            self.save_config(self.load_config())
+
+    def load_config(self) -> Dict[str, Any]:
+        config: Dict[str, Any] = {"provider": "", "model": "", "keys": {}, "local_base_url": "", "trend_weight": "balanced"}
+        loaded = self._read_raw_config_dict()
+        if loaded:
+            config.update(loaded)
+        keys, _, _ = self._inspect_stored_keys(loaded)
+        config.pop("keys_sealed", None)
         config["keys"] = keys
         return config
 
     def save_config(self, config: Dict[str, Any]) -> None:
         disk = dict(config)
+        _, unopened_on_disk, _ = self._inspect_stored_keys()
         raw_keys = disk.get("keys")
+        raw_keys_dict = raw_keys if isinstance(raw_keys, dict) else {}
         sealed: Dict[str, str] = {}
-        if isinstance(raw_keys, dict):
-            for provider, secret in raw_keys.items():
-                if isinstance(provider, str) and isinstance(secret, str) and secret:
+        plain_fallback: Dict[str, str] = {}
+        # Preserve sealed keys that could not be opened on this machine unless explicitly replaced or cleared.
+        for provider, token in unopened_on_disk.items():
+            if provider not in raw_keys_dict:
+                sealed[provider] = token
+        for provider, secret in raw_keys_dict.items():
+            if isinstance(provider, str) and isinstance(secret, str) and secret:
+                try:
                     sealed[provider] = keystore.seal(secret)
-        disk["keys"] = {}
+                except keystore.KeystoreUnavailable:
+                    plain_fallback[provider] = secret
+                    sealed.pop(provider, None)
+        disk["keys"] = plain_fallback
         if sealed:
             disk["keys_sealed"] = sealed
         else:
@@ -611,12 +715,17 @@ class Store:
 
     def public_settings(self) -> Dict[str, Any]:
         """Settings safe to send to the browser: no key material."""
-        config = self.load_config()
+        loaded = self._read_raw_config_dict()
+        active_keys, unopened_sealed, plain_keys = self._inspect_stored_keys(loaded)
+        config: Dict[str, Any] = {"provider": "", "model": "", "local_base_url": ""}
+        if loaded:
+            config.update(loaded)
         local_url = config.get("local_base_url") or ""
-        keys = {p: bool(config["keys"].get(p)) for p in CLOUD_PROVIDERS}
+        keys = {p: bool(active_keys.get(p)) for p in CLOUD_PROVIDERS}
         keys["local"] = bool(local_url)
         provider, model = config.get("provider") or "", config.get("model") or ""
-        return {
+        keys_unreadable = sorted(p for p in unopened_sealed if p)
+        out: Dict[str, Any] = {
             "provider": provider,
             "model": model,
             "keys": keys,
@@ -624,6 +733,11 @@ class Store:
             "manual": provider == MANUAL_PROVIDER,
             "configured": provider == MANUAL_PROVIDER or bool(provider in PROVIDERS and model and keys.get(provider)),
         }
+        if keys_unreadable:
+            out["keys_unreadable"] = keys_unreadable
+        if plain_keys:
+            out["keystore_unavailable_path"] = keystore.key_path_display()
+        return out
 
     # ---- creator profile ------------------------------------------------
     def load_creator(self) -> Optional[Dict[str, Any]]:
@@ -882,8 +996,13 @@ class Store:
         if len(text) > MAX_SAMPLE_CHARS:
             raise TextTooLong(len(text))
         raw_title = (title or "").strip()
-        if len(raw_title) > MAX_SCRIPT_TITLE_CHARS:
-            raise TextTooLong(len(raw_title), MAX_SCRIPT_TITLE_CHARS)
+        title_limit = MAX_SCRIPT_TITLE_CHARS
+        if isinstance(posted, dict) and isinstance(posted.get("script_id"), str):
+            src_script = self.get_script(posted["script_id"])
+            if src_script is not None:
+                title_limit = max(title_limit, len(src_script.get("title") or ""))
+        if len(raw_title) > title_limit:
+            raise TextTooLong(len(raw_title), title_limit, field="script_title")
         first_line = next((l.strip() for l in text.splitlines() if l.strip()), "")
         title = raw_title or first_line[:20] or "未命名"
         metrics = metrics or {}
@@ -924,18 +1043,23 @@ class Store:
 
         Text longer than MAX_SAMPLE_CHARS raises ``TextTooLong`` and none of ``changes`` is applied.
         """
+        existing = self.get_sample(sample_id)
+        if existing is None:
+            return None
+        title_limit = max(MAX_SCRIPT_TITLE_CHARS, len(existing.get("title") or ""))
+        text_limit = max(MAX_SAMPLE_CHARS, len(existing.get("text") or ""))
         sets: List[str] = []
         values: List[Any] = []
         now = time.time()
         if isinstance(changes.get("title"), str):
             new_title = changes["title"].strip()
-            if len(new_title) > MAX_SCRIPT_TITLE_CHARS:
-                raise TextTooLong(len(new_title), MAX_SCRIPT_TITLE_CHARS)
+            if len(new_title) > title_limit:
+                raise TextTooLong(len(new_title), title_limit, field="script_title")
             sets.append("title = ?"); values.append(new_title or "未命名")
         if isinstance(changes.get("text"), str):
             text = changes["text"].replace("\r\n", "\n").strip()
-            if len(text) > MAX_SAMPLE_CHARS:
-                raise TextTooLong(len(text))
+            if len(text) > text_limit:
+                raise TextTooLong(len(text), text_limit, field="sample")
             sets.append("text = ?"); values.append(text)
         if "is_sponsored" in changes:
             sets.append("is_sponsored = ?"); values.append(int(bool(changes["is_sponsored"])))
@@ -985,8 +1109,10 @@ class Store:
                              int(bool(needs_review)), None if needs_review else now, now]
         if isinstance(title, str) and title.strip():
             clean_t = title.strip()
-            if len(clean_t) > MAX_SCRIPT_TITLE_CHARS:
-                raise TextTooLong(len(clean_t), MAX_SCRIPT_TITLE_CHARS)
+            existing_sample = self.get_sample(sample_id)
+            t_limit = max(MAX_SCRIPT_TITLE_CHARS, len((existing_sample or {}).get("title") or ""))
+            if len(clean_t) > t_limit:
+                raise TextTooLong(len(clean_t), t_limit, field="script_title")
             sets.append("title = ?"); values.append(clean_t)
         if ai_draft is not _KEEP:
             sets.append("ai_json = ?"); values.append(_dumps(ai_draft) if isinstance(ai_draft, dict) else None)
@@ -1210,14 +1336,19 @@ class Store:
         creator's version; ``basis`` (what that draft's prompt contained) is only kept for an AI draft."""
         raw_title = (title or "").strip()
         if len(raw_title) > MAX_SCRIPT_TITLE_CHARS:
-            raise TextTooLong(len(raw_title), MAX_SCRIPT_TITLE_CHARS)
+            raise TextTooLong(len(raw_title), MAX_SCRIPT_TITLE_CHARS, field="script_title")
         if len(notes) > MAX_NOTES_CHARS:
-            raise TextTooLong(len(notes), MAX_NOTES_CHARS)
+            raise TextTooLong(len(notes), MAX_NOTES_CHARS, field="notes")
+        if len(video_format) > MAX_META_FIELD_CHARS:
+            raise TextTooLong(len(video_format), MAX_META_FIELD_CHARS, field="video_format")
         normalized = normalize_lines(lines) or normalize_lines([{}])
         line_count, preview = _script_summary(normalized)
-        post_json = _dumps(post or {})
-        if len(post_json) > MAX_POST_CHARS:
-            raise TextTooLong(len(post_json), MAX_POST_CHARS)
+        post_obj = post or {}
+        post_len = _post_chars(post_obj)
+        post_json = _dumps(post_obj)
+        if post_len > MAX_POST_CHARS or len(post_json) > MAX_POST_CHARS * 4 + 4096:
+            raise TextTooLong(max(post_len, MAX_POST_CHARS + 1) if post_len <= MAX_POST_CHARS else post_len,
+                              MAX_POST_CHARS, field="post")
         now = time.time()
         script_id = uuid.uuid4().hex[:12]
         first_note = next((l.strip() for l in notes.splitlines() if l.strip()), "")
@@ -1262,22 +1393,51 @@ class Store:
                 raise ValueError("bad_base_updated_at")
             if not math.isfinite(base_updated_at):
                 raise ValueError("bad_base_updated_at")
+        with self._db() as db:
+            current = db.execute(
+                "SELECT title, notes, video_format, status, lines_json, post_json FROM scripts WHERE id = ?",
+                (script_id,),
+            ).fetchone()
+        if current is None:
+            return None
+        title_limit = max(MAX_SCRIPT_TITLE_CHARS, len(current["title"] or ""))
+        format_limit = max(MAX_META_FIELD_CHARS, len(current["video_format"] or ""))
+        status_limit = max(MAX_META_FIELD_CHARS, len(current["status"] or ""))
+        stored_lines = loads_stored(current["lines_json"] or "[]")
+        stored_lines_list = stored_lines if isinstance(stored_lines, list) else []
+        lines_limit = max(MAX_SCRIPT_LINES, len(stored_lines_list))
+        stored_max_line = max(
+            (len(v) for item in stored_lines_list if isinstance(item, dict)
+             for f_name, v in item.items() if f_name in LINE_FIELDS and isinstance(v, str)),
+            default=0,
+        )
+        line_chars_limit = max(MAX_LINE_CHARS, stored_max_line)
+        stored_post = loads_stored(current["post_json"] or "{}")
+        post_limit = max(MAX_POST_CHARS, _post_chars(stored_post))
+        post_json_limit = max(MAX_POST_CHARS * 4 + 4096, len(current["post_json"] or ""))
+
         sets: List[str] = []
         values: List[Any] = []
         if isinstance(changes.get("title"), str):
             new_title = changes["title"].strip()
-            if len(new_title) > MAX_SCRIPT_TITLE_CHARS:
-                raise TextTooLong(len(new_title), MAX_SCRIPT_TITLE_CHARS)
+            if len(new_title) > title_limit:
+                raise TextTooLong(len(new_title), title_limit, field="script_title")
             sets.append("title = ?"); values.append(new_title or "未命名脚本")
         if isinstance(changes.get("video_format"), str):
-            sets.append("video_format = ?"); values.append(changes["video_format"][:64])
+            new_format = changes["video_format"]
+            if len(new_format) > format_limit:
+                raise TextTooLong(len(new_format), format_limit, field="video_format")
+            sets.append("video_format = ?"); values.append(new_format)
         if isinstance(changes.get("status"), str):
-            sets.append("status = ?"); values.append(changes["status"][:64])
+            new_status = changes["status"]
+            if len(new_status) > status_limit:
+                raise TextTooLong(len(new_status), status_limit, field="status")
+            sets.append("status = ?"); values.append(new_status)
         target = changes.get("target_sec")
         if isinstance(target, (int, float)) and (not isinstance(target, float) or math.isfinite(target)):
             sets.append("target_sec = ?"); values.append(max(5, min(int(target), 900)))
         if "lines" in changes:
-            normalized = normalize_lines(changes["lines"])
+            normalized = normalize_lines(changes["lines"], max_lines=lines_limit, max_line_chars=line_chars_limit)
             line_count, preview = _script_summary(normalized)
             lines_json = _dumps(normalized)
             sets.append("lines_json = ?"); values.append(lines_json)
@@ -1286,9 +1446,11 @@ class Store:
             if by_ai:
                 sets.append("ai_lines_json = CASE WHEN ai_lines_json IS NULL THEN NULL ELSE ? END"); values.append(lines_json)
         if isinstance(changes.get("post"), dict):
+            post_len = _post_chars(changes["post"])
             post_json = _dumps(changes["post"])
-            if len(post_json) > MAX_POST_CHARS:
-                raise TextTooLong(len(post_json), MAX_POST_CHARS)
+            if post_len > post_limit or len(post_json) > post_json_limit:
+                raise TextTooLong(max(post_len, post_limit + 1) if post_len <= post_limit else post_len,
+                                  post_limit, field="post")
             sets.append("post_json = ?"); values.append(post_json)
         if "keywords" in changes:
             sets.append("keywords_json = ?")

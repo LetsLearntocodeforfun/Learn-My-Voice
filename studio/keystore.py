@@ -1,21 +1,21 @@
 """At-rest protection for API keys and Windows NTFS ACL hardening (stdlib only).
 
-Why this exists:
-- Storing raw API keys in ``data/config.json`` exposes them whenever ``data/`` is backed up to cloud
-  storage, zipped for troubleshooting, or read by another process that lacks access to the user's OS
-  profile secrets.
-- On Windows, ``os.chmod(path, 0o700)`` only toggles the read-only attribute and leaves inherited NTFS
-  DACLs intact when unpacked outside ``%USERPROFILE%``.
-
-How keys are protected:
-- On Windows, ``seal`` / ``unseal`` use Win32 ``CryptProtectData`` / ``CryptUnprotectData`` (DPAPI) with
-  ``CRYPTPROTECT_UI_FORBIDDEN``, binding ciphertext to the signed-in Windows user's logon credentials
-  without ever prompting.
-- On macOS and Linux, ``seal`` / ``unseal`` use Encrypt-then-MAC (``SHA256`` stream + ``HMAC-SHA256``)
-  under a 256-bit master key stored with ``0600`` permissions inside the user's OS application-config
-  directory (outside ``data/``), without invoking modal GUI keychain dialogs that hang headless runs or
-  ad-hoc-signed builds.
-- Legacy plaintext entries in ``config.json`` remain readable and are sealed on the next config save.
+What sealing protects against — and what it does not:
+- A copy, backup, zip archive, or cloud sync of ``data/`` alone cannot be decrypted because ``data/config.json``
+  holds only sealed ciphertext while the master key lives outside ``data/`` in the user's OS configuration
+  folder (on macOS and Linux) or in Windows DPAPI tied to the signed-in Windows account.
+- Another program running under the same OS user account can read both ``data/config.json`` and the user's key
+  file (or call DPAPI as that user); sealing is not a boundary against code running as the same person.
+- On macOS and Linux, ``seal`` / ``unseal`` use Encrypt-then-MAC (``HMAC-SHA256`` keystream + ``HMAC-SHA256`` tag)
+  under a 256-bit master key stored with ``0600`` permissions inside the user's OS application-config directory
+  (outside ``data/``), without invoking modal GUI keychain dialogs that hang headless runs or ad-hoc-signed
+  builds.
+- On Windows, ``os.chmod(path, 0o700)`` only toggles the read-only attribute and leaves inherited NTFS DACLs
+  intact when unpacked outside ``%USERPROFILE%``; ``seal`` / ``unseal`` use Win32 ``CryptProtectData`` /
+  ``CryptUnprotectData`` (DPAPI) with ``CRYPTPROTECT_UI_FORBIDDEN``, and ``restrict_windows_acl`` restricts
+  directory inheritance to the current user's SID.
+- Reading never overwrites or creates the master key file, and first-time key creation is atomic across
+  concurrent processes without ever falling back to process-ephemeral memory keys.
 """
 from __future__ import annotations
 
@@ -23,6 +23,7 @@ import base64
 import binascii
 import ctypes
 import csv
+import errno
 import hashlib
 import hmac
 import io
@@ -35,6 +36,7 @@ import subprocess
 import sys
 import tempfile
 import threading
+import time
 from pathlib import Path
 from typing import Any, Dict, Optional, Set
 
@@ -46,10 +48,24 @@ _CREATE_NO_WINDOW = 0x08000000
 _SID_RE = re.compile(r"^S-1-\d+(?:-\d+)+$")
 
 _LOCK = threading.Lock()
-_EPHEMERAL_KEYS: Dict[str, bytes] = {}
 _WINDOWS_SID: Optional[str] = None
 _WINDOWS_SID_CHECKED = False
 _ACL_APPLIED: Set[str] = set()
+
+
+class KeystoreUnavailable(OSError):
+    """The OS keystore or master key file cannot be read or safely created right now."""
+
+    def __init__(self, path: str, reason: str, detail: str = "") -> None:
+        self.path = path
+        self.reason = reason
+        msg = "Keystore unavailable (%s): %s" % (reason, path)
+        if detail:
+            msg += " (%s)" % detail
+        super().__init__(msg)
+
+
+KeyStoreError = KeystoreUnavailable
 
 
 def _key_path() -> Path:
@@ -62,46 +78,144 @@ def _key_path() -> Path:
     return config_root / "learn-my-voice" / "keystore.key"
 
 
+def key_path_display() -> str:
+    """Human-readable path (or DPAPI label) for user-facing notices when sealing fails."""
+    if os.name == "nt" and not os.environ.get("STUDIO_KEYSTORE_FILE"):
+        return "Windows DPAPI"
+    return str(_key_path())
+
+
+def _read_existing_master_key(target: Path) -> bytes:
+    """Read an existing 32-byte master key without ever modifying, replacing, or following symlinks."""
+    path_str = str(target)
+    for attempt in range(6):
+        try:
+            info = os.lstat(path_str)
+        except FileNotFoundError:
+            raise KeystoreUnavailable(path_str, "missing")
+        except OSError as exc:
+            raise KeystoreUnavailable(path_str, "unreadable", str(exc))
+        if stat.S_ISLNK(info.st_mode):
+            raise KeystoreUnavailable(path_str, "symlink")
+        if not stat.S_ISREG(info.st_mode):
+            raise KeystoreUnavailable(path_str, "not_regular_file")
+        if (info.st_mode & 0o400) and (info.st_mode & 0o077):
+            try:
+                os.chmod(path_str, stat.S_IMODE(info.st_mode) & ~0o077)
+            except OSError:
+                pass
+        flags = os.O_RDONLY | getattr(os, "O_BINARY", 0) | getattr(os, "O_NOFOLLOW", 0)
+        try:
+            fd = os.open(path_str, flags)
+        except OSError as exc:
+            if getattr(exc, "errno", None) == errno.ELOOP:
+                raise KeystoreUnavailable(path_str, "symlink", str(exc))
+            raise KeystoreUnavailable(path_str, "unreadable", str(exc))
+        try:
+            fstat = os.fstat(fd)
+            if not stat.S_ISREG(fstat.st_mode):
+                raise KeystoreUnavailable(path_str, "not_regular_file")
+            raw = os.read(fd, 64)
+        except OSError as exc:
+            raise KeystoreUnavailable(path_str, "unreadable", str(exc))
+        finally:
+            os.close(fd)
+        if len(raw) == 32:
+            return raw
+        if len(raw) < 32 and attempt < 5:
+            # A peer process using the O_CREAT|O_EXCL fallback may still be writing its 32 bytes.
+            time.sleep(0.01)
+            continue
+        raise KeystoreUnavailable(path_str, "bad_length", "%d bytes" % len(raw))
+    raise KeystoreUnavailable(path_str, "bad_length")
+
+
 def _load_or_create_master_key() -> bytes:
+    """Return the 32-byte master key, creating it atomically only when the path does not exist."""
     target = _key_path()
-    cache_id = str(target)
+    path_str = str(target)
     with _LOCK:
         try:
-            if target.is_file() and not target.is_symlink():
-                info = os.lstat(str(target))
-                if info.st_mode & 0o077:
-                    os.chmod(str(target), stat.S_IMODE(info.st_mode) & ~0o077)
-                raw = target.read_bytes()
-                if len(raw) == 32:
-                    return raw
-        except OSError:
-            pass
-        key = secrets.token_bytes(32)
+            return _read_existing_master_key(target)
+        except KeystoreUnavailable as exc:
+            if exc.reason != "missing":
+                raise
+        parent = target.parent
+        parent_str = str(parent)
         try:
-            target.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
-            parent_info = os.lstat(str(target.parent))
-            if stat.S_ISDIR(parent_info.st_mode) and (parent_info.st_mode & 0o077):
-                os.chmod(str(target.parent), 0o700)
-            fd, tmp = tempfile.mkstemp(dir=str(target.parent), prefix="keystore.", suffix=".tmp")
+            parent.mkdir(mode=0o700, parents=True, exist_ok=True)
+            parent_info = os.lstat(parent_str)
+            if not stat.S_ISDIR(parent_info.st_mode):
+                raise KeystoreUnavailable(path_str, "parent_not_directory")
+            if parent_info.st_mode & 0o077:
+                try:
+                    os.chmod(parent_str, 0o700)
+                except OSError:
+                    pass
+        except KeystoreUnavailable:
+            raise
+        except OSError as exc:
+            raise KeystoreUnavailable(path_str, "parent_unwritable", str(exc))
+
+        key = secrets.token_bytes(32)
+        tmp: Optional[str] = None
+        try:
+            fd, tmp = tempfile.mkstemp(dir=parent_str, prefix="keystore.", suffix=".tmp")
+            with os.fdopen(fd, "wb") as handle:
+                set_mode = getattr(os, "fchmod", None)
+                if set_mode is not None:
+                    set_mode(handle.fileno(), 0o600)
+                handle.write(key)
+                handle.flush()
+                os.fsync(handle.fileno())
+            if os.name != "nt":
+                os.chmod(tmp, 0o600)
             try:
-                with os.fdopen(fd, "wb") as handle:
-                    set_mode = getattr(os, "fchmod", None)
-                    if set_mode is not None:
-                        set_mode(handle.fileno(), 0o600)
-                    handle.write(key)
-                    handle.flush()
-                    os.fsync(handle.fileno())
-                os.replace(tmp, str(target))
-                os.chmod(str(target), 0o600)
+                os.link(tmp, path_str)
                 return key
-            except BaseException:
+            except FileExistsError:
+                return _read_existing_master_key(target)
+            except (AttributeError, NotImplementedError, OSError):
+                # Filesystem does not support hard links (e.g. FAT32/exFAT): fall back to exclusive O_CREAT|O_EXCL.
+                pass
+        except KeystoreUnavailable:
+            raise
+        except OSError as exc:
+            raise KeystoreUnavailable(path_str, "unwritable", str(exc))
+        finally:
+            if tmp is not None:
                 try:
                     os.unlink(tmp)
                 except OSError:
                     pass
-                raise
-        except OSError:
-            return _EPHEMERAL_KEYS.setdefault(cache_id, key)
+
+        excl_flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_BINARY", 0)
+        try:
+            excl_fd = os.open(path_str, excl_flags, 0o600)
+        except FileExistsError:
+            return _read_existing_master_key(target)
+        except OSError as exc:
+            raise KeystoreUnavailable(path_str, "unwritable", str(exc))
+        try:
+            set_mode = getattr(os, "fchmod", None)
+            if set_mode is not None:
+                set_mode(excl_fd, 0o600)
+            os.write(excl_fd, key)
+            os.fsync(excl_fd)
+        except BaseException as exc:
+            try:
+                os.close(excl_fd)
+            except OSError:
+                pass
+            try:
+                os.unlink(path_str)
+            except OSError:
+                pass
+            if isinstance(exc, OSError):
+                raise KeystoreUnavailable(path_str, "unwritable", str(exc))
+            raise
+        os.close(excl_fd)
+        return key
 
 
 def _xor_stream(enc_key: bytes, data: bytes) -> bytes:
@@ -205,16 +319,24 @@ def _dpapi_unprotect(ciphertext: bytes) -> Optional[bytes]:
 
 
 def seal(secret: str) -> str:
-    """Encrypt ``secret`` so ``config.json`` never stores plaintext API keys."""
+    """Encrypt ``secret`` so ``config.json`` never stores plaintext API keys.
+
+    Raises ``KeystoreUnavailable`` when the OS keystore / master key file cannot be read or safely created.
+    """
     raw = str(secret or "").encode("utf-8")
-    dpapi = _dpapi_protect(raw)
-    if dpapi is not None:
+    if os.name == "nt" and not os.environ.get("STUDIO_KEYSTORE_FILE"):
+        dpapi = _dpapi_protect(raw)
+        if dpapi is None:
+            raise KeystoreUnavailable("Windows DPAPI", "dpapi_failed")
         return "dpapi:" + base64.urlsafe_b64encode(dpapi).decode("ascii")
     return _seal_v1(raw, _load_or_create_master_key())
 
 
 def unseal(token: Any) -> Optional[str]:
-    """Decrypt a sealed token back to its string, or None when tampered or unreadable."""
+    """Decrypt a sealed token back to its string, or None when tampered, missing, or unreadable.
+
+    Never creates or overwrites the master key file.
+    """
     if not isinstance(token, str) or not token:
         return None
     raw: Optional[bytes] = None
@@ -225,7 +347,12 @@ def unseal(token: Any) -> Optional[str]:
             return None
         raw = _dpapi_unprotect(cipher)
     elif token.startswith("v1:"):
-        raw = _unseal_v1(token, _load_or_create_master_key())
+        with _LOCK:
+            try:
+                master = _read_existing_master_key(_key_path())
+            except KeystoreUnavailable:
+                return None
+        raw = _unseal_v1(token, master)
     if raw is None:
         return None
     try:

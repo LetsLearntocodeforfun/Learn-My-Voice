@@ -34,17 +34,24 @@ _NON_CHAT_HINTS = ("embedding", "whisper", "tts", "dall-e", "moderation", "image
 MAX_REPLY_BYTES = 4 * 1024 * 1024
 MAX_ERROR_BYTES = 64 * 1024         # of an error answer; 300 characters of it are shown
 # Opens addresses on this computer with no proxy at all, whatever the environment or the system settings say,
-# and refuses HTTP redirects so neither a local prompt nor an API key header can be redirected elsewhere.
+# and intercepts all HTTP 3xx responses so ``_http`` decides whether a loopback redirect may be followed.
 class _NoRedirect(urllib.request.HTTPRedirectHandler):
     def redirect_request(self, req: Any, fp: Any, code: int, msg: str, headers: Any, newurl: str) -> Any:
         raise urllib.error.HTTPError(req.full_url, code, "Redirects are refused", headers, fp)
 
+    http_error_308 = urllib.request.HTTPRedirectHandler.http_error_307
+
 
 _DIRECT = urllib.request.build_opener(urllib.request.ProxyHandler({}), _NoRedirect())
-_MODEL_NAME = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:/@-]{0,119}$")
+_REDIRECT_CODES = (301, 302, 303, 307, 308)
+_MAX_LOCAL_REDIRECTS = 3
+MAX_LOCAL_MODEL_CHARS = 500
+MAX_CLOUD_MODEL_CHARS = 200
+_SECRET_HEADERS = ("authorization", "x-goog-api-key", "x-api-key", "proxy-authorization")
 _KEY_PATTERNS = (
-    re.compile(r"\bsk-[A-Za-z0-9_-]{8,}"),
-    re.compile(r"\bAIza[A-Za-z0-9_-]{12,}"),
+    re.compile(r"sk-(?:proj|ant|svcacct|admin|live|test|or)-[A-Za-z0-9_-]{6,}"),
+    re.compile(r"(?<![A-Za-z])sk-[A-Za-z0-9_-]{8,}"),
+    re.compile(r"AIza[A-Za-z0-9_-]{12,}"),
 )
 
 
@@ -65,20 +72,23 @@ class LLMError(Exception):
         self.message_zh = message_zh
 
 
-def validate_model_name(model: str) -> str:
-    """Validate a model identifier before placing it into a URL path or request body."""
-    cleaned = (model or "").strip()
-    if (not cleaned or not _MODEL_NAME.fullmatch(cleaned)
-            or ".." in cleaned or "//" in cleaned or "\\" in cleaned):
-        raise LLMError("Invalid model name", "bad_model", "模型名称无效")
-    return cleaned
+def _has_control_chars(text: str) -> bool:
+    return any(ord(ch) < 32 or ord(ch) == 127 or not ch.isprintable() for ch in text)
 
 
 def _gemini_model_id(model: str) -> str:
-    cleaned = validate_model_name(model)
+    """Validate a Gemini model identifier used as a URL path segment (accepting optional ``models/`` prefix)."""
+    cleaned = (model or "").strip()
+    if not cleaned:
+        raise LLMError("Gemini model name cannot be empty", "bad_model", "Gemini 模型名称不能为空")
+    if len(cleaned) > MAX_CLOUD_MODEL_CHARS:
+        raise LLMError("Gemini model name is too long", "bad_model", "Gemini 模型名称太长")
+    if _has_control_chars(cleaned) or any(ch.isspace() for ch in cleaned):
+        raise LLMError("Gemini model name cannot contain spaces or control characters", "bad_model",
+                       "Gemini 模型名称不能包含空格或控制字符")
     if cleaned.startswith("models/"):
         cleaned = cleaned[len("models/"):]
-    if not cleaned or "/" in cleaned or cleaned in (".", ".."):
+    if not cleaned or cleaned in (".", "..") or ".." in cleaned or any(ch in "/?#\\" for ch in cleaned):
         raise LLMError("Invalid Gemini model name", "bad_model", "Gemini 模型名称无效")
     return cleaned
 
@@ -87,21 +97,75 @@ def _gemini_model_segment(model: str) -> str:
     return urllib.parse.quote(_gemini_model_id(model), safe="._-")
 
 
+def validate_model_name(model: str, provider: str = "local") -> str:
+    r"""Validate a model identifier according to how ``provider`` transmits it.
+
+    - ``gemini``: placed into a URL path segment, so ``/``, ``?``, ``#``, ``\``, ``..`` and spaces are refused.
+    - ``openai``: placed into a JSON request body; printable non-whitespace IDs up to 200 chars without
+      ``?``, ``#``, ``\`` or ``..`` are accepted (including fine-tune IDs with colons and ``@``).
+    - ``local`` (default): placed only into a JSON body sent to a loopback server; any printable non-control
+      characters up to 500 chars are accepted so file paths (``../models/x.gguf``, ``C:\models\x.gguf``),
+      spaces (``Llama 3 8B``), brackets, ``+``, and CJK names work as reported by the local server.
+    """
+    cleaned = (model or "").strip()
+    if not cleaned:
+        raise LLMError("Model name cannot be empty", "bad_model", "模型名称不能为空")
+    if _has_control_chars(cleaned):
+        raise LLMError("Model name cannot contain line breaks or control characters", "bad_model",
+                       "模型名称不能包含换行或控制字符")
+    if provider == "gemini":
+        _gemini_model_id(cleaned)
+        return cleaned
+    if provider == "openai":
+        if len(cleaned) > MAX_CLOUD_MODEL_CHARS:
+            raise LLMError("Model name is too long (limit %d characters)" % MAX_CLOUD_MODEL_CHARS, "bad_model",
+                           "模型名称太长（上限 %d 个字符）" % MAX_CLOUD_MODEL_CHARS)
+        if any(ch.isspace() or ch in "?#\\" for ch in cleaned) or ".." in cleaned:
+            raise LLMError("Invalid OpenAI model name", "bad_model", "OpenAI 模型名称格式不正确")
+        return cleaned
+    if len(cleaned) > MAX_LOCAL_MODEL_CHARS:
+        raise LLMError("Model name is too long (limit %d characters)" % MAX_LOCAL_MODEL_CHARS, "bad_model",
+                       "模型名称太长（上限 %d 个字符）" % MAX_LOCAL_MODEL_CHARS)
+    return cleaned
+
+
 def normalize_local_base(url: str) -> str:
     """Validate a local server URL: http(s) on a loopback host only, without credentials, query or fragment."""
-    url = (url or "").strip().rstrip("/") or DEFAULT_LOCAL_BASE
+    raw = (url or "").strip()
+    if not raw:
+        return DEFAULT_LOCAL_BASE
+    if _has_control_chars(raw) or any(ch.isspace() for ch in raw) or "\\" in raw:
+        raise LLMError("Local model address cannot contain spaces, backslashes, or control characters", "local_address",
+                       "本地模型地址不能包含空格、反斜杠或控制字符")
     try:
-        parts = urllib.parse.urlsplit(url)
+        parts = urllib.parse.urlsplit(raw)
+    except ValueError:
+        raise LLMError("Local model address is not a valid URL", "local_address", "本地模型地址格式不正确")
+    if parts.scheme not in ("http", "https"):
+        raise LLMError("Local model address must start with http:// or https://", "local_address",
+                       "本地模型地址必须以 http:// 或 https:// 开头")
+    if parts.username is not None or parts.password is not None or "@" in parts.netloc:
+        raise LLMError("Local model address cannot include a username or password", "local_address",
+                       "本地模型地址不能包含用户名或密码")
+    try:
         port = parts.port
     except ValueError:
-        raise LLMError("Local model address must be on this computer (127.0.0.1 or localhost)", "local_address")
-    if (parts.scheme not in ("http", "https")
-            or parts.hostname not in _LOOPBACK_HOSTS
-            or parts.username is not None or parts.password is not None
-            or parts.query or parts.fragment
-            or (port is not None and not (1 <= port <= 65535))):
-        raise LLMError("Local model address must be on this computer (127.0.0.1 or localhost)", "local_address")
-    return url
+        raise LLMError("Local model address has an invalid port number (must be 1–65535)", "local_address",
+                       "本地模型地址里的端口号无效（应在 1 到 65535 之间）")
+    if parts.netloc.endswith(":") or (port is not None and not (1 <= port <= 65535)):
+        raise LLMError("Local model address has an invalid port number (must be 1–65535)", "local_address",
+                       "本地模型地址里的端口号无效（应在 1 到 65535 之间）")
+    if parts.hostname not in _LOOPBACK_HOSTS:
+        raise LLMError("Local model address must be on this computer (127.0.0.1, localhost, or [::1])", "local_address",
+                       "本地模型地址必须在这台电脑上（127.0.0.1、localhost 或 [::1]）")
+    if "?" in raw or "#" in raw or parts.query or parts.fragment:
+        raise LLMError("Local model address cannot include a '?' query or '#' fragment", "local_address",
+                       "本地模型地址不能包含 ? 查询参数或 # 片段")
+    unquoted_segments = urllib.parse.unquote(parts.path).split("/")
+    if ".." in unquoted_segments or "\\" in urllib.parse.unquote(parts.path):
+        raise LLMError("Local model address cannot contain '..'", "local_address",
+                       "本地模型地址不能包含 ..")
+    return raw.rstrip("/")
 
 
 class _NonFiniteJSON(ValueError):
@@ -145,18 +209,53 @@ def loads_strict(text: str) -> Any:
         raise ValueError("JSON nested too deeply")
 
 
+def _has_secret_header(headers: Optional[Dict[str, str]]) -> bool:
+    for name, val in (headers or {}).items():
+        if str(name).strip().lower() in _SECRET_HEADERS and str(val or "").strip():
+            return True
+    return False
+
+
 def _redact_secrets(text: str, headers: Optional[Dict[str, str]] = None) -> str:
-    """Scrub API keys from upstream error messages before returning or logging them."""
+    """Scrub API keys from upstream error messages before returning or logging them.
+
+    Only sensitive credential headers (``Authorization``, ``x-goog-api-key``, ``x-api-key``,
+    ``Proxy-Authorization``) are treated as secrets so ordinary headers such as ``Api-Revision``
+    never corrupt normal error text.
+    """
     out = str(text or "")
-    for header_val in (headers or {}).values():
+    for header_name, header_val in (headers or {}).items():
+        if str(header_name).strip().lower() not in _SECRET_HEADERS:
+            continue
         raw = str(header_val or "").strip()
         if raw.lower().startswith("bearer "):
             raw = raw[7:].strip()
-        if len(raw) >= 4:
+        if len(raw) >= 8:
+            out = re.sub(re.escape(raw), "[REDACTED]", out, flags=re.IGNORECASE)
+        elif len(raw) >= 3:
             out = out.replace(raw, "[REDACTED]")
     for pattern in _KEY_PATTERNS:
         out = pattern.sub("[REDACTED]", out)
     return out
+
+
+def _is_loopback_target(url: str) -> bool:
+    """True when ``url`` is a clean http(s) loopback URL without credentials, fragments, or traversal."""
+    if not url or _has_control_chars(url) or any(ch.isspace() for ch in url) or "\\" in url or "#" in url:
+        return False
+    try:
+        parts = urllib.parse.urlsplit(url)
+        port = parts.port
+    except ValueError:
+        return False
+    if (parts.scheme not in ("http", "https")
+            or parts.hostname not in _LOOPBACK_HOSTS
+            or parts.username is not None or parts.password is not None
+            or "@" in parts.netloc or parts.netloc.endswith(":")
+            or (port is not None and not (1 <= port <= 65535))):
+        return False
+    unquoted = urllib.parse.unquote(parts.path)
+    return ".." not in unquoted.split("/") and "\\" not in unquoted
 
 
 def _open(request: urllib.request.Request, timeout: float) -> Any:
@@ -165,7 +264,8 @@ def _open(request: urllib.request.Request, timeout: float) -> Any:
     ``urlopen`` follows the ``http_proxy`` variable and the system's proxy settings also for 127.0.0.1, which
     hands the whole prompt to the proxy. With a local model nothing may leave the computer, so those
     requests go straight to the address. Cloud providers keep using a configured proxy: on some networks
-    it is the only way out. Neither path follows HTTP redirects.
+    it is the only way out. Automatic redirects are disabled on both openers; ``_http`` handles bounded
+    loopback-to-loopback redirects explicitly.
     """
     try:
         local = urllib.parse.urlsplit(request.full_url).hostname in _LOOPBACK_HOSTS
@@ -176,42 +276,92 @@ def _open(request: urllib.request.Request, timeout: float) -> Any:
     return urllib.request.build_opener(_NoRedirect()).open(request, timeout=timeout)
 
 
-def _send_request(request: urllib.request.Request, headers: Dict[str, str]) -> Dict[str, Any]:
-    try:
-        with _open(request, 600) as response:
-            raw = response.read(MAX_REPLY_BYTES + 1)      # never more than this, however much is sent
-        if len(raw) > MAX_REPLY_BYTES:
-            size = "%d MB" % (MAX_REPLY_BYTES // (1024 * 1024))
-            raise LLMError("The AI service sent back far more than an answer needs (over %s), so it was not read. "
-                           "Try again. If it keeps happening, check the AI service's address in Settings." % size,
-                           "too_large",
-                           "AI 服务返回的内容远远超过一个回答该有的大小（超过 %s），所以没有读取。请再试一次；"
-                           "如果总是这样，请到“设置”里检查 AI 服务的地址。" % size)
-        return loads_strict(raw.decode("utf-8"))
-    except urllib.error.HTTPError as exc:
+def _refuse_redirect(code: int, raw_location: str, headers: Dict[str, str], too_many: bool = False) -> LLMError:
+    cleaned = "".join(ch for ch in (raw_location or "").strip() if ch.isprintable())
+    shown = _redact_secrets(cleaned, headers)[:200]
+    if too_many:
+        target = shown or "unknown"
+        return LLMError(
+            "HTTP %s: redirected more than %d times (last target: %s). Check the address in Settings."
+            % (code, _MAX_LOCAL_REDIRECTS, target),
+            "http",
+            "HTTP %s：连续重定向超过 %d 次（最后指向 %s）。请到「设置」里检查地址。"
+            % (code, _MAX_LOCAL_REDIRECTS, target),
+        )
+    if shown:
+        return LLMError(
+            "HTTP %s: the service answered with a redirect to %s, which was not followed. "
+            "If that is the right address, put it into Settings." % (code, shown),
+            "http",
+            "HTTP %s：服务返回了指向 %s 的跳转（重定向），出于安全原因没有自动跳转。"
+            "如果那是正确的地址，请直接填到「设置」里。" % (code, shown),
+        )
+    return LLMError(
+        "HTTP %s: the service answered with a redirect without a target address, which was not followed." % code,
+        "http",
+        "HTTP %s：服务返回了没有目标地址的重定向，未自动跟随。" % code,
+    )
+
+
+def _send_raw(method: str, url: str, headers: Dict[str, str], data: Optional[bytes],
+              content_type: Optional[str]) -> Dict[str, Any]:
+    cur_method = method
+    cur_url = url
+    cur_data = data
+    cur_ctype = content_type
+    allow_local_redirect = _is_loopback_target(url) and not _has_secret_header(headers)
+    redirects = 0
+
+    while True:
+        req_headers = dict(headers)
+        if cur_data is not None and cur_ctype:
+            req_headers["Content-Type"] = cur_ctype
+        request = urllib.request.Request(cur_url, data=cur_data, method=cur_method, headers=req_headers)
         try:
-            detail = exc.read(MAX_ERROR_BYTES).decode("utf-8", "replace")
-        finally:
-            exc.close()                 # whatever else the server goes on sending is not waited for
-        try:
-            error = json.loads(detail).get("error", detail)
-            detail = error.get("message", detail) if isinstance(error, dict) else error
-        except (ValueError, AttributeError):
-            pass
-        safe_detail = _redact_secrets(str(detail) or exc.reason, headers)[:300]
-        raise LLMError("HTTP %s: %s" % (exc.code, safe_detail), "http")
-    except (urllib.error.URLError, TimeoutError, OSError) as exc:
-        raise LLMError("Network error: %s" % _redact_secrets(str(exc), headers)[:300], "network")
-    except ValueError:
-        raise LLMError("Provider returned a non-JSON response", "bad_response")
+            with _open(request, 600) as response:
+                raw = response.read(MAX_REPLY_BYTES + 1)      # never more than this, however much is sent
+            if len(raw) > MAX_REPLY_BYTES:
+                size = "%d MB" % (MAX_REPLY_BYTES // (1024 * 1024))
+                raise LLMError("The AI service sent back far more than an answer needs (over %s), so it was not read. "
+                               "Try again. If it keeps happening, check the AI service's address in Settings." % size,
+                               "too_large",
+                               "AI 服务返回的内容远远超过一个回答该有的大小（超过 %s），所以没有读取。请再试一次；"
+                               "如果总是这样，请到“设置”里检查 AI 服务的地址。" % size)
+            return loads_strict(raw.decode("utf-8"))
+        except urllib.error.HTTPError as exc:
+            if exc.code in _REDIRECT_CODES:
+                raw_loc = (exc.headers.get("Location") or "").strip() if exc.headers is not None else ""
+                exc.close()
+                next_url = urllib.parse.urljoin(cur_url, raw_loc) if raw_loc else ""
+                if allow_local_redirect and next_url and _is_loopback_target(next_url):
+                    if redirects >= _MAX_LOCAL_REDIRECTS:
+                        raise _refuse_redirect(exc.code, next_url, headers, too_many=True)
+                    redirects += 1
+                    cur_url = next_url
+                    if exc.code == 303 or (exc.code in (301, 302) and cur_method == "POST"):
+                        cur_method, cur_data, cur_ctype = "GET", None, None
+                    continue
+                raise _refuse_redirect(exc.code, next_url or raw_loc, headers)
+            try:
+                detail = exc.read(MAX_ERROR_BYTES).decode("utf-8", "replace")
+            finally:
+                exc.close()                 # whatever else the server goes on sending is not waited for
+            try:
+                error = json.loads(detail).get("error", detail)
+                detail = error.get("message", detail) if isinstance(error, dict) else error
+            except (ValueError, AttributeError):
+                pass
+            safe_detail = _redact_secrets(str(detail) or exc.reason, headers)[:300]
+            raise LLMError("HTTP %s: %s" % (exc.code, safe_detail), "http")
+        except (urllib.error.URLError, TimeoutError, OSError) as exc:
+            raise LLMError("Network error: %s" % _redact_secrets(str(exc), headers)[:300], "network")
+        except ValueError:
+            raise LLMError("Provider returned a non-JSON response", "bad_response")
 
 
 def _http(method: str, url: str, headers: Dict[str, str], body: Optional[Dict[str, Any]]) -> Dict[str, Any]:
     data = json.dumps(body).encode("utf-8") if body is not None else None
-    request = urllib.request.Request(url, data=data, method=method, headers=dict(headers))
-    if data is not None:
-        request.add_header("Content-Type", "application/json")
-    return _send_request(request, headers)
+    return _send_raw(method, url, headers, data, "application/json" if data is not None else None)
 
 
 def _quote_part(value: str) -> str:
@@ -251,10 +401,7 @@ def post_multipart_json(
     chunks.append(file_bytes)
     chunks.append(("\r\n--%s--\r\n" % boundary).encode("ascii"))
     payload = b"".join(chunks)
-    req_headers = dict(headers)
-    req_headers["Content-Type"] = "multipart/form-data; boundary=" + boundary
-    request = urllib.request.Request(url, data=payload, method="POST", headers=req_headers)
-    return _send_request(request, headers)
+    return _send_raw("POST", url, headers, payload, "multipart/form-data; boundary=" + boundary)
 
 
 def _openai_style(provider: str, api_key: str, base_url: Optional[str]):
@@ -336,7 +483,7 @@ def search_json(provider: str, api_key: str, model: str, prompt: str,
                    if isinstance(s, dict) and s.get("type") == "model_output"]
         kind = "text"
     elif provider == "openai":
-        safe_model = validate_model_name(model)
+        safe_model = validate_model_name(model, "openai")
         data = call("POST", OPENAI_BASE + "/responses", {"Authorization": "Bearer " + api_key},
                     {"model": safe_model, "input": prompt, "tools": [{"type": "web_search"}]})
         output = data.get("output") if isinstance(data, dict) else None
@@ -790,7 +937,7 @@ def complete_json(provider: str, api_key: str, model: str, system: str, user: st
         return parse_json_text(text)
 
     base, headers = _openai_style(provider, api_key, base_url)
-    safe_model = validate_model_name(model)
+    safe_model = validate_model_name(model, provider)
     data = call("POST", base + "/chat/completions", headers, {
         "model": safe_model,
         "messages": [{"role": "system", "content": system}, {"role": "user", "content": user}],

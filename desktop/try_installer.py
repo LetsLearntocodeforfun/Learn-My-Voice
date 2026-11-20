@@ -447,6 +447,9 @@ def try_installer(installer: Path, shots: Optional[Path], label: str) -> Dict[st
         checks.append("the installed app starts and its core listens on this computer only")
         if not base.startswith("http://127.0.0.1:"):
             raise Failed("the core listens at %s, not on 127.0.0.1" % base)
+        if trial.ask(base, "GET", "/api/state", token="")[0] != 401:
+            raise Failed("unauthenticated local request to /api/state was not refused with 401")
+        checks.append("unauthenticated local requests are refused")
         trial.set_token(trial.read_token(data))
         trial.use(base, version, checks)
         as_the_desktop_app(base, data, runtime.get("python"), checks)

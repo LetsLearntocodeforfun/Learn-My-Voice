@@ -241,7 +241,7 @@ fn stop_core(app: &AppHandle) {
 }
 
 /// Sanitize a suggested download filename: strip directory components, control and BiDi override chars,
-/// reserved Windows device names, and cap UTF-8 byte length.
+/// check reserved Windows device names before the first dot, and cap UTF-8 byte length while preserving extension.
 fn sanitize_download_name(wanted: &OsStr) -> String {
     let raw = wanted.to_string_lossy();
     let cleaned: String = raw
@@ -268,21 +268,36 @@ fn sanitize_download_name(wanted: &OsStr) -> String {
     if trimmed.is_empty() || trimmed == "." || trimmed == ".." {
         return String::from("download");
     }
-    let mut truncated = String::new();
-    for ch in trimmed.chars() {
-        if truncated.len() + ch.len_utf8() > 180 {
-            break;
+    let truncated = if trimmed.len() <= 180 {
+        String::from(trimmed)
+    } else {
+        let ext = match trimmed.rfind('.') {
+            Some(dot) if dot > 0 && trimmed.len() - dot <= 16 => &trimmed[dot..],
+            _ => "",
+        };
+        let budget = 179usize.saturating_sub(ext.len());
+        let mut base = String::new();
+        for ch in trimmed[..trimmed.len() - ext.len()].chars() {
+            if base.len() + ch.len_utf8() > budget {
+                break;
+            }
+            base.push(ch);
         }
-        truncated.push(ch);
-    }
-    let stem_upper = Path::new(&truncated)
-        .file_stem()
-        .and_then(OsStr::to_str)
+        let base_clean = base.trim_end_matches(&[' ', '.'][..]);
+        if base_clean.is_empty() {
+            format!("download{ext}")
+        } else {
+            format!("{base_clean}{ext}")
+        }
+    };
+    let first_segment = truncated
+        .split('.')
+        .next()
         .unwrap_or("")
-        .trim_end_matches([' ', '.'])
+        .trim_end_matches(' ')
         .to_ascii_uppercase();
     let reserved = matches!(
-        stem_upper.as_str(),
+        first_segment.as_str(),
         "CON"
             | "PRN"
             | "AUX"

@@ -33,7 +33,6 @@ import base64
 import binascii
 import hmac
 import html
-import http.cookies
 import json
 import math
 import mimetypes
@@ -66,6 +65,7 @@ from .store import (
     Store,
     TextTooLong,
     _owner_only,
+    _replace,
     clean_file_name,
     kept_value,
 )
@@ -120,8 +120,52 @@ STATIC_TYPES = {
     ".woff2": "font/woff2",
 }
 
+_PUBLIC_STATIC_SUFFIXES = (".css", ".js", ".svg", ".png", ".ico", ".woff2")
+
 # How the app's page (web/index.html) begins. ``page_with_keeps`` writes what the core keeps for the page onto it.
 PAGE_OPENING = b'<html lang="zh-CN">'
+
+UNAUTHORIZED_PAGE = (
+    '<!doctype html>\n'
+    '<html lang="zh-CN">\n'
+    '<head>\n'
+    '  <meta charset="utf-8">\n'
+    '  <meta name="viewport" content="width=device-width, initial-scale=1">\n'
+    '  <title>脚本工作台 · Learn My Voice</title>\n'
+    '  <link rel="stylesheet" href="/app.css">\n'
+    '</head>\n'
+    '<body>\n'
+    '  <main id="view">\n'
+    '    <div class="wrap" style="max-width:640px;padding-top:36px">\n'
+    '      <div class="card">\n'
+    '        <h1 style="font-size:22px;margin-bottom:10px">这个页面缺少本次启动的访问钥匙</h1>\n'
+    '        <p style="margin:0 0 10px">每次启动工作台都会生成一把新的访问钥匙，防止这台电脑上的其他程序或其他账号读取你的脚本。'
+    '书签、历史记录或上次留下的标签页里不会带有这把钥匙。</p>\n'
+    '        <p style="margin:0"><strong>怎么打开：</strong>请从启动程序或桌面应用打开工作台，或使用启动窗口里显示的「安全访问链接」；'
+    '如果在桌面应用里看到这一页，请先退出应用再重新打开。</p>\n'
+    '      </div>\n'
+    '      <div class="card">\n'
+    '        <h2 style="font-size:18px;margin:0 0 8px">This page was opened without the studio&#39;s launch key</h2>\n'
+    '        <p class="meta" style="font-size:14.5px;margin:0 0 10px">Each start of the studio creates a new key so other programs '
+    'and other accounts on this computer cannot read your scripts. A bookmark or an old tab does not carry it.</p>\n'
+    '        <p class="meta" style="font-size:14.5px;margin:0"><strong>What to do:</strong> open the studio from its launcher or '
+    'the desktop app, or follow the launch link printed in the launcher window. In the desktop app, quit Learn My Voice and open it again.</p>\n'
+    '      </div>\n'
+    '    </div>\n'
+    '  </main>\n'
+    '</body>\n'
+    '</html>\n'
+).encode("utf-8")
+
+
+def _tokens_equal(candidate: Any, expected: str) -> bool:
+    """Constant-time UTF-8 byte comparison; returns False on non-strings, oversized inputs, or surrogates."""
+    if not isinstance(candidate, str) or not expected or len(candidate) > 1024:
+        return False
+    try:
+        return hmac.compare_digest(candidate.encode("utf-8"), expected.encode("utf-8"))
+    except UnicodeEncodeError:
+        return False
 
 MAX_UPLOAD_BYTES = 8 * 1024 ** 3        # one video or recording; streamed to disk, never held in memory
 UPLOAD_CHUNK = 1024 * 1024
@@ -154,7 +198,15 @@ class ApiError(Exception):
 
 
 def page_with_keeps(page: bytes, kept: Dict[str, str], token: str = "") -> bytes:
-    """The app's page with what the core keeps for it (``Store.load_page_keeps``) written onto its ``<html>`` element."""
+    """The app's page with what the core keeps for it (``Store.load_page_keeps``) written onto its ``<html>`` element.
+
+    ``data-kept`` holds all of it as JSON; app.js reads it before it draws anything, so the language and the
+    look are the chosen ones from the first moment, also at an address the page has never been opened at
+    (inside the desktop app the port differs at every start). The look is written out as ``data-theme`` and
+    ``data-accent`` too, which the stylesheet reads: the window is not white for a moment for somebody who chose
+    dark. When ``token`` is given, it is written onto ``data-token`` so the page can send ``X-Studio-Token`` on
+    API requests. With nothing kept and no token, or a page that does not begin as expected, the page is sent as it is.
+    """
     if (not kept and not token) or page.count(PAGE_OPENING) != 1:
         return page
     opening = '<html lang="%s"' % ("en" if kept.get("lang") == "en" else "zh-CN")
@@ -333,23 +385,43 @@ class App:
 
     def _write_token_file(self) -> None:
         folder = Path(self.store.data_dir)
-        folder.mkdir(parents=True, exist_ok=True)
+        folder.mkdir(mode=0o700, parents=True, exist_ok=True)
         _owner_only(folder)
+        if self.token_path.is_symlink():
+            raise OSError("Refusing to write server-token through a symbolic link: %s" % self.token_path)
         tmp = folder / ("%s.%s.tmp" % (SERVER_TOKEN_FILE, uuid.uuid4().hex))
         fd = os.open(str(tmp), os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
         try:
+            set_mode = getattr(os, "fchmod", None)
+            if set_mode is not None:
+                set_mode(fd, 0o600)
             os.write(fd, (self.token + "\n").encode("ascii"))
-        finally:
+            os.fsync(fd)
+        except BaseException:
             os.close(fd)
+            _remove(tmp)
+            raise
+        os.close(fd)
         try:
-            os.chmod(str(tmp), 0o600)
-        except OSError:
-            pass
-        os.replace(str(tmp), str(self.token_path))
+            if os.name != "nt":
+                os.chmod(str(tmp), 0o600)
+            _replace(str(tmp), str(self.token_path))
+        except BaseException:
+            _remove(tmp)
+            raise
         _owner_only(self.token_path)
 
     def remove_token_file(self) -> None:
-        if self.require_token:
+        """Remove ``data/server-token`` only when it still holds this server instance's own token."""
+        if not self.require_token:
+            return
+        try:
+            if self.token_path.is_symlink():
+                return
+            current = self.token_path.read_text(encoding="utf-8").strip()
+        except OSError:
+            return
+        if _tokens_equal(current, self.token):
             _remove(self.token_path)
 
     def remember_saved(self, path: Path) -> None:
@@ -393,6 +465,7 @@ class Handler(BaseHTTPRequestHandler):
         self.send_header("Cache-Control", "no-store")
         self.send_header("X-Content-Type-Options", "nosniff")
         self.send_header("X-Frame-Options", "DENY")                         # no page may show this app inside a frame
+        self.send_header("Referrer-Policy", "no-referrer")
         self.send_header("Content-Security-Policy", CONTENT_SECURITY_POLICY)
         for key, value in (extra or {}).items():
             self.send_header(key, value)
@@ -495,26 +568,56 @@ class Handler(BaseHTTPRequestHandler):
         if not settings["configured"]:
             raise ApiError(400, "ai_not_configured")
 
+    def _cookie_name(self) -> str:
+        return "%s_%d" % (SESSION_COOKIE_NAME, self.server.server_address[1])
+
     def _has_valid_header_token(self) -> Optional[bool]:
-        sent = self.headers.get(TOKEN_HEADER)
-        if sent is None:
+        vals = self.headers.get_all(TOKEN_HEADER)
+        if not vals:
             return None
-        return hmac.compare_digest(sent.strip(), self.app.token)
+        if len(vals) != 1:
+            return False
+        return _tokens_equal(vals[0].strip(), self.app.token)
 
     def _has_valid_session_cookie(self) -> bool:
-        raw = self.headers.get("Cookie")
-        if not raw:
+        """Linear O(n) Cookie splitter ignoring neighbor 127.0.0.1 cookies of any syntax."""
+        raw_headers = self.headers.get_all("Cookie")
+        if not raw_headers:
             return False
-        jar = http.cookies.SimpleCookie()
-        try:
-            jar.load(raw)
-        except http.cookies.CookieError:
-            return False
-        morsel = jar.get(SESSION_COOKIE_NAME)
-        return bool(morsel and hmac.compare_digest(morsel.value, self.app.session_cookie))
+        raw = "; ".join(raw_headers)[:16384]
+        wanted = self._cookie_name()
+        for part in raw.split(";"):
+            if "=" not in part:
+                continue
+            name, value = part.split("=", 1)
+            if name.strip() != wanted:
+                continue
+            cleaned = value.strip()
+            if len(cleaned) >= 2 and len(cleaned) <= 256 and cleaned[0] == '"' and cleaned[-1] == '"' and "\\" not in cleaned:
+                cleaned = cleaned[1:-1]
+            if _tokens_equal(cleaned, self.app.session_cookie):
+                return True
+        return False
 
-    def _check_auth(self, method: str, path: str) -> bool:
-        """Enforce capability token & session cookie; returns True if response was already sent (302 bootstrap)."""
+    def _is_public_static(self, method: str, path: str) -> bool:
+        """True only for published static assets inside ``studio/web/`` (never ``/``, ``index.html``, or ``/api/*``)."""
+        if method != "GET" or path in ("/", "", "/index.html") or path.startswith("/api/"):
+            return False
+        target = (WEB_DIR / path.lstrip("/")).resolve()
+        return (
+            WEB_DIR.resolve() in target.parents
+            and target.is_file()
+            and target.name != "index.html"
+            and target.suffix.lower() in _PUBLIC_STATIC_SUFFIXES
+        )
+
+    def _send_unauthorized_page(self) -> None:
+        self._drain_unread()
+        body = page_with_keeps(UNAUTHORIZED_PAGE, self.app.store.load_page_keeps(), token="")
+        self._send(401, body, "text/html; charset=utf-8")
+
+    def _check_auth(self, method: str, path: str, raw_query: str = "") -> bool:
+        """Enforce capability token & port-scoped session cookie; returns True when response was already sent."""
         header_ok = self._has_valid_header_token()
         if header_ok is False:
             raise ApiError(401, "unauthorized", "Missing or invalid studio token", "缺少或无效的工作台口令")
@@ -527,23 +630,38 @@ class Handler(BaseHTTPRequestHandler):
             elif header_ok is not True and not self._has_valid_session_cookie():
                 raise ApiError(401, "unauthorized", "Missing studio token", "缺少工作台口令")
             return False
-        # Static page / asset request (GET)
-        query_tokens = self.query.get("token") or []
-        if query_tokens:
-            candidate = query_tokens[0]
-            if not hmac.compare_digest(candidate, self.app.token):
-                raise ApiError(401, "unauthorized", "Invalid launch token", "启动口令无效")
-            clean_q = [(k, v) for k, vals in self.query.items() if k != "token" for v in vals]
-            dest = "/" + (path or "").lstrip("/")
-            if clean_q:
-                dest += "?" + urllib.parse.urlencode(clean_q)
-            cookie = "%s=%s; Path=/; HttpOnly; SameSite=Strict" % (SESSION_COOKIE_NAME, self.app.session_cookie)
-            self._send(302, b"", "text/plain; charset=utf-8", {"Location": dest, "Set-Cookie": cookie})
+
+        token_params = [v for k, v in urllib.parse.parse_qsl(raw_query, keep_blank_values=True) if k == "token"]
+        if token_params:
+            if method == "GET" and path in ("/", "") and len(token_params) == 1 and _tokens_equal(token_params[0], self.app.token):
+                cookie = "%s=%s; Path=/; HttpOnly; SameSite=Strict" % (self._cookie_name(), self.app.session_cookie)
+                self._static("/", extra_headers={"Set-Cookie": cookie})
+                return True
+            if method == "GET" and path in ("/", "", "/index.html") and header_ok is None:
+                self._send_unauthorized_page()
+                return True
+            raise ApiError(401, "unauthorized", "Invalid launch token", "启动口令无效")
+
+        if self._is_public_static(method, path):
+            return False
+        if method != "GET":
+            if header_ok is True:
+                return False
+            raise ApiError(401, "unauthorized", "Missing studio token", "缺少工作台口令")
+
+        # Subresource probes (fetch/iframe/script) from another port or site cannot read GET / using only the cookie.
+        fetch_site = (self.headers.get("Sec-Fetch-Site") or "").strip().lower()
+        fetch_mode = (self.headers.get("Sec-Fetch-Mode") or "").strip().lower()
+        if header_ok is not True and fetch_site and fetch_site not in ("same-origin", "none") and fetch_mode not in ("", "navigate"):
+            raise ApiError(403, "bad_origin")
+
+        if header_ok is True or self._has_valid_session_cookie():
+            return False
+        if path in ("/", "", "/index.html") and header_ok is None:
+            self._send_unauthorized_page()
             return True
-        if header_ok is not True and not self._has_valid_session_cookie():
-            raise ApiError(401, "unauthorized", "Open Studio using the launch link printed at startup.",
-                           "请使用启动时显示的访问链接打开工作台。")
-        return False
+        raise ApiError(401, "unauthorized", "Open Studio using the launch link printed at startup.",
+                       "请使用启动时显示的访问链接打开工作台。")
 
     def _dispatch(self, method: str) -> None:
         self._body, self._body_read = None, False
@@ -562,7 +680,7 @@ class Handler(BaseHTTPRequestHandler):
                 if fetch_site and fetch_site not in ("same-origin", "none"):
                     if method != "GET" or split.path.startswith("/api/"):
                         raise ApiError(403, "bad_origin")
-                if self._check_auth(method, split.path):
+                if self._check_auth(method, split.path, split.query):
                     return
                 if split.path.startswith("/api/"):
                     self._api(method, split.path)
@@ -789,7 +907,7 @@ class Handler(BaseHTTPRequestHandler):
                     upload={"max_bytes": app.max_upload_bytes, "extensions": list(MEDIA_EXTENSIONS)},
                     **video_ingest.ai_video_info(app.store))
 
-    def _static(self, path: str) -> None:
+    def _static(self, path: str, extra_headers: Optional[Dict[str, str]] = None) -> None:
         name = "index.html" if path in ("/", "") else path.lstrip("/")
         target = (WEB_DIR / name).resolve()
         if WEB_DIR.resolve() not in target.parents or not target.is_file():
@@ -806,7 +924,7 @@ class Handler(BaseHTTPRequestHandler):
                 self.app.store.load_page_keeps(),
                 token=self.app.token if self.app.require_token else "",
             )
-        self._send(200, body, ctype)
+        self._send(200, body, ctype, extra=extra_headers)
 
     # ---- copy-and-paste mode ------------------------------------------------
     def _manual_prompt(self, body: Dict[str, Any]) -> Dict[str, Any]:
@@ -1043,9 +1161,9 @@ class Handler(BaseHTTPRequestHandler):
                             if provider == "local" and body.get("base_url") else None)
                 raw_model = str(body.get("model") or "").strip()
                 try:
-                    model = llm.validate_model_name(raw_model) if raw_model else ""
+                    model = llm.validate_model_name(raw_model, provider) if raw_model else ""
                 except llm.LLMError as exc:
-                    raise ApiError(400, exc.code, str(exc))
+                    raise ApiError(400, exc.code, str(exc), exc.message_zh)
 
                 def choose(config: Dict[str, Any]) -> None:
                     if base_url is not None:
@@ -1638,7 +1756,11 @@ def make_server(port: int, store: Store, transport: Optional[llm.Transport] = No
     model, for Whisper, and for the Downloads folder, the file manager and the browser."""
     server = StudioServer(("127.0.0.1", port), Handler)
     server.daemon_threads = True
-    server.app = App(store, transport, transcriber, outside_world, require_token=require_token)
+    try:
+        server.app = App(store, transport, transcriber, outside_world, require_token=require_token)
+    except BaseException:
+        server.server_close()
+        raise
     return server
 
 
@@ -1683,7 +1805,9 @@ def main(argv: Optional[List[str]] = None) -> int:
     server = None
     for port in range(args.port, args.port + 10):
         try:
-            server = make_server(port, store, require_token=not args.no_auth_token)
+            candidate = StudioServer(("127.0.0.1", port), Handler)
+            candidate.daemon_threads = True
+            server = candidate
             break
         except OSError:
             continue
@@ -1691,11 +1815,19 @@ def main(argv: Optional[List[str]] = None) -> int:
         print("无法启动：端口 %d–%d 都被占用。/ Could not start: ports %d-%d are all in use."
               % (args.port, args.port + 9, args.port, args.port + 9), file=sys.stderr, flush=True)
         return 1
+    try:
+        server.app = App(store, require_token=not args.no_auth_token)
+    except OSError as exc:
+        server.server_close()
+        print("无法启动：无法写入工作台数据文件（%s）。/ Could not start: could not write studio data file (%s)."
+              % (exc, exc), file=sys.stderr, flush=True)
+        return 1
     if os.environ.get(WINDOW_CHECK_ENV) == "1":
         server.app.start_window_check()
     url = "http://127.0.0.1:%d/" % server.server_address[1]
     launch_url = "%s?token=%s" % (url, server.app.token) if server.app.require_token else url
-    # Line 1 keeps the exact ``http://127.0.0.1:<port>/`` format expected by the desktop shell.
+    # Sent at once also when the output is not a window: whoever started the app is waiting for this address
+    # (line 1 keeps the exact ``http://127.0.0.1:<port>/`` format expected by the desktop shell).
     print("工作台已启动 / Studio running: %s\n安全访问链接 / Launch link: %s\n关闭这个窗口即可退出。/ Close this window to quit."
           % (url, launch_url), flush=True)
     if not args.no_browser:

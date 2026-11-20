@@ -208,7 +208,8 @@ def run(command: List[str], cwd: Path, what: str) -> None:
     """Run a build command, showing what it prints as it comes. If it fails, the end of that is the error."""
     print("\n$ %s" % " ".join(command), flush=True)
     last: List[str] = []
-    process = subprocess.Popen(command, cwd=str(cwd), stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
+    env = dict(os.environ, npm_config_ignore_scripts="true")
+    process = subprocess.Popen(command, cwd=str(cwd), env=env, stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
     for raw in process.stdout:
         line = raw.decode("utf-8", "replace").rstrip()
         print(line, flush=True)
@@ -226,7 +227,7 @@ def tauri_command(npx: str, bundle: str, override: Path, locked: bool) -> List[s
     that list, and fails instead of choosing others if the list no longer fits ``Cargo.toml``. Without the list
     Cargo picks the newest versions that fit, which is how the list was first made.
     """
-    command = [npx, "--yes", "--ignore-scripts", TAURI_CLI, "build", "--ci", "--bundles", bundle, "--config", str(override)]
+    command = [npx, "--yes", TAURI_CLI, "build", "--ci", "--bundles", bundle, "--config", str(override)]
     return command + ["--", "--locked"] if locked else command
 
 

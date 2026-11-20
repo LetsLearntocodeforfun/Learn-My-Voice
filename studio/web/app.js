@@ -1,5 +1,14 @@
 'use strict';
 /* Chinese-first single-page UI. No build step, no dependencies. */
+(function () {
+  try {
+    const url = new URL(location.href);
+    if (url.searchParams.has('token')) {
+      url.searchParams.delete('token');
+      history.replaceState(null, '', url.pathname + url.search + url.hash);
+    }
+  } catch (e) { /* leave address unchanged if URL cannot be parsed */ }
+})();
 
 /* ---------- what is kept between runs: the language, the look, how the teleprompter was set, whether the references are open ----------
    The page keeps these for itself (localStorage), and the core keeps them as well (POST /api/kept). Inside the
@@ -137,7 +146,10 @@ const I18N = {
     not_connected: '未连接', settings_saved: '已保存', current: '当前使用',
     err_ai_not_configured: '还没连接 AI，请先到「设置」。', err_notes_required: '先写一点想法吧。',
     err_key_required: '请先填写密钥。', err_bad_model: '模型名称格式不正确。',
-    err_unauthorized: '访问口令已失效，请重新打开工作台启动链接。',
+    err_unauthorized: '工作台已重启，这个页面的访问钥匙已失效。请先复制需要保留的内容，再重新加载或从启动链接重新打开。',
+    reload_btn: '重新加载',
+    key_unreadable_warn: '这里保存过密钥，但在这台电脑上无法解开（可能是在另一台电脑或账号上保存的，或应用的主密钥文件已变更）。请重新粘贴密钥。',
+    key_plaintext_warn: '无法读取或创建主密钥文件（{path}），密钥已按仅本人可读（0600）直接保存在 config.json 中。',
     err_stale_script: '这篇脚本刚刚在别处被改过了，这次没有覆盖保存。请刷新后再改。',
     dna_unreadable_warn: '保存的声音档案文件损坏或无法读取，当前暂时使用示例档案。你可以在下方恢复以前保存的档案，或重新学习。',
     v_history_title: '以前保存的声音档案', v_history_sub: '换新档案时旧档案都会留着，随时可以换回来。',
@@ -181,7 +193,10 @@ const I18N = {
     not_connected: 'not connected', settings_saved: 'Saved', current: 'In use',
     err_ai_not_configured: 'AI is not connected. Open Settings first.', err_notes_required: 'Write a few notes first.',
     err_key_required: 'Enter a key first.', err_bad_model: 'Invalid model name.',
-    err_unauthorized: 'Studio session token expired. Re-open the launch link printed at startup.',
+    err_unauthorized: 'The studio restarted and this page\'s launch key is no longer valid. Copy any unsaved text, then reload or reopen from the launch link.',
+    reload_btn: 'Reload',
+    key_unreadable_warn: 'A key for this service is saved, but cannot be opened on this computer (it may have been saved on another computer or account, or the app\'s key file changed). Paste it again to reconnect.',
+    key_plaintext_warn: 'The key file could not be made or read ({path}), so the key is stored as owner-only plain text in config.json.',
     err_stale_script: 'This script was changed somewhere else (another tab or an AI app). Reload to see the newer version.',
     dna_unreadable_warn: 'The saved voice profile file could not be read, so the example profile is currently in use. Restore an earlier profile below or learn again.',
     v_history_title: 'Earlier voice profiles', v_history_sub: 'Replaced profiles are kept here and can be restored at any time.',
@@ -338,32 +353,56 @@ function studioHeaders(extra) {
   return h;
 }
 
+function showSessionExpired() {
+  if (!$view || document.getElementById('auth-expired')) return;
+  const box = document.createElement('div');
+  box.id = 'auth-expired';
+  box.className = 'banner';
+  box.innerHTML = '<div style="margin-bottom:6px"><strong>工作台已经重新启动：</strong>这个页面的访问钥匙已失效，刚才修改的内容可能还没有保存。请先把需要留下的文字复制出来，再重新加载页面。</div>' +
+    '<div style="margin-bottom:10px"><strong>The studio was started again:</strong> this page&#39;s key is no longer valid and recent changes may not have been saved. Copy what you need to keep, then reload.</div>' +
+    '<button type="button" class="btn primary" id="auth-reload-btn">' + esc(I18N.zh.reload_btn + ' / ' + I18N.en.reload_btn) + '</button>';
+  $view.prepend(box);
+  const btn = document.getElementById('auth-reload-btn');
+  if (btn) btn.onclick = () => location.reload();
+}
+
 async function api(method, path, body, extraOpts) {
   const opts = { method, headers: studioHeaders() };
   if (extraOpts && extraOpts.keepalive) opts.keepalive = true;
   if (body !== undefined) { opts.headers['Content-Type'] = 'application/json'; opts.body = JSON.stringify(body); }
   const res = await fetch(path, opts);
   const data = await res.json().catch(() => ({}));
-  if (!res.ok) { const e = new Error(data.message || data.error || 'error'); e.code = data.error; e.reason = data.reason; e.detail = data.message; e.message_zh = data.message_zh; throw e; }
+  if (!res.ok) {
+    if (res.status === 401 && !(extraOpts && extraOpts.keepalive)) showSessionExpired();
+    const e = new Error(data.message || data.error || 'error');
+    e.status = res.status; e.code = data.error || (res.status === 401 ? 'unauthorized' : 'error');
+    e.reason = data.reason; e.detail = data.message; e.message_zh = data.message_zh;
+    throw e;
+  }
   return data;
 }
 
 function errorMessage(e) {
   if (!e) return t('err_default');
+  if (e.code === 'unauthorized') return t('err_unauthorized');
   if (e.code === 'ai_failed') {
-    if (e.message_zh) return lang === 'zh' ? e.message_zh : (e.detail || t('err_default'));
+    if (lang === 'zh' && e.message_zh) return (e.reason === 'http' ? t('ai_http') : '') + e.message_zh;
+    if (e.message_zh && e.detail && e.reason !== 'http') return e.detail;
     const key = 'ai_' + e.reason;
     const known = I18N[lang][key] !== undefined;
     const detail = (!known || e.reason === 'http' || e.reason === 'other') ? (e.detail || '') : '';
     return t(known ? key : 'ai_other') + detail;
   }
   const key = 'err_' + e.code;
-  if (I18N[lang][key]) return t(key);
-  if (e.message_zh) return lang === 'zh' ? e.message_zh : (e.detail || t('err_default'));
-  return t('err_default');
+  if (e.message_zh) return lang === 'zh' ? e.message_zh : (e.detail || (I18N[lang][key] ? t(key) : t('err_default')));
+  return I18N[lang][key] ? t(key) : (e.detail || t('err_default'));
 }
 
 function showError(e) {
+  if (e && e.code === 'unauthorized') {
+    showSessionExpired();
+    return toast(t('err_unauthorized'), { label: t('reload_btn'), run: () => location.reload() });
+  }
   toast(errorMessage(e));
 }
 
@@ -564,7 +603,9 @@ async function saveNow(opts) {
   } catch (e) {
     dirty = true;
     setSaved('save_failed');
-    if (e && e.code === 'stale_script') showError(e);
+    if (opts && opts.keepalive) return;
+    if (e && (e.code === 'stale_script' || e.code === 'unauthorized')) showError(e);
+    else toast((e && ((lang === 'zh' && e.message_zh) || e.detail)) || t('save_failed'));
   }
 }
 
@@ -703,8 +744,10 @@ function paintScript() {
   document.getElementById('delete-btn').onclick = async () => {
     if (!(await askConfirm(t('confirm_delete'), { ok: t('delete'), danger: true }))) return;
     clearTimeout(saveTimer); dirty = false;
-    await api('DELETE', '/api/scripts/' + s.id);
-    cur = null; location.hash = '#/';
+    try {
+      await api('DELETE', '/api/scripts/' + s.id);
+      cur = null; location.hash = '#/';
+    } catch (e) { showError(e); }
   };
   document.getElementById('prompter-btn').onclick = openPrompter;   // in prompter.js
   craftAttach();    // craft.js: the per-line writing tools and whichever of them is open

@@ -229,9 +229,22 @@ class ShellFilesTest(unittest.TestCase):
         self.assertNotIn("Cargo.lock", (ROOT / ".gitignore").read_text(encoding="utf-8"))
         override = SHELL / "release.conf.json"
         plain = build.tauri_command("npx", "dmg", override, locked=False)
-        self.assertEqual(plain, ["npx", "--yes", "--ignore-scripts", build.TAURI_CLI, "build", "--ci", "--bundles", "dmg", "--config", str(override)])
+        self.assertEqual(plain, ["npx", "--yes", build.TAURI_CLI, "build", "--ci", "--bundles", "dmg", "--config", str(override)])
+        self.assertNotIn("--ignore-scripts", plain)                              # npm 10 npx rejects/forwards CLI --ignore-scripts
         self.assertEqual(build.tauri_command("npx", "dmg", override, locked=True), plain + ["--", "--locked"])
         self.assertRegex(build.TAURI_CLI, r"^@tauri-apps/cli@\d+\.\d+\.\d+$")     # the tool that builds is one exact version too
+        captured_envs = []
+
+        class FakeProc:
+            stdout = [b"done\n"]
+            returncode = 0
+            def wait(self):
+                return 0
+
+        with mock.patch.object(build.subprocess, "Popen", side_effect=lambda cmd, **kw: (captured_envs.append(kw.get("env")), FakeProc())[1]):
+            build.run(["npx", "--version"], ROOT, "checking npx")
+        self.assertEqual(len(captured_envs), 1)
+        self.assertEqual(captured_envs[0].get("npm_config_ignore_scripts"), "true")
 
     def test_the_page_inside_the_shell_loads_nothing_from_elsewhere(self):
         for path in sorted((DESKTOP / "ui").iterdir()):

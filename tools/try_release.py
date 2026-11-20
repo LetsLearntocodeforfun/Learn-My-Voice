@@ -193,15 +193,30 @@ def run_once(app: Path, command: List[str], version: str, how: str, checks: List
             if process.poll() is not None:
                 raise Failed("%s ended at once with code %s" % (how, process.returncode))
             token = read_token(app / "data")
-            if token and ask(base, "GET", "/", raw=True, token=token)[0] == 200:
-                break
+            if token:
+                try:
+                    if ask(base, "GET", "/", raw=True, token=token)[0] == 200:
+                        break
+                except OSError:
+                    pass
             if time.time() > deadline:
                 raise Failed("%s did not answer within %d seconds" % (how, START_TIMEOUT_SEC))
             time.sleep(0.3)
         checks.append("%s starts the app" % how)
         if ask(base, "GET", "/api/state", token="")[0] != 401:
             raise Failed("unauthenticated local request to /api/state was not refused with 401")
+        unauth_status, unauth_page, unauth_hdrs = ask(base, "GET", "/", raw=True, token="")
+        if unauth_status != 401 or not unauth_hdrs.get("Content-Type", "").startswith("text/html"):
+            raise Failed("GET / without launch link did not return 401 HTML explanation page (got %s, %r)"
+                         % (unauth_status, unauth_hdrs.get("Content-Type")))
         checks.append("unauthenticated local requests are refused")
+        boot_status, boot_page, boot_hdrs = ask(base, "GET", "/?token=" + token, raw=True, token="")
+        if (boot_status != 200 or b'<main id="view">' not in boot_page
+                or ("studio_session_%d=" % port) not in boot_hdrs.get("Set-Cookie", "")
+                or boot_hdrs.get("Referrer-Policy") != "no-referrer"):
+            raise Failed("launch link /?token=... did not bootstrap page + port-scoped cookie (got %s, %r)"
+                         % (boot_status, boot_hdrs))
+        checks.append("the launch link serves the page directly and sets the port-scoped session cookie")
         set_token(token)
         use(base, version, checks)
         # The check of the desktop app's window is a way for a script to steer the page. Started by a person the

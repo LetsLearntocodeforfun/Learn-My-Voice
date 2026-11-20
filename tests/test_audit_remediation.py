@@ -134,19 +134,22 @@ class TokenAuthAndFetchMetadataTest(TempStoreCase):
         self.assertEqual(status, 401)
         self.assertNotIn("set-cookie", hdrs)
 
-        # Valid launch URL sets HttpOnly; SameSite=Strict session cookie and strips ?token= via 302.
-        status, _, hdrs = self.raw_request("GET", "/?token=" + self.httpd.app.token)
-        self.assertEqual(status, 302)
-        self.assertEqual(hdrs.get("location"), "/")
+        # Valid launch URL serves 200 index.html directly with port-scoped HttpOnly; SameSite=Strict cookie.
+        status, boot_html, hdrs = self.raw_request("GET", "/?token=" + self.httpd.app.token)
+        self.assertEqual(status, 200)
+        self.assertEqual(hdrs.get("referrer-policy"), "no-referrer")
+        self.assertIn(('data-token="%s"' % self.httpd.app.token).encode("ascii"), boot_html)
         set_cookie = hdrs.get("set-cookie", "")
+        self.assertTrue(set_cookie.startswith("studio_session_%d=" % self.port), set_cookie)
         self.assertIn("HttpOnly", set_cookie)
         self.assertIn("SameSite=Strict", set_cookie)
         cookie_pair = set_cookie.split(";", 1)[0]
 
-        # Protocol-relative paths (///evil.example) are normalized to a single leading slash, never //evil.example.
+        # Non-root paths (///evil.example) never accept ?token= or issue a redirect/cookie.
         status_rel, _, hdrs_rel = self.raw_request("GET", "///evil.example/?token=" + self.httpd.app.token)
-        self.assertEqual(status_rel, 302)
-        self.assertEqual(hdrs_rel.get("location"), "/evil.example/")
+        self.assertEqual(status_rel, 401)
+        self.assertNotIn("location", hdrs_rel)
+        self.assertNotIn("set-cookie", hdrs_rel)
 
         # Session cookie permits GET / (injecting data-token) and GET /api/state,
         # but NEVER permits state-changing writes without X-Studio-Token.
@@ -300,7 +303,8 @@ class SupplyChainAndSandboxHardeningTest(unittest.TestCase):
 
     def test_desktop_build_and_launchers_harden_execution(self) -> None:
         desktop_build = (ROOT / "desktop" / "build.py").read_text(encoding="utf-8")
-        self.assertIn('"--ignore-scripts"', desktop_build)
+        self.assertIn('npm_config_ignore_scripts="true"', desktop_build)
+        self.assertNotIn('"--ignore-scripts"', desktop_build)
         for name in ("Start Learn My Voice.command", "启动工作台.command", "start-learn-my-voice.sh", "Start Learn My Voice.bat"):
             text = (ROOT / name).read_text(encoding="utf-8")
             self.assertIn("-B -E -s -m studio.server", text, name)
@@ -359,11 +363,16 @@ class LlmRedirectAndValidationTest(TempStoreCase):
         self.addCleanup(canary.server_close)
         self.addCleanup(canary.shutdown)
 
+        redirect_code = [301]
+
         class RedirectHandler(http.server.BaseHTTPRequestHandler):
-            def do_POST(self):
-                self.send_response(307)
+            def do_GET(self):
+                self.send_response(redirect_code[0])
                 self.send_header("Location", "http://127.0.0.1:%d/steal" % canary_port)
                 self.end_headers()
+
+            def do_POST(self):
+                self.do_GET()
 
             def log_message(self, *args):
                 pass
@@ -376,21 +385,30 @@ class LlmRedirectAndValidationTest(TempStoreCase):
         self.addCleanup(redirector.shutdown)
 
         url = "http://127.0.0.1:%d/v1/chat/completions" % redir_port
-        with self.assertRaises(llm.LLMError) as ctx:
-            llm._http("POST", url, {"Authorization": "Bearer sk-secret-token-1234567890"}, {})
-        self.assertEqual(ctx.exception.code, "http")
-        self.assertIn("HTTP 307", str(ctx.exception))
+        for method, code, body in (("GET", 301, None), ("POST", 302, {}), ("POST", 307, {})):
+            redirect_code[0] = code
+            with self.assertRaises(llm.LLMError) as ctx:
+                llm._http(method, url, {"Authorization": "Bearer sk-secret-token-1234567890"}, body)
+            self.assertEqual(ctx.exception.code, "http")
+            self.assertIn("HTTP %d" % code, str(ctx.exception))
         self.assertEqual(canary_hits, [])
 
     def test_model_name_and_local_base_validation_and_secret_redaction(self) -> None:
-        for valid in ("gemini-2.5-pro", "claude-sonnet-4-6", "qwen2.5:14b-instruct", "mlx-community/Qwen2.5-7B"):
+        for valid in (
+            "gemini-2.5-pro", "claude-sonnet-4-6", "qwen2.5:14b-instruct", "mlx-community/Qwen2.5-7B",
+            "../models/Meta-Llama-3.1-8B-Instruct-Q4_K_M.gguf", "/Users/jane/models/model.gguf", "Llama 3 8B",
+        ):
             self.assertEqual(llm.validate_model_name(valid), valid)
-        for invalid in ("../v1beta/files?key=evil", "gemini-pro?alt=sse", "model#frag", "bad model", "a\nb"):
+        for invalid_local in ("", "   ", "a\nb", "a\x00b", "x" * 501):
             with self.assertRaises(llm.LLMError) as ctx:
-                llm.validate_model_name(invalid)
-            self.assertEqual(ctx.exception.code, "bad_model", invalid)
-        with self.assertRaises(llm.LLMError):
-            llm._gemini_model_segment("models/../../other")
+                llm.validate_model_name(invalid_local, "local")
+            self.assertEqual(ctx.exception.code, "bad_model", invalid_local)
+        for invalid_gemini in ("../v1beta/files?key=evil", "gemini-pro?alt=sse", "model#frag", "bad model", "a\nb", "models/../../other"):
+            with self.assertRaises(llm.LLMError) as ctx:
+                llm.validate_model_name(invalid_gemini, "gemini")
+            self.assertEqual(ctx.exception.code, "bad_model", invalid_gemini)
+            with self.assertRaises(llm.LLMError):
+                llm._gemini_model_segment(invalid_gemini)
 
         for bad_local in (
             "http://user:pass@127.0.0.1:11434",
