@@ -1,7 +1,7 @@
 'use strict';
 /* Chinese-first single-page UI. No build step, no dependencies. */
 
-/* ---------- what is kept between runs: the language, the look, how the teleprompter was set ----------
+/* ---------- what is kept between runs: the language, the look, how the teleprompter was set, whether the references are open ----------
    The page keeps these for itself (localStorage), and the core keeps them as well (POST /api/kept). Inside the
    desktop app the page's address has a different port at every start, and what a page keeps for itself belongs
    to one address: there, the core's copy is the one that lasts. It arrives with the page, on <html data-kept>,
@@ -11,7 +11,7 @@ const THEMES = ['auto', 'light', 'dark'];
 const ACCENTS = ['blue', 'purple', 'pink', 'orange', 'green', 'graphite'];
 /* Each name with the words it may be; null for a whole number (the teleprompter's, which it checks itself).
    Must match PAGE_WORDS and PAGE_NUMBERS in studio/store.py: the core refuses anything else. */
-const KEPT = { lang: ['zh', 'en'], theme: THEMES, accent: ACCENTS, 'tp-pace': null, 'tp-size': null, 'tp-mirror': null };
+const KEPT = { lang: ['zh', 'en'], theme: THEMES, accent: ACCENTS, 'rf-open': ['0', '1'], 'tp-pace': null, 'tp-size': null, 'tp-mirror': null };
 const KEPT_NAMES = Object.keys(KEPT);
 const keepable = (name, value) => (KEPT[name] ? KEPT[name].includes(value) : /^-?[0-9]{1,4}$/.test(value));
 const keptByCore = {};          // what the core is known to hold
@@ -541,6 +541,7 @@ async function saveNow(opts) {
     cur.wordlist = lint.wordlist;
     paintChecks();
     poAfterSave(s);     // posted.js: a posted script that was edited says so
+    rfAfterSave(s);     // refs.js: a new title or keyword changes which of the creator's material is on the same topic
     if (!dirty) setSaved('saved');
   } catch (e) {
     dirty = true;
@@ -631,6 +632,7 @@ function paintScript() {
     <div id="wl-note"></div>
     <div id="vm-box"></div>
     <div id="craft-bar"></div>
+    <div id="rf-box"></div>
     <div id="lines">${s.lines.map(lineHtml).join('')}</div>
     <button class="btn" id="add-line">${esc(t('add_line'))}</button>
     <div id="post-box"></div><div id="po-box"></div><div id="basis-box"></div><div id="edits-box"></div></div>`;
@@ -688,6 +690,7 @@ function paintScript() {
   };
   document.getElementById('prompter-btn').onclick = openPrompter;   // in prompter.js
   craftAttach();    // craft.js: the per-line writing tools and whichever of them is open
+  rfAttach();       // refs.js: the creator's own material beside the lines, put back as it was before this redraw
 }
 
 async function renderScript(id) {

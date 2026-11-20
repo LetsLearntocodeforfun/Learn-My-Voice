@@ -45,7 +45,7 @@ class KeptValueTest(unittest.TestCase):
         for name, words in store.PAGE_WORDS.items():
             for word in words:
                 self.assertEqual(store.kept_value(name, word), word, name)
-        self.assertEqual(sorted(store.PAGE_WORDS), ["accent", "lang", "theme"])
+        self.assertEqual(sorted(store.PAGE_WORDS), ["accent", "lang", "rf-open", "theme"])
         self.assertEqual(store.PAGE_WORDS["lang"], ("zh", "en"))
         self.assertEqual(store.PAGE_WORDS["theme"], ("auto", "light", "dark"))
 
@@ -250,13 +250,19 @@ class StylesheetTest(unittest.TestCase):
         light = self.blocks(":root")
         used = set(re.findall(r"var\((--[a-z0-9-]+)", self.CSS))
         self.assertGreater(len(used), 20)
-        self.assertEqual(sorted(used - set(light) - {"--swatch"}), [])
-        self.assertIn("--swatch", used)                 # set on each swatch in Settings, by its own rule
+        # Two names are not for the whole page; each is set by the rule of the one part that uses it.
+        own = {"--swatch": '.swatch[data-pick="accent:blue"] { --swatch:',       # each swatch in Settings, its colour
+               "--rf-w": ".wrap.rf-on { --rf-w:",                                # the references beside the editor: their width,
+               "--rf-out": " --rf-out: calc(var(--view-side) - 16px);"}          # and how far they stand out to the side
+        self.assertEqual(sorted(used - set(light) - set(own)), [])
+        for name, where in own.items():
+            self.assertIn(name, used)
+            self.assertIn(where, self.CSS, name)
         self.assertEqual(sorted(set(light) - used), [])          # and none is named for nothing
 
     def test_the_dark_appearance_gives_every_colour_its_own_value(self):
         light, dark = self.blocks(":root"), self.blocks(':root[data-theme="dark"]')
-        not_colours = {"--radius", "--view-pad", "--accent-soft", "--accent-ring"}      # sizes; and two made from --accent-rgb
+        not_colours = {"--radius", "--view-pad", "--view-side", "--accent-soft", "--accent-ring"}      # sizes; and two made from --accent-rgb
         self.assertEqual(sorted(set(light) - set(dark) - not_colours), [])
         self.assertEqual(sorted(set(dark) - set(light)), [])
         for name in ("--bg", "--card", "--ink", "--muted", "--side", "--field"):
@@ -451,7 +457,7 @@ class PageTest(unittest.TestCase):
         self.assertIn("remember('lang', lang);", button)
         self.assertIn("keepWithCore();", button)
         # Nothing else in the pages keeps the language or the look for itself only.
-        for name in ("app.js", "pages.js", "setup.js", "discover.js", "craft.js", "kwimport.js", "posted.js", "wordlist.js"):
+        for name in ("app.js", "pages.js", "setup.js", "discover.js", "craft.js", "kwimport.js", "posted.js", "wordlist.js", "refs.js"):
             text = (WEB / name).read_text(encoding="utf-8")
             self.assertEqual(re.findall(r"localStorage\.setItem\(\s*'(?:lang|theme|accent)'", text), [], name)
 

@@ -987,13 +987,14 @@ class PageProtectionTest(StudioCase):
         index = (web / "index.html").read_text(encoding="utf-8")
         scripts = re.findall(r"<script\b([^>]*)>(.*?)</script>", index, re.S)
         self.assertEqual(sorted(re.search(r'src="([^"]+)"', attrs).group(1) for attrs, _ in scripts),
-                         ["/app.js", "/craft.js", "/discover.js", "/kwimport.js", "/pages.js", "/posted.js", "/prompter.js", "/setup.js", "/wordlist.js"])
+                         ["/app.js", "/craft.js", "/discover.js", "/kwimport.js", "/pages.js", "/posted.js", "/prompter.js", "/refs.js", "/setup.js",
+                          "/wordlist.js"])
         self.assertEqual([body.strip() for _, body in scripts], [""] * len(scripts))   # none is written into the page
         self.assertEqual(re.findall(r'<link\b[^>]*href="([^"]+)"', index), ["/app.css"])
         sources = {path.name: path.read_text(encoding="utf-8") for path in web.iterdir() if path.suffix in (".html", ".js", ".css")}
         # windowcheck.js is the one file the page does not name: it is loaded only during a trial of an installer.
         self.assertEqual(sorted(sources), ["app.css", "app.js", "craft.js", "discover.js", "index.html", "kwimport.js", "pages.js", "posted.js",
-                                           "prompter.js", "setup.js", "windowcheck.js", "wordlist.js"])
+                                           "prompter.js", "refs.js", "setup.js", "windowcheck.js", "wordlist.js"])
         forbidden = {
             "a <style> element": r"<style\b",
             "an event handler written into markup": r"<[A-Za-z][^<>]*\son[a-z]+\s*=",

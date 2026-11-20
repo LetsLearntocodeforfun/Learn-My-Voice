@@ -54,7 +54,7 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
 from . import checks, corpus, creator, exports, keyword_import, llm, pipeline, textstats, timing, transcribe, trends
-from . import buildinfo, hooks, outside, posted, suggest, wordlist
+from . import buildinfo, hooks, outside, posted, refs, suggest, wordlist
 from . import setup as setup_status
 from .jobs import JobError, Jobs, Progress
 from .store import (
@@ -1222,6 +1222,26 @@ class Handler(BaseHTTPRequestHandler):
             # The creator's own openings with their videos' results. Counted in code; no model is asked.
             return self._json(hooks.library(store.list_samples()))
 
+        m = re.fullmatch(r"/api/scripts/([0-9a-f]{12})/refs(/search)?", path)
+        if m and method == "GET":
+            # The creator's own material beside this script: what is pinned to it, what its draft saw and what is
+            # on the same topic (``refs.for_script``); under /search, with ?q=, what a search of the library finds.
+            # Reading only. Everything is counted in code: no model is asked, and each answer is bounded in size.
+            if m.group(2):
+                return self._json(_referring(lambda: refs.search(store, m.group(1), (self.query.get("q") or [""])[0])))
+            return self._json(_referring(lambda: refs.for_script(store, m.group(1))))
+        m = re.fullmatch(r"/api/scripts/([0-9a-f]{12})/pins", path)
+        if m and method == "PUT":
+            # {"sample_id": the id of a library item, "pinned": true or false}. Answers with what the panel shows,
+            # as the GET above does. The script itself is not written to, so its updated_at stays as it is and a
+            # save made from the version before the pin is not refused.
+            body = self._read_json()
+            return self._json(_referring(lambda: refs.set_pin(store, m.group(1), body.get("sample_id"), body.get("pinned"))))
+        m = re.fullmatch(r"/api/samples/([0-9a-f]{12})/text", path)
+        if m and method == "GET":
+            # One part of an item's whole text, from ?start= (a count of characters), to be read beside a script.
+            return self._json(_referring(lambda: refs.text_part(store, m.group(1), (self.query.get("start") or ["0"])[0])))
+
         m = re.fullmatch(r"/api/scripts/([0-9a-f]{12})/suggest", path)
         if m and method == "POST":
             # Proposals for one line (or a critic's read of all of them), each checked before it is shown.
@@ -1321,6 +1341,15 @@ def _posting(work: Any) -> Any:
         raise _stale_script(exc)
     except TextTooLong as exc:
         raise ApiError(413, exc.code, exc.message, exc.message_zh, extra={"limit": exc.limit})
+
+
+def _referring(work: Any) -> Any:
+    """Run a step about the references beside a script, turning its refusals (``refs.RefsError``) into answers a
+    page can show, in both languages."""
+    try:
+        return work()
+    except refs.RefsError as exc:
+        raise ApiError(exc.status, exc.code, exc.message, exc.message_zh)
 
 
 _SUGGEST_REFUSALS = {

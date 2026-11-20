@@ -64,6 +64,7 @@ PAGE_WORDS = {
     "lang": ("zh", "en"),
     "theme": ("auto", "light", "dark"),
     "accent": ("blue", "purple", "pink", "orange", "green", "graphite"),
+    "rf-open": ("0", "1"),      # the references beside the script editor (studio/web/refs.js): closed or open when last chosen
 }
 PAGE_NUMBERS = ("tp-pace", "tp-size", "tp-mirror")
 
@@ -201,6 +202,12 @@ CREATE TABLE IF NOT EXISTS ai_suggestions (
     created_at REAL NOT NULL
 );
 CREATE INDEX IF NOT EXISTS ai_suggestions_by_script ON ai_suggestions (script_id);
+CREATE TABLE IF NOT EXISTS script_pins (
+    script_id TEXT NOT NULL,
+    sample_id TEXT NOT NULL,
+    created_at REAL NOT NULL,
+    PRIMARY KEY (script_id, sample_id)
+);
 """
 
 # Columns added after a table first shipped: (table, column, definition). A database created by an
@@ -991,8 +998,48 @@ class Store:
         return self.get_sample(sample_id)
 
     def delete_sample(self, sample_id: str) -> bool:
+        """Remove a library item. Being pinned to a script never keeps an item: its pins go with it."""
         with self._db() as db:
+            db.execute("DELETE FROM script_pins WHERE sample_id = ?", (sample_id,))
             return db.execute("DELETE FROM samples WHERE id = ?", (sample_id,)).rowcount > 0
+
+    def list_sample_heads(self, text_chars: int, title_chars: int) -> List[Dict[str, Any]]:
+        """Every library item with only the start of its text, newest first: what a ranking or a search reads.
+
+        One item can hold MAX_SAMPLE_CHARS characters and a library hundreds of items. Something that looks at
+        every item on every request must not load all of that, so the text is cut by the database, before it
+        reaches this program. Each row has ``id``, ``title`` (its first ``title_chars`` characters), ``text``
+        (its first ``text_chars``), ``text_cut`` (whether the text goes on after that), ``is_sponsored``, the
+        four numbers, ``kind``, ``needs_review``, ``origin``, ``script_id``, ``posted_on``, ``metrics_on`` and
+        ``created_at``. What an AI wrote for a posted item (``ai_draft``) is not read here.
+
+        The database cuts bytes and the characters are counted here. Its own way of cutting text by characters
+        stops at a NUL character, and a pasted text or a file can hold one: such an item would be read only up
+        to it. A character takes at most four bytes, so four bytes for each character wanted always hold enough.
+        """
+        title_chars, text_chars = max(0, int(title_chars)), max(0, int(text_chars))
+        with self._db() as db:
+            rows = db.execute(
+                "SELECT id, substr(CAST(title AS BLOB), 1, ?) AS title, substr(CAST(text AS BLOB), 1, ?) AS text,"
+                " length(CAST(text AS BLOB)) AS text_bytes,"
+                " is_sponsored, views, likes, collects, comments, kind, needs_review, origin, script_id, posted_on,"
+                " metrics_on, created_at FROM samples ORDER BY created_at DESC, rowid DESC",
+                (4 * title_chars, 4 * text_chars)).fetchall()
+        heads = []
+        for row in rows:
+            # A character the last byte cut in two stands after the characters that are kept, so it is never among them.
+            text = bytes(row["text"] or b"").decode("utf-8", "replace")
+            heads.append({
+                "id": row["id"], "title": bytes(row["title"] or b"").decode("utf-8", "replace")[:title_chars],
+                "text": text[:text_chars],
+                "text_cut": (row["text_bytes"] or 0) > 4 * text_chars or len(text) > text_chars,
+                "is_sponsored": bool(row["is_sponsored"]),
+                "views": row["views"], "likes": row["likes"], "collects": row["collects"], "comments": row["comments"],
+                "kind": row["kind"] if row["kind"] in SAMPLE_KINDS else SAMPLE_KINDS[0],
+                "needs_review": bool(row["needs_review"]), "origin": row["origin"] or "", "script_id": row["script_id"],
+                "posted_on": row["posted_on"], "metrics_on": row["metrics_on"], "created_at": row["created_at"],
+            })
+        return heads
 
     # ---- trend keywords ---------------------------------------------------
     @staticmethod
@@ -1268,11 +1315,55 @@ class Store:
 
     def delete_script(self, script_id: str) -> bool:
         """Delete a script. The library item of a script that was posted is the creator's video: it stays, with
-        its numbers and with where it came from, and only stops pointing at a script that is no longer there."""
+        its numbers and with where it came from, and only stops pointing at a script that is no longer there.
+        The pins of the script are removed with it; the items they named stay in the library."""
         with self._db() as db:
             db.execute("DELETE FROM ai_suggestions WHERE script_id = ?", (script_id,))
+            db.execute("DELETE FROM script_pins WHERE script_id = ?", (script_id,))      # its pins are about this script only
             db.execute("UPDATE samples SET script_id = NULL WHERE script_id = ?", (script_id,))
             return db.execute("DELETE FROM scripts WHERE id = ?", (script_id,)).rowcount > 0
+
+    # ---- library items pinned to a script -------------------------------
+    # Pins have a table of their own (``script_pins``) and nothing below reads or writes a script's row. So a
+    # pin never moves a script's ``updated_at``, and a save based on the version from before the pin is taken
+    # as any save is (``update_script``): pinning is not an edit of the script.
+    def list_pins(self, script_id: str) -> List[str]:
+        """The ids of the library items pinned to this script, in the order they were pinned.
+
+        Only items that are in the library are named: a pin whose item is gone is not a pin.
+        """
+        with self._db() as db:
+            rows = db.execute("SELECT p.sample_id FROM script_pins p JOIN samples s ON s.id = p.sample_id"
+                              " WHERE p.script_id = ? ORDER BY p.created_at, p.rowid", (script_id,)).fetchall()
+        return [row["sample_id"] for row in rows]
+
+    def pin_sample(self, script_id: str, sample_id: str, limit: int) -> str:
+        """Pin a library item to a script. Returns what happened: ``"pinned"``, ``"already"`` (it was pinned and
+        stays where it was), ``"no_script"``, ``"no_sample"``, or ``"full"`` when the script has ``limit`` pins.
+
+        Looking and writing are one step, so two windows that pin at the same moment cannot get past the limit
+        between them. A pin left behind by an item that is gone is cleared first and is never counted.
+        """
+        with self._db() as db:
+            db.execute("BEGIN IMMEDIATE")
+            if db.execute("SELECT 1 FROM scripts WHERE id = ?", (script_id,)).fetchone() is None:
+                return "no_script"
+            if db.execute("SELECT 1 FROM samples WHERE id = ?", (sample_id,)).fetchone() is None:
+                return "no_sample"
+            db.execute("DELETE FROM script_pins WHERE script_id = ? AND sample_id NOT IN (SELECT id FROM samples)", (script_id,))
+            if db.execute("SELECT 1 FROM script_pins WHERE script_id = ? AND sample_id = ?", (script_id, sample_id)).fetchone():
+                return "already"
+            if db.execute("SELECT COUNT(*) FROM script_pins WHERE script_id = ?", (script_id,)).fetchone()[0] >= limit:
+                return "full"
+            db.execute("INSERT INTO script_pins (script_id, sample_id, created_at) VALUES (?,?,?)",
+                       (script_id, sample_id, time.time()))
+        return "pinned"
+
+    def unpin_sample(self, script_id: str, sample_id: str) -> bool:
+        """Take a pin away. True when there was one."""
+        with self._db() as db:
+            return db.execute("DELETE FROM script_pins WHERE script_id = ? AND sample_id = ?",
+                              (script_id, sample_id)).rowcount > 0
 
     # ---- what an AI suggested for a script's lines ----------------------
     def add_ai_suggestions(self, script_id: str, texts: Any) -> int:
