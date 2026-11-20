@@ -61,6 +61,7 @@ from __future__ import annotations
 
 import contextlib
 import datetime
+import gc
 import hashlib
 import json
 import os
@@ -272,7 +273,32 @@ def _remove(path: Path) -> None:
 
 
 def _remove_folder(path: Path) -> None:
-    shutil.rmtree(str(path), ignore_errors=True)
+    target = str(path)
+    if not os.path.exists(target):
+        return
+    if os.name != "nt":
+        shutil.rmtree(target, ignore_errors=True)
+        return
+
+    def _unlock(func: Any, failed_path: str, _exc: Any) -> None:
+        try:
+            os.chmod(failed_path, stat.S_IWRITE | stat.S_IREAD)
+            func(failed_path)
+        except OSError:
+            pass
+
+    for attempt in range(10):
+        shutil.rmtree(target, ignore_errors=True)
+        if not os.path.exists(target):
+            return
+        gc.collect()
+        try:
+            shutil.rmtree(target, onerror=_unlock)
+        except OSError:
+            pass
+        if not os.path.exists(target):
+            return
+        time.sleep(0.02 * (attempt + 1))
 
 
 def _write(path: Path, data: bytes, durable: bool = False) -> None:
@@ -566,6 +592,14 @@ def _rebuild(source: Path, target: Path) -> None:
     except sqlite3.Error as exc:
         raise _bad_database("sqlite: %s" % str(exc)[:80])
     finally:
+        try:
+            db.execute("ROLLBACK")
+        except sqlite3.Error:
+            pass
+        try:
+            db.execute("DETACH DATABASE fresh")
+        except sqlite3.Error:
+            pass
         db.close()
 
 

@@ -391,6 +391,30 @@ def _finite_or_none(text: str) -> Optional[float]:
     return value if math.isfinite(value) else None
 
 
+def _stored_json_too_deep(text: str, limit: int = 64) -> bool:
+    depth = 0
+    in_str = False
+    esc = False
+    for ch in text:
+        if in_str:
+            if esc:
+                esc = False
+            elif ch == "\\":
+                esc = True
+            elif ch == '"':
+                in_str = False
+        else:
+            if ch == '"':
+                in_str = True
+            elif ch in ("{", "["):
+                depth += 1
+                if depth > limit:
+                    return True
+            elif ch in ("}", "]") and depth > 0:
+                depth -= 1
+    return False
+
+
 def loads_stored(text: str) -> Any:
     """Read JSON that this app stored earlier. ``NaN`` and ``Infinity`` come back as None (``null``).
 
@@ -400,6 +424,8 @@ def loads_stored(text: str) -> Any:
     delete it. Read as ``null`` they can be shown, edited and removed. The same goes for a number written
     so large that it would be read as Infinity (``1e999``).
     """
+    if not isinstance(text, str) or _stored_json_too_deep(text):
+        raise ValueError("JSON nested too deeply")
     try:
         return json.loads(text, parse_constant=_not_a_number, parse_float=_finite_or_none)
     except RecursionError:

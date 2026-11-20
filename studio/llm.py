@@ -214,20 +214,72 @@ def _has_surrogate(value: Any) -> bool:
     return False
 
 
+MAX_JSON_DEPTH = 64
+
+
+def _raw_json_too_deep(text: str, limit: int = MAX_JSON_DEPTH) -> bool:
+    """Linear O(n) nesting check outside JSON string literals."""
+    depth = 0
+    in_str = False
+    esc = False
+    for ch in text:
+        if in_str:
+            if esc:
+                esc = False
+            elif ch == "\\":
+                esc = True
+            elif ch == '"':
+                in_str = False
+        else:
+            if ch == '"':
+                in_str = True
+            elif ch in ("{", "["):
+                depth += 1
+                if depth > limit:
+                    return True
+            elif ch in ("}", "]") and depth > 0:
+                depth -= 1
+    return False
+
+
+def _value_too_deep(value: Any, limit: int = MAX_JSON_DEPTH) -> bool:
+    """Iterative depth check on a decoded JSON value (no Python recursion)."""
+    if not isinstance(value, (dict, list)):
+        return False
+    stack: List[Tuple[Any, int]] = [(value, 1)]
+    while stack:
+        cur, depth = stack.pop()
+        if depth > limit:
+            return True
+        if isinstance(cur, dict):
+            for v in cur.values():
+                if isinstance(v, (dict, list)):
+                    stack.append((v, depth + 1))
+        elif isinstance(cur, list):
+            for v in cur:
+                if isinstance(v, (dict, list)):
+                    stack.append((v, depth + 1))
+    return False
+
+
 def loads_strict(text: str) -> Any:
     """Read JSON that arrives from outside: a model's reply, a provider's answer, a request body.
 
     Python's reader accepts ``NaN``, ``Infinity`` and ``-Infinity``, which are not JSON. Stored and sent back
     to the page they make an answer a browser cannot read, so the page shows nothing at all. Here they
     raise ``ValueError`` like any other invalid JSON, and so does a number written so large that Python
-    would read it as Infinity (``1e999``), nested so deeply that Python raises ``RecursionError``, or
-    holding an unpaired UTF-16 surrogate that cannot be encoded as UTF-8.
+    would read it as Infinity (``1e999``), nested beyond ``MAX_JSON_DEPTH``, or holding an unpaired UTF-16
+    surrogate that cannot be encoded as UTF-8.
     """
     if not isinstance(text, str):
         raise ValueError("JSON input must be text")
+    if _raw_json_too_deep(text):
+        raise ValueError("JSON nested too deeply")
     try:
         value = json.loads(text, parse_constant=_refuse_constant, parse_float=_finite_float)
     except RecursionError:
+        raise ValueError("JSON nested too deeply")
+    if _value_too_deep(value):
         raise ValueError("JSON nested too deeply")
     if _SURROGATE_CHAR.search(text) or (_SURROGATE_ESCAPE.search(text) and _has_surrogate(value)):
         raise ValueError("JSON contains an unpaired surrogate")
@@ -753,6 +805,8 @@ def _decode_whole(candidate: str) -> Tuple[bool, Any]:
     s = candidate.strip(_EDGE_INVISIBLE)
     if not s or s[0] not in ("{", "["):
         return False, None
+    if _raw_json_too_deep(s):
+        raise LLMError("Model did not return valid JSON", "bad_json")
     try:
         val, end = _LOOSE_DECODER.raw_decode(s, 0)
     except _NonFiniteJSON:
@@ -762,6 +816,8 @@ def _decode_whole(candidate: str) -> Tuple[bool, Any]:
     except ValueError:
         return False, None
     if s[end:].strip(_EDGE_INVISIBLE) == "":
+        if _value_too_deep(val):
+            raise LLMError("Model did not return valid JSON", "bad_json")
         if (_SURROGATE_CHAR.search(s) or _SURROGATE_ESCAPE.search(s)) and _has_surrogate(val):
             raise _NonFiniteJSON("JSON contains an unpaired surrogate")
         return True, val
@@ -808,6 +864,8 @@ def _scan_top_level(text: str, allow_array: bool) -> Tuple[bool, Any]:
         except ValueError:
             pos = at + 1
             continue
+        if _value_too_deep(val):
+            raise LLMError("Model did not return valid JSON", "bad_json")
         if check_surrogates and _has_surrogate(val):
             raise _NonFiniteJSON("JSON contains an unpaired surrogate")
         if isinstance(val, dict):

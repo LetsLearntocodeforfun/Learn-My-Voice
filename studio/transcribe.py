@@ -237,7 +237,8 @@ WORKER_SEAL = NETWORK_SEAL + (
     '(deny file-read-data (subpath "/Users") (subpath "/Volumes") (subpath "/private/var/folders")'
     ' (subpath "/private/tmp") (subpath "/private/var/tmp") (subpath (param "HOME")) (subpath (param "TEMP")))'
     '(allow file-read-data (literal (param "WAV")) (literal (param "WORKER")) (literal (param "ROOT_DIR"))'
-    ' (subpath (param "STUDIO_DIR")) (subpath (param "WHISPER_HOME")) (subpath (param "SCRATCH")))'
+    ' (subpath (param "STUDIO_DIR")) (subpath (param "WHISPER_HOME")) (subpath (param "SCRATCH"))'
+    ' (subpath (param "PY_BASE")) (subpath (param "PY_EXEC_BASE")))'
     '(deny file-write* (subpath "/Users") (subpath "/Volumes") (subpath "/private/var/folders")'
     ' (subpath "/private/tmp") (subpath "/private/var/tmp") (subpath (param "HOME")) (subpath (param "TEMP")))'
     '(allow file-write* (subpath (param "WHISPER_HOME")) (subpath (param "SCRATCH")))'
@@ -475,6 +476,26 @@ def _sealed_worker(wav: str, scratch: str, args: Sequence[Any], worker_override:
     worker_file = worker_override or _place(str(WORKER), os.path.realpath(str(WORKER)))
     studio_dir = _place(str(Path(__file__).resolve().parent), os.path.realpath(str(Path(__file__).resolve().parent)))
     root_dir = _place(str(ROOT), os.path.realpath(str(ROOT)))
+    user_home = _place(os.path.expanduser("~"), "/Users")
+    temp_root = _place(tempfile.gettempdir(), "/private/tmp")
+    forbidden_roots = {
+        "", "/", "/Users", "/System/Volumes/Data/Users", "/Volumes",
+        "/private/tmp", "/private/var/tmp", "/private/var/folders",
+        user_home, temp_root,
+    }
+
+    def _safe_py_root(raw_path: str) -> str:
+        resolved = _place(raw_path, os.path.realpath(raw_path))
+        return whisper_home if resolved in forbidden_roots else resolved
+
+    py_base = _safe_py_root(sys.base_prefix)
+    py_exec_base = whisper_home
+    if args:
+        try:
+            exe_real = os.path.realpath(str(args[0]))
+            py_exec_base = _safe_py_root(str(Path(exe_real).parent.parent))
+        except OSError:
+            py_exec_base = whisper_home
     places = (
         ("WAV", wav),
         ("WORKER", worker_file),
@@ -482,8 +503,10 @@ def _sealed_worker(wav: str, scratch: str, args: Sequence[Any], worker_override:
         ("STUDIO_DIR", studio_dir),
         ("WHISPER_HOME", whisper_home),
         ("SCRATCH", scratch),
-        ("HOME", _place(os.path.expanduser("~"), "/Users")),
-        ("TEMP", _place(tempfile.gettempdir(), "/private/tmp")),
+        ("PY_BASE", py_base),
+        ("PY_EXEC_BASE", py_exec_base),
+        ("HOME", user_home),
+        ("TEMP", temp_root),
     )
     command: List[Any] = [SANDBOX_EXEC]
     for name, value in places:

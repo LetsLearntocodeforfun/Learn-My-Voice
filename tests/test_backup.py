@@ -260,6 +260,7 @@ def pack(path, files, manifest=None, change=None, extra=None, **said):
             archive.writestr(backup.MANIFEST, manifest if manifest is not None else json.dumps(listed, ensure_ascii=False))
             for name, data in list(files.items()) + list((extra or {}).items()):
                 info = zipfile.ZipInfo(name, (2026, 11, 1, 0, 0, 0))
+                info.filename = name.split("\x00", 1)[0]
                 info.compress_type = zipfile.ZIP_DEFLATED
                 info.external_attr = (stat.S_IFREG | 0o600) << 16
                 if change and name in change:

@@ -643,7 +643,10 @@ class TranscribeFileTest(Sandbox):
         audio, worker = self.tools.seals
         convert = self.tools.calls[0][0]
         self.assertEqual(worker["rules"], transcribe.WORKER_SEAL)
-        self.assertEqual(sorted(worker["places"]), ["HOME", "ROOT_DIR", "SCRATCH", "STUDIO_DIR", "TEMP", "WAV", "WHISPER_HOME", "WORKER"])
+        self.assertEqual(
+            sorted(worker["places"]),
+            ["HOME", "PY_BASE", "PY_EXEC_BASE", "ROOT_DIR", "SCRATCH", "STUDIO_DIR", "TEMP", "WAV", "WHISPER_HOME", "WORKER"],
+        )
         self.assertEqual(audio["rules"], transcribe.AUDIO_SEAL)
         self.assertEqual(sorted(audio["places"]), ["HOME", "SCRATCH", "SOURCE", "TEMP"])
         self.assertEqual(audio["places"]["SOURCE"], transcribe._kernel_path(source))
