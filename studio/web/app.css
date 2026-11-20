@@ -127,6 +127,7 @@ a.card:hover { border-color: var(--line-2); box-shadow: 0 2px 6px rgba(0, 0, 0, 
 .meta { color: var(--muted); font-size: 13px; }
 .empty { text-align: center; color: var(--muted); padding: 56px 0; }
 .banner { background: var(--warn-soft); border-radius: 12px; padding: 11px 15px; margin-bottom: 16px; font-size: 14px; }
+.banner.danger { background: var(--bad-soft); color: var(--bad); }
 
 /* fields */
 label.field { display: block; font-weight: 600; font-size: 14.5px; margin: 20px 0 7px; }
@@ -279,6 +280,8 @@ p.hint { margin: 8px 0 0; }
 .sheet { background: var(--card); border-radius: 18px; padding: 24px 28px; width: min(680px, 100%); box-shadow: var(--shadow-pop); animation: rise .18s ease-out; }
 .sheet h2 { margin: 0 0 4px; font-size: 21px; }
 .sheet label.field { margin-top: 16px; }
+.sheet #mb-err { margin: 12px 0 0; }
+.sheet.drop-active #mb-reply { border-color: var(--accent); box-shadow: 0 0 0 3.5px var(--accent-ring); }
 textarea.mono { font: 13px/1.5 ui-monospace, "SF Mono", Menlo, Consolas, monospace; overflow: auto; resize: vertical; background: var(--fill-2); }
 details.card > summary { color: var(--ink); font-size: 15px; }
 

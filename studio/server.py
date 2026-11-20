@@ -778,13 +778,16 @@ class Handler(BaseHTTPRequestHandler):
         store, task = self.app.store, _task(body)
         # For ideas: what was asked, and the lookup that came before. Malformed ones are refused before the reply is read.
         focus, lookup = (_focus(body), _pasted_lookup(body)) if task == "ideas" else ("", None)
-        result = llm.parse_json_text(str(body.get("reply") or ""))
+        result = llm.parse_manual_reply(str(body.get("reply") or ""), task)
         if task == "draft":
             brief_id = body.get("brief_id")
-            script = pipeline.apply_draft(
-                store, result, notes=str(body.get("notes") or "").strip(), target_sec=_target_sec(body),
-                video_format=_video_format(body), default_title=UNTITLED[self._lang(body)],
-                keywords=body.get("keywords"), brief_id=brief_id if isinstance(brief_id, str) else None)
+            try:
+                script = pipeline.apply_draft(
+                    store, result, notes=str(body.get("notes") or "").strip(), target_sec=_target_sec(body),
+                    video_format=_video_format(body), default_title=UNTITLED[self._lang(body)],
+                    keywords=body.get("keywords"), brief_id=brief_id if isinstance(brief_id, str) else None)
+            except TextTooLong as exc:
+                raise ApiError(413, exc.code, exc.message, exc.message_zh, extra={"limit": exc.limit})
             return self._json(script, 201)
         if task == "suggest":     # proposals for a line, checked and shown; the script itself is not touched
             return self._json(_suggesting(lambda: suggest.apply_suggest(
@@ -918,10 +921,14 @@ class Handler(BaseHTTPRequestHandler):
             if not notes:
                 raise ApiError(400, "notes_required")
             self._require_ai()
-            return self._json(pipeline.generate_script(
-                store, notes=notes, target_sec=_target_sec(body), video_format=_video_format(body),
-                transport=self.app.transport, default_title=UNTITLED[self._lang(body)],
-                keywords=body.get("keywords")), 201)
+            try:
+                script = pipeline.generate_script(
+                    store, notes=notes, target_sec=_target_sec(body), video_format=_video_format(body),
+                    transport=self.app.transport, default_title=UNTITLED[self._lang(body)],
+                    keywords=body.get("keywords"))
+            except TextTooLong as exc:
+                raise ApiError(413, exc.code, exc.message, exc.message_zh, extra={"limit": exc.limit})
+            return self._json(script, 201)
         if route == ("POST", "/api/manual/prompt"):
             return self._json(self._manual_prompt(self._read_json()))
         if route == ("POST", "/api/manual/reply"):

@@ -272,6 +272,38 @@ def recorded_basis(store: Store, *, notes: str, target_sec: int, video_format: s
     return basis if isinstance(basis, dict) else None
 
 
+_DRAFT_WRAPPERS = ("script", "draft", "package", "result", "data")
+_LINE_SPOKEN_ALIASES = ("spoken_zh", "script_zh", "voiceover_zh", "line_zh", "text_zh", "text")
+_VOICE_DNA_SECTIONS = (
+    "persona_summary",
+    "cadence_and_syntax",
+    "lexical_fingerprint",
+    "code_switching_grammar",
+    "beat_playbooks",
+    "onscreen_flower_text_and_caption_dna",
+    "anti_voice_blacklist",
+)
+_VOICE_WRAPPERS = ("voice_dna", "voice_dna_profile", "profile", "voice_profile", "dna", "result", "data")
+
+
+def _coerce_draft_lines(raw_lines: Any) -> Any:
+    if not isinstance(raw_lines, list):
+        return raw_lines
+    out: List[Any] = []
+    for item in raw_lines:
+        if isinstance(item, dict) and not str(item.get("spoken_script_zh") or "").strip():
+            mapped = item
+            for alias in _LINE_SPOKEN_ALIASES:
+                val = item.get(alias)
+                if isinstance(val, str) and val.strip():
+                    mapped = dict(item, spoken_script_zh=val)
+                    break
+            out.append(mapped)
+        else:
+            out.append(item)
+    return out
+
+
 def apply_draft(store: Store, result: Dict[str, Any], *, notes: str, target_sec: int, video_format: str,
                 default_title: str = "未命名脚本", keywords: Any = None, brief_id: Optional[str] = None,
                 basis: Any = _UNSET) -> Dict[str, Any]:
@@ -280,17 +312,57 @@ def apply_draft(store: Store, result: Dict[str, Any], *, notes: str, target_sec:
     ``basis`` is passed by ``generate_script``, which built the prompt itself. Left out, it is taken from
     the record made when the prompt was built (``recorded_basis``).
     """
-    lines = [l for l in normalize_lines(result.get("script_lines")) if l["spoken_script_zh"].strip()]
+    unwrapped: Any = result
+    for _ in range(2):
+        if not isinstance(unwrapped, dict) or "script_lines" in unwrapped or "lines" in unwrapped:
+            break
+        moved = False
+        for key in _DRAFT_WRAPPERS:
+            inner = unwrapped.get(key)
+            if isinstance(inner, dict):
+                unwrapped = inner
+                moved = True
+                break
+            if key == "script" and isinstance(inner, list):
+                unwrapped = dict(unwrapped, script_lines=inner)
+                moved = True
+                break
+        if not moved:
+            break
+    result = unwrapped if isinstance(unwrapped, dict) else {}
+    raw_lines = result.get("script_lines")
+    if raw_lines is None:
+        raw_lines = result.get("lines")
+    if raw_lines is None and any(k in result for k in ("persona_summary", "lexical_fingerprint", "code_switching_grammar", "beat_playbooks")):
+        raise llm.LLMError(
+            "This looks like a Voice DNA profile JSON rather than a script. Import it in Step 3 (Your Voice) instead.",
+            "wrong_step_draft",
+            "这段 JSON 看起来是声音档案，不是脚本。请到「开始」第三步（你的声音）里导入它。",
+        )
+    lines = [l for l in normalize_lines(_coerce_draft_lines(raw_lines)) if l["spoken_script_zh"].strip()]
     if not lines:
         raise llm.LLMError("Model reply contained no script lines", "empty_result")
     if basis is _UNSET:
         basis = recorded_basis(store, notes=notes, target_sec=target_sec, video_format=video_format,
                                keywords=keywords, brief_id=brief_id)
     post = result.get("rednote_post_package")
+    if not isinstance(post, dict):
+        post = result.get("post_package") if isinstance(result.get("post_package"), dict) else (
+            result.get("post") if isinstance(result.get("post"), dict) else {})
+    inferred_title = ""
+    if not notes.strip():
+        if isinstance(result.get("title"), str) and result["title"].strip():
+            inferred_title = result["title"].strip()[:60]
+        elif isinstance(post.get("title_options"), list) and post["title_options"]:
+            first_opt = post["title_options"][0]
+            if isinstance(first_opt, str) and first_opt.strip():
+                inferred_title = first_opt.strip()[:60]
+            elif isinstance(first_opt, dict) and isinstance(first_opt.get("title_zh"), str) and first_opt["title_zh"].strip():
+                inferred_title = first_opt["title_zh"].strip()[:60]
     return store.create_script(
-        notes=notes, target_sec=target_sec, video_format=video_format, default_title=default_title,
-        lines=normalize_lines(lines), post=post if isinstance(post, dict) else {}, from_ai=True, keywords=keywords,
-        basis=basis,
+        title=inferred_title, notes=notes, target_sec=target_sec, video_format=video_format,
+        default_title=default_title, lines=normalize_lines(lines), post=post,
+        from_ai=True, keywords=keywords, basis=basis,
     )
 
 
@@ -550,9 +622,55 @@ def propose_voice(store: Store, dna: Dict[str, Any], brief: Optional[Dict[str, A
     - The measured habits and the report use confirmed items only (``confirmed_samples``); the speaking
       rate uses every timed item.
     """
-    if (not isinstance(dna, dict) or not isinstance(dna.get("cadence_and_syntax"), dict)
-            or not isinstance(dna.get("anti_voice_blacklist"), dict)):
+    if not isinstance(dna, dict):
         raise llm.LLMError("Model reply is not a usable voice profile", "empty_result")
+    dna = dict(dna)
+    for _ in range(2):
+        if any(k in dna for k in _VOICE_DNA_SECTIONS):
+            break
+        moved = False
+        for key in _VOICE_WRAPPERS:
+            inner = dna.get(key)
+            if isinstance(inner, dict):
+                dna = dict(inner)
+                moved = True
+                break
+        if not moved:
+            break
+    if not any(k in dna for k in _VOICE_DNA_SECTIONS) and (
+        "script_lines" in dna or "lines" in dna or "rednote_post_package" in dna
+    ):
+        raise llm.LLMError(
+            "This looks like a script JSON rather than a Voice DNA profile. Paste it in New Script, or copy the Step 3 prompt to generate your Voice DNA.",
+            "wrong_step_voice",
+            "这段 JSON 看起来是一篇脚本，不是第三步的声音档案。请确认复制的是第三步的提示词和回复，或到「写新脚本」里导入它。",
+        )
+    if isinstance(dna.get("persona_summary"), str) and dna["persona_summary"].strip():
+        dna["persona_summary"] = {"one_line_essence_zh": dna["persona_summary"].strip()}
+    avb = dna.get("anti_voice_blacklist")
+    if isinstance(avb, list):
+        dna["anti_voice_blacklist"] = {"banned_phrases_zh": list(avb), "learned_from_her_edits": []}
+    elif isinstance(avb, dict) and "banned_phrases_zh" not in avb and isinstance(avb.get("banned_phrases"), list):
+        dna["anti_voice_blacklist"] = dict(avb, banned_phrases_zh=list(avb["banned_phrases"]))
+
+    def _has_usable_content(node: Any) -> bool:
+        if isinstance(node, str):
+            return bool(node.strip())
+        if isinstance(node, (int, float)) and not isinstance(node, bool):
+            return True
+        if isinstance(node, list):
+            return any(_has_usable_content(item) for item in node)
+        if isinstance(node, dict):
+            return any(_has_usable_content(val) for key, val in node.items() if key != "profile_version")
+        return False
+
+    shaped_check = _own_fields(evidence.shape_profile(dna))
+    if not _has_usable_content(shaped_check):
+        raise llm.LLMError("Model reply is not a usable voice profile", "empty_result")
+    if not isinstance(dna.get("cadence_and_syntax"), dict):
+        dna["cadence_and_syntax"] = {}
+    if not isinstance(dna.get("anti_voice_blacklist"), dict):
+        dna["anti_voice_blacklist"] = {"banned_phrases_zh": [], "learned_from_her_edits": []}
     with _VOICE_LOCK:
         library = store.list_samples()
         samples = confirmed_samples(library)
@@ -573,6 +691,12 @@ def propose_voice(store: Store, dna: Dict[str, Any], brief: Optional[Dict[str, A
         material_as_of = as_of if as_of is not None else now
 
         dna = evidence.shape_profile(dna)             # the known fields only; evidence_review and the like are not among them
+        if not isinstance(dna.get("cadence_and_syntax"), dict):
+            dna["cadence_and_syntax"] = {}
+        if not isinstance(dna.get("anti_voice_blacklist"), dict):
+            dna["anti_voice_blacklist"] = {"banned_phrases_zh": [], "learned_from_her_edits": []}
+        else:
+            dna["anti_voice_blacklist"].setdefault("banned_phrases_zh", [])
         removed = strip_refused(dna, store.load_creator())
         _own_fields(dna)
         stats = corpus.voice_stats(organic_texts)

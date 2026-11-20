@@ -103,15 +103,30 @@ def normalize_local_base(url: str) -> str:
     return url
 
 
+class _NonFiniteJSON(ValueError):
+    """Raised when JSON contains NaN, Infinity, -Infinity, or overflow floats."""
+
+
 def _refuse_constant(name: str) -> Any:
-    raise ValueError("%s is not valid JSON" % name)
+    raise _NonFiniteJSON("%s is not valid JSON" % name)
 
 
 def _finite_float(text: str) -> float:
     value = float(text)
     if not math.isfinite(value):
-        raise ValueError("a number too large to read: %s" % text[:40])
+        raise _NonFiniteJSON("a number too large to read: %s" % text[:40])
     return value
+
+
+_LOOSE_DECODER = json.JSONDecoder(parse_constant=_refuse_constant, parse_float=_finite_float, strict=False)
+_EDGE_INVISIBLE = " \t\r\n\ufeff\u200b\u200c\u200d\u2060"
+_INVISIBLE_OUTSIDE_STR = frozenset("\ufeff\u200b\u200c\u200d\u2060")
+_ARRAY_TASK_KEYS = {
+    "draft": "script_lines",
+    "ideas": "ideas",
+    "trends": "keywords",
+    "suggest": "suggestions",
+}
 
 
 def loads_strict(text: str) -> Any:
@@ -291,34 +306,420 @@ def search_json(provider: str, api_key: str, model: str, prompt: str,
     return parse_json_text(text), _cited_pages(blocks)
 
 
+def _pop_trailing_commas(out: List[str]) -> None:
+    """Remove trailing commas (and only commas) before a closing ``}`` or ``]`` in ``out``."""
+    ws: List[str] = []
+    while out and out[-1].strip() == "":
+        ws.append(out.pop())
+    removed = False
+    while out and out[-1] == ",":
+        out.pop()
+        removed = True
+        while out and out[-1].strip() == "":
+            ws.append(out.pop())
+    if ws:
+        out.extend(reversed(ws))
+    elif removed:
+        pass
+
+
+def _repair_json(text: str, smart_quotes: bool = False) -> str:
+    """Single-pass linear O(n) repair for comments, trailing commas, BOM, and macOS smart quotes."""
+    n = len(text)
+    out: List[str] = []
+    i = 0
+    quote_kind = ""  # "", "ascii", or "smart"
+    la_pos = -1
+    la_char = ""
+
+    def next_sig(pos: int) -> str:
+        nonlocal la_pos, la_char
+        if pos <= la_pos:
+            return la_char
+        j = pos
+        while j < n:
+            c = text[j]
+            if c in " \t\r\n" or c in _INVISIBLE_OUTSIDE_STR:
+                j += 1
+                continue
+            if c == "/" and j + 1 < n:
+                nxt = text[j + 1]
+                if nxt == "/":
+                    nl = text.find("\n", j + 2)
+                    j = n if nl == -1 else nl + 1
+                    continue
+                if nxt == "*":
+                    end_c = text.find("*/", j + 2)
+                    j = n if end_c == -1 else end_c + 2
+                    continue
+            break
+        la_pos = j
+        la_char = text[j] if j < n else ""
+        return la_char
+
+    while i < n:
+        ch = text[i]
+        if not quote_kind:
+            if ch in _INVISIBLE_OUTSIDE_STR:
+                i += 1
+                continue
+            if ch == "/" and i + 1 < n:
+                nxt = text[i + 1]
+                if nxt == "/":
+                    nl = text.find("\n", i + 2)
+                    i = n if nl == -1 else nl
+                    continue
+                if nxt == "*":
+                    end_c = text.find("*/", i + 2)
+                    i = n if end_c == -1 else end_c + 2
+                    continue
+            if ch in ("}", "]"):
+                _pop_trailing_commas(out)
+                out.append(ch)
+                i += 1
+                continue
+            if ch == '"':
+                quote_kind = "ascii"
+                out.append('"')
+                i += 1
+                continue
+            if smart_quotes and ch in ("\u201c", "\u201d"):
+                quote_kind = "smart"
+                out.append('"')
+                i += 1
+                continue
+            out.append(ch)
+            i += 1
+        elif quote_kind == "ascii":
+            if ch == "\\":
+                if i + 1 < n:
+                    esc_ch = text[i + 1]
+                    if smart_quotes and esc_ch in ("\u201c", "\u201d"):
+                        out.append('\\"')
+                    else:
+                        out.append(text[i:i + 2])
+                    i += 2
+                else:
+                    out.append(ch)
+                    i += 1
+                continue
+            if ch == '"':
+                quote_kind = ""
+                out.append('"')
+                i += 1
+                continue
+            if smart_quotes and ch == "\u201d":
+                # Handle macOS TextEdit turning only the closing quote of an ASCII-opened string into ”
+                nl = text.find("\n", i + 1)
+                line_end = n if nl == -1 else nl
+                if '"' not in text[i + 1:line_end] and next_sig(i + 1) in (":", ",", "}", "]", ""):
+                    quote_kind = ""
+                    out.append('"')
+                    i += 1
+                    continue
+            out.append(ch)
+            i += 1
+        else:
+            # quote_kind == "smart"
+            if ch == "\\":
+                if i + 1 < n:
+                    esc_ch = text[i + 1]
+                    if esc_ch in ("\u201c", "\u201d"):
+                        out.append('\\"')
+                    else:
+                        out.append(text[i:i + 2])
+                    i += 2
+                else:
+                    out.append(ch)
+                    i += 1
+                continue
+            if ch in ('"', "\u201d", "\u201c"):
+                if next_sig(i + 1) in (":", ",", "}", "]", ""):
+                    quote_kind = ""
+                    out.append('"')
+                elif ch == '"':
+                    out.append('\\"')
+                else:
+                    out.append(ch)
+                i += 1
+                continue
+            out.append(ch)
+            i += 1
+    return "".join(out)
+
+
+def _strip_outer_fence(text: str) -> Optional[str]:
+    """If ``text`` starts and ends with triple backticks, return the inner text."""
+    if not (text.startswith("```") and text.endswith("```") and len(text) >= 6):
+        return None
+    inner = text[3:-3]
+    nl = inner.find("\n")
+    first_line = inner[:nl] if nl != -1 else inner
+    tag = first_line.strip()
+    if nl != -1 and (not tag or (tag.isalnum() and len(tag) <= 16)):
+        return inner[nl + 1:].strip(_EDGE_INVISIBLE)
+    stripped = inner.lstrip(_EDGE_INVISIBLE)
+    if stripped[:4].lower() == "json" and (len(stripped) == 4 or not stripped[4].isalnum()):
+        stripped = stripped[4:].lstrip(_EDGE_INVISIBLE)
+    return stripped.rstrip(_EDGE_INVISIBLE)
+
+
+def _extract_fenced_blocks(text: str) -> List[Tuple[bool, str]]:
+    """Extract markdown ``` code blocks in O(n) without regex backtracking.
+
+    Returns ``[(is_json_tagged, content), ...]``. Multi-line fences require closing ``` on their
+    own line so ``"```not a fence```"`` inside a JSON string never terminates the block early.
+    """
+    blocks: List[Tuple[bool, str]] = []
+    n = len(text)
+    pos = 0
+    while pos < n:
+        at = text.find("```", pos)
+        if at == -1:
+            break
+        line_start = text.rfind("\n", 0, at) + 1
+        if text[line_start:at].strip(" \t\r") == "":
+            nl = text.find("\n", at + 3)
+            if nl != -1:
+                header = text[at + 3:nl].strip(" \t\r")
+                if not header or (len(header) <= 20 and all(c.isalnum() or c in "_-" for c in header)):
+                    # Search for a closing fence on its own line
+                    search_from = nl + 1
+                    closed = -1
+                    after_close = -1
+                    while search_from <= n:
+                        cand = text.find("```", search_from)
+                        if cand == -1:
+                            break
+                        c_line_start = text.rfind("\n", nl, cand) + 1
+                        if c_line_start > nl and text[c_line_start:cand].strip(" \t\r") == "":
+                            c_line_end = text.find("\n", cand + 3)
+                            end_idx = n if c_line_end == -1 else c_line_end
+                            if text[cand + 3:end_idx].strip(" \t\r") == "":
+                                closed = c_line_start - 1
+                                after_close = end_idx
+                                break
+                        search_from = cand + 3
+                    if closed != -1:
+                        is_json = header.lower() in ("json", "jsonc", "json5")
+                        blocks.append((is_json, text[nl + 1:closed].strip(_EDGE_INVISIBLE)))
+                        pos = after_close
+                        continue
+        # Single-line fence fallback: ```json { ... } ```
+        close_inline = text.find("```", at + 3)
+        if close_inline == -1:
+            break
+        inner = text[at + 3:close_inline].strip(_EDGE_INVISIBLE)
+        is_json = False
+        if inner[:4].lower() == "json" and (len(inner) == 4 or not inner[4].isalnum()):
+            is_json = True
+            inner = inner[4:].strip(_EDGE_INVISIBLE)
+        if inner:
+            blocks.append((is_json, inner))
+        pos = close_inline + 3
+    return blocks
+
+
+def _decode_whole(candidate: str) -> Tuple[bool, Any]:
+    s = candidate.strip(_EDGE_INVISIBLE)
+    if not s or s[0] not in ("{", "["):
+        return False, None
+    try:
+        val, end = _LOOSE_DECODER.raw_decode(s, 0)
+    except _NonFiniteJSON:
+        raise
+    except RecursionError:
+        raise LLMError("Model did not return valid JSON", "bad_json")
+    except ValueError:
+        return False, None
+    if s[end:].strip(_EDGE_INVISIBLE) == "":
+        return True, val
+    return False, None
+
+
+def _is_property_value(text: str, pos: int) -> bool:
+    """True if ``text[pos]`` is preceded by ``"key":`` (a nested value inside an unclosed outer object)."""
+    k = pos - 1
+    while k >= 0 and text[k] in _EDGE_INVISIBLE:
+        k -= 1
+    if k < 0 or text[k] != ":":
+        return False
+    m = k - 1
+    while m >= 0 and text[m] in _EDGE_INVISIBLE:
+        m -= 1
+    return m >= 0 and text[m] in ('"', "\u201d", "\u201c")
+
+
+def _scan_top_level(text: str, allow_array: bool) -> Tuple[bool, Any]:
+    """Scan ``text`` for top-level JSON objects (or arrays if ``allow_array``) using ``raw_decode``."""
+    n = len(text)
+    pos = 0
+    matches: List[Tuple[int, int, Any]] = []  # (is_dict_rank, span_length, value)
+    while pos < n:
+        next_obj = text.find("{", pos)
+        next_arr = text.find("[", pos) if allow_array else -1
+        if next_obj == -1 and next_arr == -1:
+            break
+        if next_arr == -1 or (next_obj != -1 and next_obj < next_arr):
+            at = next_obj
+        else:
+            at = next_arr
+        if _is_property_value(text, at):
+            pos = at + 1
+            continue
+        try:
+            val, end = _LOOSE_DECODER.raw_decode(text, at)
+        except _NonFiniteJSON:
+            raise
+        except RecursionError:
+            raise LLMError("Model did not return valid JSON", "bad_json")
+        except ValueError:
+            pos = at + 1
+            continue
+        if isinstance(val, dict):
+            matches.append((1, end - at, val))
+            pos = end
+        elif allow_array and isinstance(val, list):
+            matches.append((0, end - at, val))
+            pos = end
+        else:
+            pos = at + 1
+    if not matches:
+        return False, None
+    matches.sort(key=lambda item: (item[0], item[1]), reverse=True)
+    return True, matches[0][2]
+
+
+def _try_candidate(candidate: str, allow_array: bool, scan: bool = False) -> Tuple[bool, Any]:
+    has_brace = ("{" in candidate) or (allow_array and "[" in candidate)
+    if not has_brace:
+        return False, None
+    ok, val = _decode_whole(candidate)
+    if ok:
+        return True, val
+    repaired = _repair_json(candidate, smart_quotes=False)
+    ok, val = _decode_whole(repaired)
+    if ok:
+        return True, val
+    has_smart = ("\u201c" in candidate) or ("\u201d" in candidate)
+    smart_repaired = _repair_json(candidate, smart_quotes=True) if has_smart else None
+    if smart_repaired is not None:
+        ok, val = _decode_whole(smart_repaired)
+        if ok:
+            return True, val
+    if scan:
+        for variant in (candidate, repaired, smart_repaired):
+            if variant is not None:
+                ok, val = _scan_top_level(variant, allow_array=allow_array)
+                if ok:
+                    return True, val
+    return False, None
+
+
+def _looks_truncated_json(cleaned: str) -> bool:
+    first_brace = cleaned.find("{")
+    if first_brace == -1 or ":" not in cleaned[first_brace:]:
+        return False
+    # Check if braces are unbalanced in repaired text
+    repaired = _repair_json(cleaned, smart_quotes=("\u201c" in cleaned or "\u201d" in cleaned))
+    depth = 0
+    in_str = False
+    i = 0
+    n = len(repaired)
+    saw_open = False
+    while i < n:
+        ch = repaired[i]
+        if in_str:
+            if ch == "\\":
+                i += 2
+                continue
+            if ch == '"':
+                in_str = False
+        else:
+            if ch == '"':
+                in_str = True
+            elif ch == "{":
+                depth += 1
+                saw_open = True
+            elif ch == "}":
+                depth -= 1
+        i += 1
+    return saw_open and (depth > 0 or in_str)
+
+
+def parse_json_any(text: str, allow_array: bool = False) -> Any:
+    """Parse model or file text into a JSON value (object, or array if ``allow_array``).
+
+    Tolerates UTF-8 BOM, zero-width spaces, markdown code fences anywhere in prose,
+    ``//`` and ``/* */`` comments, trailing commas, literal newlines/tabs in strings,
+    and macOS TextEdit smart quotes. Refuses ``NaN`` and ``Infinity`` strictly.
+    """
+    # Plain linear string passes only: never catastrophic backtracking regexes.
+    cleaned = (text or "").strip(_EDGE_INVISIBLE)
+    if not cleaned or (("{" not in cleaned) and not (allow_array and "[" in cleaned)):
+        raise LLMError("Model did not return valid JSON", "bad_json")
+    try:
+        # 1. Whole text directly (or repaired whole text if there are no fences)
+        ok, val = _decode_whole(cleaned)
+        if ok:
+            return val
+
+        # 2. Outer fence wrapper (handles single-line fences containing inner triple backticks)
+        outer = _strip_outer_fence(cleaned)
+        if outer is not None:
+            ok, val = _try_candidate(outer, allow_array=allow_array, scan=True)
+            if ok:
+                return val
+
+        # 3. Markdown fenced blocks anywhere in the text (json-tagged blocks tried first)
+        fenced = _extract_fenced_blocks(cleaned)
+        if fenced:
+            ordered = [b for is_j, b in fenced if is_j] + [b for is_j, b in fenced if not is_j]
+            for block in ordered:
+                ok, val = _try_candidate(block, allow_array=allow_array, scan=True)
+                if ok:
+                    return val
+
+        # 4. Whole text repair + top-level raw_decode scan across prose
+        ok, val = _try_candidate(cleaned, allow_array=allow_array, scan=True)
+        if ok:
+            return val
+    except _NonFiniteJSON:
+        raise LLMError("Model did not return valid JSON", "bad_json")
+
+    if _looks_truncated_json(cleaned):
+        raise LLMError(
+            "The pasted JSON looks incomplete (cut off before the closing '}'). Copy the full reply again, or choose the .json file directly.",
+            "bad_json",
+            "粘贴的 JSON 似乎没有复制完整（结尾缺少闭合括号）。请回到 ChatGPT 重新完整复制，或直接点「选择 .json 文件」导入。",
+        )
+    raise LLMError("Model did not return valid JSON", "bad_json")
+
+
 def parse_json_text(text: str) -> Dict[str, Any]:
     """Parse model text as a JSON object, tolerating ```json fences and stray prose.
 
     ``NaN`` and ``Infinity`` are refused like any other invalid JSON (see ``loads_strict``).
     """
-    # Plain string work on purpose. A pattern did this before, and on a reply that was mostly white space
-    # its running time grew with the square of the length: 128,000 spaces held the server for 18 seconds.
-    cleaned = (text or "").strip()
-    if cleaned.startswith("```"):
-        cleaned = cleaned[3:]
-        if cleaned[:4].lower() == "json":
-            cleaned = cleaned[4:]
-        cleaned = cleaned.lstrip()
-    if cleaned.endswith("```"):
-        cleaned = cleaned[:-3].rstrip()
-    try:
-        value = loads_strict(cleaned)
-    except ValueError:
-        start, end = cleaned.find("{"), cleaned.rfind("}")
-        if start == -1 or end <= start:
-            raise LLMError("Model did not return valid JSON", "bad_json")
-        try:
-            value = loads_strict(cleaned[start:end + 1])
-        except ValueError:
-            raise LLMError("Model did not return valid JSON", "bad_json")
+    value = parse_json_any(text, allow_array=False)
     if not isinstance(value, dict):
         raise LLMError("Model returned JSON that is not an object", "bad_json")
     return value
+
+
+def parse_manual_reply(text: str, task: str) -> Dict[str, Any]:
+    """Parse a manually pasted or imported JSON reply for ``task``, wrapping top-level arrays of items."""
+    key = _ARRAY_TASK_KEYS.get(task)
+    value = parse_json_any(text, allow_array=bool(key))
+    if isinstance(value, dict):
+        return value
+    if key and isinstance(value, list) and any(isinstance(item, dict) for item in value):
+        return {key: value}
+    raise LLMError(
+        "Model returned JSON that is not an object",
+        "bad_json",
+        "粘贴的 JSON 不是对象格式（最外层应为 { ... }），请确认复制了完整回复。",
+    )
 
 
 def complete_json(provider: str, api_key: str, model: str, system: str, user: str,

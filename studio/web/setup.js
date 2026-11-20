@@ -616,6 +616,7 @@ async function paintStepVoice(el, s) {
   else if (!s.material.organic) action = `<p class="hint">${esc(t('vo_need_material'))}</p>`;
   else if (!s.ai.configured) {
     action = `<p class="hint">${esc(t('vo_need_ai'))}</p><div class="row"><button class="btn primary" id="vo-manual">${esc(t('vo_use_manual'))}</button>
+      <button class="btn" id="vo-import-json">${esc(t('vo_import_json'))}</button>
       <a class="btn" href="#/settings">${esc(t('vo_other_ai'))}</a></div>`;
   } else {
     const active = s.voice.state === 'active';
@@ -623,6 +624,7 @@ async function paintStepVoice(el, s) {
         ${s.voice.new_since ? esc(tf('vo_new_since', { n: s.voice.new_since })) : ''} <a href="#/voice">${esc(t('vo_open'))}</a></p>` : '';
     action = `${status}<p class="hint">${esc(t('vo_sends'))}</p>
       <div class="row"><button class="btn ${active ? '' : 'primary big'}" id="vo-propose">${esc(t(active ? 'vo_again' : 'vo_propose'))}</button>
+        <button class="btn ${active ? '' : 'big'}" id="vo-import-json">${esc(t('vo_import_json'))}</button>
         ${active ? `<button class="btn primary big" id="vo-next">${esc(t('st_continue'))}</button>` : ''}</div>`;
   }
   el.innerHTML = measured + action;
@@ -645,6 +647,12 @@ async function paintStepVoice(el, s) {
     if (!(await aiRun('voice', {}))) return;
     await renderSetup('voice');
   }));
+  on('vo-import-json', async () => {
+    try {
+      if (!(await manualBridge('voice', {}, { replyOnly: true, title: t('mb_import_voice_title'), intro: t('mb_import_voice_intro') }))) return;
+      await renderSetup('voice');
+    } catch (err) { showError(err); }
+  });
   on('vo-next', () => renderSetup('script'));
   on('rv-approve', (e) => busy(e.currentTarget, e.currentTarget.textContent, async () => {
     /* What the server needs (POST /api/voice/approve): `created_at`, which names the proposal on this screen, so
@@ -680,7 +688,16 @@ async function paintStepVoice(el, s) {
 function paintStepScript(el, s) {
   el.innerHTML = `${s.voice.state === 'active' ? '' : `<div class="banner">${esc(t('sc_need_voice'))}</div>`}
     <p>${esc(t('sc_intro'))}</p>${s.first_script.done ? `<p class="hint">${esc(tf('sc_done', { n: s.first_script.count }))}</p>` : ''}
-    <div class="row" style="margin-top:14px"><a class="btn primary big" href="#/new">${esc(t('sc_go'))}</a></div>`;
+    <div class="row" style="margin-top:14px"><a class="btn primary big" href="#/new">${esc(t('sc_go'))}</a>
+      <button type="button" class="btn big" id="sc-import-json">${esc(t('import_script_json'))}</button></div>`;
+  const $imp = document.getElementById('sc-import-json');
+  if ($imp) $imp.onclick = async () => {
+    try {
+      const script = await manualBridge('draft', { lang, notes: '', target_sec: 60, video_format: 'VLOG_VOICEOVER', keywords: [] },
+        { replyOnly: true, title: t('mb_import_script_title'), intro: t('mb_import_script_intro') });
+      if (script && script.id) location.hash = '#/s/' + script.id;
+    } catch (err) { showError(err); }
+  };
 }
 
 /* ---------- step 5: keeps learning ---------- */

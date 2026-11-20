@@ -59,6 +59,15 @@ Object.assign(I18N.zh, {
   mb_step1: '第一步：复制提示词，发给 ChatGPT', mb_copy: '复制提示词', mb_open: '打开 ChatGPT ↗', mb_size: '共 {n} 个字符',
   mb_step2: '第二步：把 ChatGPT 的完整回复粘贴到这里', mb_reply_ph: '粘贴回复（一段 JSON）',
   mb_done: '完成', mb_cancel: '取消', mb_copied: '已复制', mb_copy_failed: '复制失败，请点一下提示词，全选后手动复制',
+  mb_choose_file: '选择 .json 文件', mb_drop_hint: '也可以直接把 .json 文件拖进来，或粘贴完整回复',
+  mb_reply_only_label: '选择 ChatGPT 生成的 .json 文件，或把回复粘贴到这里',
+  mb_empty_reply: '请先粘贴回复内容，或选择一个 .json 文件。',
+  mb_file_read_failed: '这个文件无法读取，请确认它是 .json 或文本文件。',
+  mb_import_voice_title: '导入声音档案 JSON',
+  mb_import_voice_intro: '如果 ChatGPT 已经生成了声音档案（.json 文件或一段 JSON 回复），直接在这里选择文件或粘贴，工作台会逐条核对你的素材后再让你确认。',
+  mb_import_script_title: '导入脚本 JSON',
+  mb_import_script_intro: '如果 ChatGPT 已经生成了脚本（.json 文件或一段 JSON 回复），直接在这里选择文件或粘贴就能导入编辑器。',
+  vo_import_json: '导入 JSON 回复',
   mcp_title: '进阶：让 ChatGPT / Codex 直接使用工作台（MCP）',
   mcp_explain: '把下面的配置加到支持 MCP 的 AI 应用里，它就能直接读取你的个人资料和声音档案、写脚本、检查并保存到这里。具体步骤见项目的 README。',
   exp_kit: '剪映素材包', exp_kit_d: '字幕、花字、口播文稿、拍摄清单，一次打包',
@@ -83,6 +92,15 @@ Object.assign(I18N.en, {
   mb_step1: 'Step 1: copy the prompt and send it to ChatGPT', mb_copy: 'Copy prompt', mb_open: 'Open ChatGPT ↗', mb_size: '{n} characters',
   mb_step2: 'Step 2: paste ChatGPT\'s full reply here', mb_reply_ph: 'Paste the reply (a block of JSON)',
   mb_done: 'Done', mb_cancel: 'Cancel', mb_copied: 'Copied', mb_copy_failed: 'Copy failed. Click the prompt, select all and copy by hand.',
+  mb_choose_file: 'Choose .json file', mb_drop_hint: 'Or drag a .json file here, or paste the full reply',
+  mb_reply_only_label: 'Choose the .json file from ChatGPT, or paste the reply here',
+  mb_empty_reply: 'Paste the reply or choose a .json file first.',
+  mb_file_read_failed: 'Could not read that file. Make sure it is a .json or text file.',
+  mb_import_voice_title: 'Import Voice DNA JSON',
+  mb_import_voice_intro: 'If ChatGPT already created a voice profile (.json file or JSON reply), choose the file or paste it here. Every claim will still be checked against {@names} material before taking effect.',
+  mb_import_script_title: 'Import script JSON',
+  mb_import_script_intro: 'If ChatGPT already created a script (.json file or JSON reply), choose the file or paste it here to open it in the editor.',
+  vo_import_json: 'Import JSON reply',
   mcp_title: 'Advanced: let ChatGPT / Codex use the studio directly (MCP)',
   mcp_explain: 'Add this configuration to an AI app that supports MCP and it can read the creator profile and {@names} voice profile, write scripts, check them and save them here. See the project README for steps.',
   exp_kit: 'CapCut / Jianying kit', exp_kit_d: 'Subtitles, on-screen text, voiceover text and shot list in one zip',
@@ -211,44 +229,110 @@ async function copyText(text, fallbackEl) {
 }
 
 /* `options` (all optional): `title` and `intro` replace the dialog's own; `skip` is the label of a third button,
-   which resolves with { skipped: true } for a step the creator may leave out. */
+   which resolves with { skipped: true } for a step the creator may leave out; `replyOnly` skips generating a new
+   prompt when the creator already has the .json file or reply from ChatGPT. */
 async function manualBridge(task, payload, options) {
   const o = options || {};
-  const { prompt, brief_id: briefId } = await api('POST', '/api/manual/prompt', Object.assign({ task }, payload));
+  let prompt = '';
+  let briefId = null;
+  if (!o.replyOnly) {
+    const built = await api('POST', '/api/manual/prompt', Object.assign({ task }, payload));
+    prompt = built.prompt;
+    briefId = built.brief_id || null;
+  }
   const $modal = document.getElementById('modal');
   return new Promise((resolve) => {
-    $modal.innerHTML = `<div class="sheet" role="dialog" aria-modal="true">
-      <h2>${esc(o.title || t('mb_title'))}</h2>
-      <p class="hint">${esc(o.intro || t(task === 'trends' ? 'mb_intro_trends' : 'mb_intro'))}</p>
+    const step1Html = o.replyOnly ? '' : `
       <label class="field" for="mb-prompt">${esc(t('mb_step1'))}</label>
       <textarea id="mb-prompt" class="mono" rows="5" readonly></textarea>
       <div class="row" style="margin-top:8px">
-        <button class="btn primary" id="mb-copy">${esc(t('mb_copy'))}</button>
+        <button type="button" class="btn primary" id="mb-copy">${esc(t('mb_copy'))}</button>
         <a class="btn" href="https://chatgpt.com/" target="_blank" rel="noopener">${esc(t('mb_open'))}</a>
-        <span class="meta">${esc(tf('mb_size', { n: prompt.length.toLocaleString() }))}</span></div>
-      <label class="field" for="mb-reply">${esc(t('mb_step2'))}</label>
+        <span class="meta">${esc(tf('mb_size', { n: prompt.length.toLocaleString() }))}</span></div>`;
+    $modal.innerHTML = `<div class="sheet" role="dialog" aria-modal="true">
+      <h2>${esc(o.title || t('mb_title'))}</h2>
+      <p class="hint">${esc(o.intro || t(task === 'trends' ? 'mb_intro_trends' : 'mb_intro'))}</p>${step1Html}
+      <label class="field" for="mb-reply">${esc(t(o.replyOnly ? 'mb_reply_only_label' : 'mb_step2'))}</label>
+      <div class="row" style="margin-bottom:8px">
+        <label class="btn" for="mb-file" id="mb-file-btn">${esc(t('mb_choose_file'))}</label>
+        <input type="file" id="mb-file" accept=".json,.txt,.md,application/json,text/plain" hidden>
+        <span class="tag ok" id="mb-file-name" hidden style="margin:0"></span>
+        <span class="hint" style="margin:0">${esc(t('mb_drop_hint'))}</span></div>
       <textarea id="mb-reply" class="mono" rows="6" placeholder="${esc(t('mb_reply_ph'))}"></textarea>
+      <div class="banner danger" id="mb-err" role="alert" hidden></div>
       <div class="row" style="margin-top:14px">
-        <button class="btn primary big" id="mb-done">${esc(t('mb_done'))}</button>
-        ${o.skip ? `<button class="btn" id="mb-skip">${esc(o.skip)}</button>` : ''}
-        <button class="btn" id="mb-cancel">${esc(t('mb_cancel'))}</button></div>
+        <button type="button" class="btn primary big" id="mb-done">${esc(t('mb_done'))}</button>
+        ${o.skip ? `<button type="button" class="btn" id="mb-skip">${esc(o.skip)}</button>` : ''}
+        <button type="button" class="btn" id="mb-cancel">${esc(t('mb_cancel'))}</button></div>
     </div>`;
     $modal.hidden = false;
-    const $prompt = document.getElementById('mb-prompt');
-    $prompt.value = prompt;
-    const close = (value) => { $modal.hidden = true; $modal.innerHTML = ''; resolve(value); };
-    document.getElementById('mb-copy').onclick = async () => {
-      toast(t((await copyText(prompt, $prompt)) ? 'mb_copied' : 'mb_copy_failed'));
+    const $sheet = $modal.querySelector('.sheet');
+    const $reply = document.getElementById('mb-reply');
+    const $file = document.getElementById('mb-file');
+    const $fileName = document.getElementById('mb-file-name');
+    const $err = document.getElementById('mb-err');
+    const $done = document.getElementById('mb-done');
+    const setErr = (msg) => {
+      if (msg) { $err.textContent = msg; $err.hidden = false; }
+      else { $err.textContent = ''; $err.hidden = true; }
     };
+    const loadReplyFile = async (file) => {
+      if (!file) return;
+      try {
+        const content = await readTextFile(file);
+        $reply.value = content;
+        $fileName.textContent = file.name;
+        $fileName.hidden = false;
+        setErr('');
+        $done.disabled = false;
+      } catch (e) {
+        setErr(t('mb_file_read_failed'));
+        toast(t('mb_file_read_failed'));
+      }
+    };
+    if (!o.replyOnly) {
+      const $prompt = document.getElementById('mb-prompt');
+      $prompt.value = prompt;
+      document.getElementById('mb-copy').onclick = async () => {
+        toast(t((await copyText(prompt, $prompt)) ? 'mb_copied' : 'mb_copy_failed'));
+      };
+    } else {
+      $reply.focus();
+    }
+    $file.onchange = (e) => {
+      if (e.target.files && e.target.files[0]) loadReplyFile(e.target.files[0]);
+    };
+    $sheet.addEventListener('dragenter', (e) => { e.preventDefault(); $sheet.classList.add('drop-active'); });
+    $sheet.addEventListener('dragover', (e) => { e.preventDefault(); $sheet.classList.add('drop-active'); });
+    $sheet.addEventListener('dragleave', (e) => {
+      if (!$sheet.contains(e.relatedTarget)) $sheet.classList.remove('drop-active');
+    });
+    $sheet.addEventListener('drop', (e) => {
+      e.preventDefault();
+      $sheet.classList.remove('drop-active');
+      if (e.dataTransfer && e.dataTransfer.files && e.dataTransfer.files[0]) loadReplyFile(e.dataTransfer.files[0]);
+    });
+    $reply.oninput = () => { setErr(''); $done.disabled = false; };
+    const close = (value) => { $modal.hidden = true; $modal.innerHTML = ''; resolve(value); };
     document.getElementById('mb-cancel').onclick = () => close(undefined);
     if (o.skip) document.getElementById('mb-skip').onclick = () => close({ skipped: true });
-    document.getElementById('mb-done').onclick = async (e) => {
+    $done.onclick = async (e) => {
+      const reply = $reply.value;
+      if (!reply.trim()) {
+        setErr(t('mb_empty_reply'));
+        toast(t('mb_empty_reply'));
+        return;
+      }
       const btn = e.currentTarget;
       btn.disabled = true;
+      setErr('');
       try {
-        const reply = document.getElementById('mb-reply').value;
         close(await api('POST', '/api/manual/reply', Object.assign({ task, reply }, payload, briefId ? { brief_id: briefId } : {})));
-      } catch (err) { showError(err); btn.disabled = false; }
+      } catch (err) {
+        setErr(errorMessage(err));
+        showError(err);
+        btn.disabled = false;
+      }
     };
   });
 }
@@ -505,6 +589,7 @@ async function paintVoiceActions(dna, isExample) {
       <p class="hint">${esc(t('rate_hint'))}</p></div>`;
   el.innerHTML = `${rateBox}
     <div class="row"><button class="btn primary big" id="learn" ${ready ? '' : 'disabled'}>${esc(t(isExample ? 'learn_btn' : 'learn_again'))}</button>
+      ${appState.sample_count > 0 ? `<button class="btn big" id="learn-import-json">${esc(t('vo_import_json'))}</button>` : ''}
       ${!isExample && source.organic_scripts_analyzed ? `<span class="meta">${esc(tf('learn_source', { n: source.organic_scripts_analyzed }))} · ${esc(source.learned_at || '')}</span>` : ''}</div>
     ${hint ? `<p class="hint">${hint}</p>` : ''}<div id="voice-history"></div>`;
   document.getElementById('learn').onclick = (e) => busy(e.currentTarget, appState.settings.manual ? e.currentTarget.textContent : t('learning'), async () => {
@@ -512,6 +597,14 @@ async function paintVoiceActions(dna, isExample) {
     setupUi.open = 'voice';        // the result is a proposal: review it item by item before it takes effect
     location.hash = '#/start';
   });
+  const $impJson = document.getElementById('learn-import-json');
+  if ($impJson) $impJson.onclick = async () => {
+    try {
+      if (!(await manualBridge('voice', {}, { replyOnly: true, title: t('mb_import_voice_title'), intro: t('mb_import_voice_intro') }))) return;
+      setupUi.open = 'voice';
+      location.hash = '#/start';
+    } catch (err) { showError(err); }
+  };
   const $save = document.getElementById('rate-save');
   if ($save) $save.onclick = async () => {
     try {

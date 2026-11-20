@@ -110,7 +110,7 @@ const I18N = {
     new_title: '写新脚本', new_sub: '把想法随手写下来，中文英文都可以。',
     notes: '想拍什么？', notes_ph: '例如：周日去 Trader Joe\'s 补货，又忍不住拿了四盒小笼包，外面风特别大……',
     duration: '视频时长', format: '视频形式',
-    ai_write: '✨ AI 帮我写初稿', self_write: '我自己写', writing: '正在写，大约半分钟…', back: '← 返回',
+    ai_write: '✨ AI 帮我写初稿', self_write: '我自己写', import_script_json: '导入脚本 JSON', writing: '正在写，大约半分钟…', back: '← 返回',
     example_voice: '现在用的是示例声音档案，不是你本人的说话习惯，AI 初稿会不像你。',
     fmt_VLOG_VOICEOVER: '日常 Vlog 旁白', fmt_COUPLE_VLOG: '双人日常', fmt_COUPLE_VLOG_partner: '和{@partner}的日常',
     fmt_FAVORITES_ROUNDUP: '好物合集', fmt_SINGLE_PRODUCT_SHARE: '单品分享',
@@ -153,7 +153,7 @@ const I18N = {
     new_title: 'New script', new_sub: 'Jot down the idea in Chinese or English.',
     notes: 'What is the video about?', notes_ph: 'e.g. Sunday Trader Joe\'s run, came home with four boxes of soup dumplings again, freezing wind outside…',
     duration: 'Length', format: 'Format',
-    ai_write: '✨ Draft with AI', self_write: 'Write it myself', writing: 'Writing, about half a minute…', back: '← Back',
+    ai_write: '✨ Draft with AI', self_write: 'Write it myself', import_script_json: 'Import script JSON', writing: 'Writing, about half a minute…', back: '← Back',
     example_voice: 'This is the bundled example voice profile, not {@names} real speech habits, so AI drafts will not sound like {@them}.',
     fmt_VLOG_VOICEOVER: 'Daily vlog voiceover', fmt_COUPLE_VLOG: 'Two-person vlog', fmt_COUPLE_VLOG_partner: 'Vlog with {@partner}',
     fmt_FAVORITES_ROUNDUP: 'Favorites roundup', fmt_SINGLE_PRODUCT_SHARE: 'Single product',
@@ -348,15 +348,23 @@ async function api(method, path, body, extraOpts) {
   return data;
 }
 
-function showError(e) {
+function errorMessage(e) {
+  if (!e) return t('err_default');
   if (e.code === 'ai_failed') {
+    if (e.message_zh) return lang === 'zh' ? e.message_zh : (e.detail || t('err_default'));
     const key = 'ai_' + e.reason;
     const known = I18N[lang][key] !== undefined;
     const detail = (!known || e.reason === 'http' || e.reason === 'other') ? (e.detail || '') : '';
-    return toast(t(known ? key : 'ai_other') + detail);
+    return t(known ? key : 'ai_other') + detail;
   }
   const key = 'err_' + e.code;
-  toast(I18N[lang][key] ? t(key) : t('err_default'));
+  if (I18N[lang][key]) return t(key);
+  if (e.message_zh) return lang === 'zh' ? e.message_zh : (e.detail || t('err_default'));
+  return t('err_default');
+}
+
+function showError(e) {
+  toast(errorMessage(e));
 }
 
 /* Must match studio/textstats.py: 1 CJK char, 1 English word or 1 digit = 1 unit; [cues] are not spoken. */
@@ -477,6 +485,7 @@ function renderNew() {
     <div class="row" style="margin-top:28px">
       <button class="btn primary big" id="ai-btn" ${configured ? '' : 'disabled'}>${esc(t(appState.settings.manual ? 'ai_write_manual' : 'ai_write'))}</button>
       <button class="btn big" id="self-btn">${esc(t('self_write'))}</button>
+      <button class="btn big" id="import-script-json">${esc(t('import_script_json'))}</button>
     </div></div>`;
   const $notes = document.getElementById('notes');
   $notes.oninput = () => { draft.notes = $notes.value; autoGrow($notes); };
@@ -497,6 +506,15 @@ function renderNew() {
   };
   document.getElementById('ai-btn').onclick = (e) => create(true, e.currentTarget);
   document.getElementById('self-btn').onclick = (e) => create(false, e.currentTarget);
+  document.getElementById('import-script-json').onclick = async () => {
+    try {
+      const script = await manualBridge('draft', Object.assign({ lang }, draft),
+        { replyOnly: true, title: t('mb_import_script_title'), intro: t('mb_import_script_intro') });
+      if (!script) return;
+      draft.notes = ''; draft.keywords = [];
+      location.hash = '#/s/' + script.id;
+    } catch (e) { showError(e); }
+  };
 }
 
 /* ---------- script workspace ---------- */
