@@ -137,7 +137,7 @@ class LocalProviderTest(unittest.TestCase):
                     return self._reply(404, {"error": {"message": "model 'missing' not found"}})
                 self._reply(200, {"choices": [{"message": {"content": '```json\n{"ok": "好"}\n```'}}]})
 
-        httpd = HTTPServer(("127.0.0.1", 0), Compat)
+        httpd = server.StudioServer(("127.0.0.1", 0), Compat)
         threading.Thread(target=httpd.serve_forever, daemon=True).start()
         base = "http://127.0.0.1:%d/v1" % httpd.server_address[1]
         try:

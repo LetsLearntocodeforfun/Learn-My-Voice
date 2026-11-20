@@ -41,7 +41,7 @@ def _start_stub(handler_fn):
         def log_message(self, *args):
             pass
 
-    srv = http.server.ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+    srv = server.StudioServer(("127.0.0.1", 0), Handler)
     threading.Thread(target=srv.serve_forever, daemon=True).start()
     return srv, "http://127.0.0.1:%d" % srv.server_address[1], seen
 

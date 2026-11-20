@@ -350,7 +350,7 @@ class VideoIngestServerTest(unittest.TestCase):
                 self.end_headers()
                 self.wfile.write(reply)
 
-        upstream = ThreadingHTTPServer(("127.0.0.1", 0), MultipartEcho)
+        upstream = server.StudioServer(("127.0.0.1", 0), MultipartEcho)
         up_thread = threading.Thread(target=upstream.serve_forever, kwargs={"poll_interval": 0.01}, daemon=True)
         up_thread.start()
         self.addCleanup(lambda: (upstream.shutdown(), upstream.server_close(), up_thread.join(5)))

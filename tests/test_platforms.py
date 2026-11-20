@@ -187,6 +187,16 @@ class PortTakenTest(unittest.TestCase):
                 stand_in.server_bind()
             self.assertEqual(asked, [])
 
+    def test_server_bind_never_calls_getfqdn(self):
+        # On macOS VMs with Python 3.14+, socket.getfqdn("127.0.0.1") can block for 30+ seconds in mDNS.
+        with mock.patch.object(server.socket, "getfqdn", side_effect=AssertionError("getfqdn should not be called")):
+            srv = server.StudioServer(("127.0.0.1", 0), server.Handler)
+            try:
+                self.assertEqual(srv.server_name, "127.0.0.1")
+                self.assertGreater(srv.server_port, 0)
+            finally:
+                srv.server_close()
+
 
 if __name__ == "__main__":
     unittest.main()

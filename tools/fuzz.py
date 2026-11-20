@@ -1246,7 +1246,7 @@ class _ModelServer(BaseHTTPRequestHandler):
 def model_base(env: "Env", said: Dict[str, Any]) -> str:
     """The address of the stand-in model server, started when first asked for. It is on this computer only."""
     if env.listener is None:
-        env.listener = ThreadingHTTPServer(("127.0.0.1", 0), _ModelServer)
+        env.listener = server.StudioServer(("127.0.0.1", 0), _ModelServer)
         env.listener.daemon_threads = True
         threading.Thread(target=env.listener.serve_forever, kwargs={"poll_interval": 0.05}, daemon=True).start()
     env.listener.said = said

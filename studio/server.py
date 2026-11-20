@@ -42,6 +42,7 @@ import re
 import secrets
 import shutil
 import socket
+import socketserver
 import sys
 import threading
 import time
@@ -49,7 +50,7 @@ import traceback
 import urllib.parse
 import uuid
 import webbrowser
-from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from http.server import BaseHTTPRequestHandler, HTTPServer, ThreadingHTTPServer
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
@@ -1895,7 +1896,13 @@ class StudioServer(ThreadingHTTPServer):
         exclusive = getattr(socket, "SO_EXCLUSIVEADDRUSE", None)        # Windows only
         if os.name == "nt" and exclusive is not None:
             self.socket.setsockopt(socket.SOL_SOCKET, exclusive, 1)
-        super().server_bind()
+        if ThreadingHTTPServer.server_bind is not HTTPServer.server_bind:
+            super().server_bind()
+            return
+        socketserver.TCPServer.server_bind(self)
+        host, port = self.server_address[:2]
+        self.server_name = str(host or "127.0.0.1")
+        self.server_port = int(port)
 
     def server_close(self) -> None:
         # Also reached from the constructor when the port is taken, before ``app`` exists.

@@ -229,7 +229,7 @@ class StudioCase(unittest.TestCase):
 
             do_GET = do_POST = _any
 
-        listener = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+        listener = server.StudioServer(("127.0.0.1", 0), Handler)
         listener.daemon_threads = True
         threading.Thread(target=listener.serve_forever, kwargs={"poll_interval": 0.02}, daemon=True).start()
         self.listeners.append(listener)

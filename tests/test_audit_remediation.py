@@ -356,7 +356,7 @@ class LlmRedirectAndValidationTest(TempStoreCase):
             def log_message(self, *args):
                 pass
 
-        canary = http.server.ThreadingHTTPServer(("127.0.0.1", 0), CanaryHandler)
+        canary = server.StudioServer(("127.0.0.1", 0), CanaryHandler)
         canary_port = canary.server_address[1]
         t_canary = threading.Thread(target=canary.serve_forever, daemon=True)
         t_canary.start()
@@ -377,7 +377,7 @@ class LlmRedirectAndValidationTest(TempStoreCase):
             def log_message(self, *args):
                 pass
 
-        redirector = http.server.ThreadingHTTPServer(("127.0.0.1", 0), RedirectHandler)
+        redirector = server.StudioServer(("127.0.0.1", 0), RedirectHandler)
         redir_port = redirector.server_address[1]
         t_redir = threading.Thread(target=redirector.serve_forever, daemon=True)
         t_redir.start()
