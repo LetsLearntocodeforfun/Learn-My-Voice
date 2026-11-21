@@ -1995,6 +1995,8 @@ def _sponsoring(work: Any) -> Any:
         return work()
     except sponsored.SponsorError as exc:
         raise ApiError(exc.status, exc.code, exc.message, exc.message_zh, extra=exc.extra)
+    except TextTooLong as exc:
+        raise ApiError(413, exc.code, exc.message, exc.message_zh, extra={"limit": exc.limit})
 
 
 _SUGGEST_REFUSALS = {

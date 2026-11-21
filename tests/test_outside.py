@@ -606,8 +606,8 @@ class PageTest(unittest.TestCase):
                 self.assertEqual(re.findall(r"(?<![\w.$])%s\s*\(" % box, code), [], "%s uses %s()" % (name, box))
                 self.assertEqual(re.findall(r"window\.%s\s*\(" % box, code), [], "%s uses window.%s()" % (name, box))
         asked = sum(len(re.findall(r"await askConfirm\(", source)) for source in self.sources.values())
-        self.assertEqual(asked, 8)                                                      # the six deletion/refresh prompts plus voice history and backup restore
-        for name in ("app.js", "pages.js", "setup.js", "backup.js"):                    # every deletion/overwrite starts with the focus on Cancel
+        self.assertEqual(asked, 11)                                                     # plus the two brief-deletion prompts and the re-draft prompt in sponsored.js
+        for name in ("app.js", "pages.js", "setup.js", "backup.js", "sponsored.js"):    # every deletion/overwrite starts with the focus on Cancel
             for call in re.findall(r"await askConfirm\((.*?)\)\)\)", self.sources[name]):
                 self.assertIn("danger: true", call, name)
 

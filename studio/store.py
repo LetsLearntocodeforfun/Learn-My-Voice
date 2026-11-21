@@ -2147,4 +2147,5 @@ class Store:
         is not in a backup made afterwards either. A backup made while the brief was kept still holds it.
         """
         with self._sponsor_db() as db:
+            db.execute("DELETE FROM briefs WHERE kind = 'sponsor_draft' AND fingerprint = ?", (brief_id,))
             return db.execute("DELETE FROM sponsor_briefs WHERE id = ?", (brief_id,)).rowcount > 0

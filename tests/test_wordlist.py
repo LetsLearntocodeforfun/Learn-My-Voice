@@ -884,13 +884,16 @@ class EveryCallerTest(StoreCase):
             if self.calls_of(source, "load_lexicon"):
                 loaders[path.name] = len(self.calls_of(source, "load_lexicon"))
         # Who checks text. A new caller has to be added here, with the list it reads.
-        self.assertEqual(sorted(callers), ["checks.py", "creator.py", "guardrails.py", "trends.py", "wordlist.py"])
+        self.assertEqual(sorted(callers), ["checks.py", "creator.py", "guardrails.py", "sponsored.py", "trends.py", "wordlist.py"])
         for name, calls in callers.items():
             self.assertEqual(len(calls), 1, name)
             self.assertIn("lexicon=", calls[0], name)                             # none leaves the choice of list to the default
         self.assertIn("lexicon=lexicon", callers["checks.py"][0])                 # wordlist.effective(store), two lines above
         self.assertIn("lexicon={}", callers["creator.py"][0])                     # only the creator's never-say phrases: no word list at all
+        self.assertIn("lexicon=self.reduced", callers["sponsored.py"][0])         # wordlist.effective(store), compliance + own_phrases
         self.assertIn('lexicon={"own_phrases": [phrase]}', callers["wordlist.py"][0])   # asks whether one new phrase could ever be found
+        sponsored_source = (ROOT / "studio" / "sponsored.py").read_text(encoding="utf-8")
+        self.assertIn("self.lexicon = wordlist.effective(store)", sponsored_source)
         checks_source = (ROOT / "studio" / "checks.py").read_text(encoding="utf-8")
         self.assertIn("lexicon = wordlist.effective(store)", checks_source)
         trends_source = (ROOT / "studio" / "trends.py").read_text(encoding="utf-8")

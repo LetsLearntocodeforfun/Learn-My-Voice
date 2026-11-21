@@ -428,8 +428,8 @@ class _Words:
     def __init__(self, store: Store) -> None:
         self.lexicon = wordlist.effective(store)
         self.who = store.load_creator()
-        reduced = {"compliance": self.lexicon.get("compliance") or [], "own_phrases": self.lexicon.get("own_phrases") or []}
-        self.rules = guardrails.compile_rules({}, lexicon=reduced)
+        self.reduced = {"compliance": self.lexicon.get("compliance") or [], "own_phrases": self.lexicon.get("own_phrases") or []}
+        self.rules = guardrails.compile_rules({}, lexicon=self.reduced)
         self.notice = wordlist.notice(self.lexicon)
 
     def findings(self, lines: List[str]) -> List[guardrails.Finding]:
@@ -440,7 +440,7 @@ class _Words:
         """
         script = {"script_lines": [{"line_no": number, "spoken_script_zh": text.translate(_CUE_BRACKETS)}
                                    for number, text in enumerate(lines, start=1) if text.strip()]}
-        found = guardrails.lint_script(script, {}, compiled=self.rules)
+        found = guardrails.lint_script(script, {}, lexicon=self.reduced, compiled=self.rules)
         return [finding for finding in found if finding.category == guardrails.COMPLIANCE_RISK]
 
     def said(self, finding: guardrails.Finding) -> Dict[str, Any]:
