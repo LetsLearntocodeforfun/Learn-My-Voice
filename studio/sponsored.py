@@ -736,7 +736,8 @@ def read(store: Store, brief_id: Any, service: Any, transport: Optional[llm.Tran
     record = _record(store, brief_id)
     named_service(store, service)
     system, user = read_prompt(store, record["id"])
-    return propose(store, record["id"], pipeline.complete(store, system, user, transport), source=SERVICE)
+    temp = llm.STAGE_TEMPERATURES["sponsored_brief"]
+    return propose(store, record["id"], pipeline.complete(store, system, user, transport, temperature=temp), source=SERVICE)
 
 
 # ---- what the pages are sent ----------------------------------------------------------------------------------
@@ -1128,7 +1129,7 @@ def generate_draft(store: Store, brief_id: Any, service: Any, transport: Optiona
     _may_draft(store, record, replace)
     system, user, basis = draft_prompt(store, record["id"], target_sec=target_sec, video_format=video_format)
     named_service(store, service)
-    result = pipeline.complete(store, system, user, transport)
+    result = pipeline.complete(store, system, user, transport, temperature=llm.STAGE_TEMPERATURES["draft"])
     return apply_draft(store, record["id"], result, target_sec=target_sec, video_format=video_format,
                        default_title=default_title, basis=basis, replace=replace)
 

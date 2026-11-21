@@ -1346,7 +1346,7 @@ def analyze_sample_sentiment_ai(store: Store, sample_id: str,
         provider, api_key, model, system, user,
         transport=transport,
         base_url=cfg.get("local_base_url") or None,
-        temperature=0.2,
+        temperature=llm.STAGE_TEMPERATURES["sentiment"],
     )
     return apply_sentiment_reply(store, sample_id, reply, source="ai")
 

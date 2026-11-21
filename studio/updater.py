@@ -120,7 +120,7 @@ _WINDOWS_DEVICES = frozenset(
 _FORBIDDEN_ZIP_PREFIXES = ("data/", "local_tools/", ".git/", ".github/", "tests/")
 _WORK_TABLES = (
     "scripts", "samples", "trends", "video_plans", "sponsor_briefs",
-    "lessons", "sample_comments", "metric_snapshots",
+    "lessons", "sample_beats", "sample_comments", "sample_sentiments", "metric_snapshots",
 )
 
 VersionPrePart = Union[Tuple[int, int], Tuple[int, str]]

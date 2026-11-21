@@ -7,7 +7,7 @@ The README's Status section says what has and has not been verified; this file s
 
 ## v0.2.0-beta (not released yet)
 
-In progress, written from the code on 16 November 2026. Release candidates are built from the branch
+In progress, written from the code on 21 November 2026. Release candidates are built from the branch
 `beta/0.2.0`. The final tag has not been made; the date goes in when it is, and "State of this release" has to
 be read again then.
 
@@ -162,13 +162,62 @@ be read again then.
 - **Bilingual Quick Start Guide.** Added step-by-step guides in English (`docs/QUICKSTART.md`) and Simplified
   Chinese (`docs/QUICKSTART.zh-CN.md`) with screenshots of the setup flow, voice review, references panel and
   CapCut / 剪映 export.
+- **Startup update checks, streaming `.sha256` downloads and cross-version data migration.** When started by a
+  person, the app can check GitHub Releases at most once every 12 hours (switchable off in Settings or via
+  `LEARN_MY_VOICE_NO_UPDATE_CHECK=1`), show a startup banner (Download, What's new, Later, Skip this version),
+  and stream exact platform installers or `.zip` packages to Downloads while verifying their published `.sha256`
+  sidecar on the fly (stating plainly that SHA-256 checks download integrity against the published file, not
+  release authenticity, and that installers are unsigned). Desktop app data persists automatically in the OS
+  application-data folder; portable `.zip` builds can unpack a verified update into a new sibling folder or
+  migrate an earlier folder's `data/` into an empty folder inside `Backups`'s lock, schema rebuild and
+  `X-Data-Epoch` gate (`local_tools/whisper` is never copied).
+- **Numbers by day, Creator Center table preview and viewer comments.** Library items now track readings by day
+  (`metric_snapshots` and `views/day`, with an optional posted date on items added by hand) and support a
+  two-step preview-then-import of `.csv`, `.tsv`, `.txt` and `.xlsx` spreadsheets via `keyword_import.read_table`
+  (separating `发布时间` from reading date, matching whole titles only, and supporting optional shares, new
+  followers, cover click rate, average watch time and completion rate). Viewer comments can be pasted—or
+  extracted into the paste box from screenshots via copy & paste or a privacy-confirmed vision AI call—with
+  leading commenter nicknames stripped and never stored, counted locally with negation-aware word lists
+  (`overall_sentiment: "not_judged"`), or summarized via XML-fenced `prompts/09_sentiment_analyzer.md`.
+- **Upcoming video planner and calendar (`#/plan`).** Creators can plan upcoming videos across list, week and
+  month calendar views (with unscheduled items, today marked and keyboard date rescheduling), edit title, notes,
+  date, duration and format in place, batch-add multiple viewer questions or saved ideas in one step, and turn
+  any plan into a linked script via Settings AI, copy & paste or an empty script (`GET /api/plans` is strictly
+  read-only and derives `SCRIPTING` / `READY` / `POSTED` from stored scripts and posted library items). Stage 6
+  (`prompts/06`) now incorporates viewer comment summaries, viewer questions, `median_views`, `save_rate_pct`
+  and unposted plans, and validates `patterns` against known video titles.
+- **Counted tone habits and 16 kHz WAV sound measurements.** On **我的声音 / Voice** and in a collapsible section
+  beside Voice Match in the editor, the studio counts particles, non-overlapping spoken vs. formal connectors,
+  reduplications, hedges/caveats, hard-sell phrases, questions and exclamations per breath alongside per-script
+  reference ranges from confirmed non-sponsored material. During video transcription, `studio/soundstats.py`
+  measures extracted 16 kHz mono WAVs (including `afconvert` extensible WAV headers, up to 10 minutes) in pure
+  Python for pauses per 100 spoken units, loudness range (dB) and autocorrelation voice pitch median/span
+  (Hz / semitones), feeding measured delivery stats into Voice DNA prompts.
+- **Sponsored brief translation and editor checklist (`#/new` → `#/sponsored`).** Creators can paste a brand's
+  collaboration brief or upload `.txt`, `.md` or `.docx` (PDFs and `.doc` refused), verify which AI service will
+  read it, and translate it via Stage 3 (`prompts/03`) or copy & paste into a bilingual plain digest, everyday
+  selling points, code-grounded requirements (quotes not found in the brief start switched off), active word-list
+  flags and story integration angles. Drafting from the chosen angle creates a permanent `SPONSORED` script
+  whose Stage 4 prompt receives only the accepted `Sponsored Plan` (never the raw brief), attaches a live
+  requirement/compliance checklist beside the editor, forces `is_sponsored=True` when marked as posted, and
+  overwrites the brief's bytes via `PRAGMA secure_delete = ON` when deleted.
+- **Anthropic Claude provider, centralized stage temperatures, Stage 1B Beat Bank and 19 MCP tools.** Added an
+  Anthropic Messages client (`provider="anthropic"` with `stop_reason` truncation/refusal handling, `8192 -> 4096`
+  `max_tokens` retry-once, model validation and `sk-ant-...` secret scrubbing), centralized `STAGE_TEMPERATURES`
+  with HTTP 400 `temperature` retry-once across Gemini, OpenAI, Anthropic and local servers, structured Stage 1B
+  `sample_beats` stored per video (shown on Library and editor References, pruned on sample text edits and fed
+  as confirmed non-sponsored `<creator_beat_examples>` into drafts), and four hardened MCP tools
+  (`get_rednote_analytics`, `get_tone_analysis`, `list_video_plans`, `add_video_plan`, bringing the total to 19).
+- **Browser tab icon.** Served `studio/web/favicon.ico` (generated alongside the desktop icons by
+  `desktop/make_icons.py`) so browsers open every page with zero 404 resource errors.
 
 **Changed**
 
 - Through MCP, `save_voice_profile` stores a proposal only, and `update_script` only revises an AI draft the
   creator has not edited.
 - A save based on an older version of a script is refused instead of replacing the newer one.
-- A draft prompt now also holds the openings of the creator's best-performing videos (see above).
+- A draft prompt now also holds the openings of the creator's best-performing videos and up to 8 confirmed
+  non-sponsored Stage 1B video beats (recorded in `basis`).
 - The message the app prints when it starts is sent at once also when its output goes to a file, and no
   longer ends the app where that output cannot show Chinese.
 - With a Gemini or OpenAI key, 找选题 now sends a web lookup to that service unless the tick for it is removed.
@@ -296,8 +345,14 @@ be read again then.
 - AI steps were tested against stand-in model replies only. Output quality with real models has not been
   evaluated.
 - Importing the exported files into 剪映 or CapCut has not been verified.
-- The MCP server was tested at protocol level, not with ChatGPT, Codex or Claude Desktop.
-- Sponsored-brief handling and a second-pass critic are designed but not built.
+- The MCP server (19 tools) was tested at protocol level, not with ChatGPT, Codex or Claude Desktop.
+- Updates, Creator Center spreadsheet preview/import, viewer comment counts/summaries/screenshot OCR, the
+  upcoming video planner, counted tone habits, 16 kHz WAV sound measurements, sponsored brief translation/drafts
+  and Stage 1B Beat Bank were exercised in headless Chrome against the real server with stand-in transports and
+  synthetic files. No real Xiaohongshu Creator Center export, real agency `.docx` brief or live cloud call to
+  `api.github.com` or `api.anthropic.com` (written from memory of vendor documentation on 21 November 2026) was
+  run in automated tests; an automatic cold-session second-pass critic after every draft is not built (the
+  creator triggers **AI read-through** in the editor when wanted).
 
 ## v0.1.1-beta (15 November 2026)
 
