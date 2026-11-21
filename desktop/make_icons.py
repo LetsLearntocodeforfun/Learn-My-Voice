@@ -6,6 +6,10 @@
 Writes into desktop/src-tauri/icons/: 32x32.png, 128x128.png, 128x128@2x.png, icon.png, icon.icns (macOS)
 and icon.ico (Windows). The files are committed; this script is how they were made and how to change them.
 
+It also writes icon.ico once more as studio/web/favicon.ico. A browser asks the app for that file by itself,
+and shows it in the tab; without it every start of the app in a browser ended in a "not found". The two are
+the same bytes, and tests/test_pages_open.py holds them to that.
+
 The icon is drawn here, by rule: a rounded square in the app's accent colour with five white bars of a sound
 wave. No picture comes from anywhere else. Standard library only: the PNG, ICO and ICNS files are written
 by hand, which is a few lines each.
@@ -19,6 +23,7 @@ from pathlib import Path
 from typing import List, Optional, Tuple
 
 OUT = Path(__file__).resolve().parent / "src-tauri" / "icons"
+IN_A_BROWSER = Path(__file__).resolve().parent.parent / "studio" / "web" / "favicon.ico"
 ACCENT = (224, 82, 63)                  # --accent in studio/web/app.css
 WHITE = (255, 255, 255)
 SUB = 4                                 # rows a pixel row is cut into; across a row the edge is worked out exactly
@@ -162,6 +167,8 @@ def main() -> int:
     for name, data in files.items():
         (OUT / name).write_bytes(data)
         print("%-16s %7d bytes" % (name, len(data)))
+    IN_A_BROWSER.write_bytes(files["icon.ico"])              # the same icon, for the tab of a browser
+    print("%-16s %7d bytes (studio/web/)" % (IN_A_BROWSER.name, len(files["icon.ico"])))
     return 0
 
 
