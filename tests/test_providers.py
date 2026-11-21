@@ -16,9 +16,11 @@ import unittest
 from pathlib import Path
 from unittest import mock
 
-from studio import llm, pipeline, server, video_ingest
+import re
+
+from studio import llm, pipeline, rednote_analytics, server, suggest, video_ingest
 from studio.jobs import JobError
-from studio.store import CLOUD_PROVIDERS, PROVIDERS, Store
+from studio.store import CLOUD_PROVIDERS, EXAMPLE_DNA_PATH, PROVIDERS, ROOT, Store
 from tests import browser
 from tests.test_hardening import loopback_only
 
@@ -372,6 +374,208 @@ class ProviderIntegrationRoutesAndUiTest(unittest.TestCase):
                 selected = page.eval_js("document.getElementById('model').value")
                 self.assertEqual(selected, "claude-sonnet-4-5")
                 self.assertEqual(page.problems, [])
+
+
+class StageTemperatureAndFallbackTest(unittest.TestCase):
+    """Task 2: per-stage temperature table aligned with prompts/, passed on all providers, with 400 retry-once."""
+
+    def test_stage_temperature_table_matches_prompt_blueprints(self) -> None:
+        prompts_dir = ROOT / "prompts"
+        expected_in_files = (
+            ("02_voice_dna_synthesizer.md", "voice", 0.2),
+            ("03_sponsored_brief_translator.md", "sponsored_brief", 0.3),
+            ("04_script_generator_normal_and_sponsored.md", "draft", 0.55),
+            ("05_de_ai_critic_and_diff_learner.md", "critic", 0.2),
+        )
+        for filename, stage_key, expected in expected_in_files:
+            text = (prompts_dir / filename).read_text(encoding="utf-8")
+            match = re.search(r"temperature\s*=\s*([0-9.]+)", text)
+            self.assertIsNotNone(match, filename)
+            self.assertEqual(float(match.group(1)), expected, filename)
+            self.assertEqual(llm.STAGE_TEMPERATURES[stage_key], expected)
+            self.assertEqual(pipeline.STAGE_TEMPERATURES[stage_key], expected)
+
+        self.assertEqual(llm.STAGE_TEMPERATURES["ideas"], 0.3)
+        self.assertEqual(llm.STAGE_TEMPERATURES["shorten"], 0.3)
+        self.assertEqual(llm.STAGE_TEMPERATURES["hooks"], 0.55)
+        self.assertEqual(llm.STAGE_TEMPERATURES["rewrite"], 0.55)
+        self.assertEqual(llm.STAGE_TEMPERATURES["sentiment"], 0.2)
+
+    def test_pipeline_and_suggest_pass_stage_temperatures_including_local_server(self) -> None:
+        tmp = Path(tempfile.mkdtemp(prefix="lmv-temps-"))
+        self.addCleanup(shutil.rmtree, str(tmp), True)
+        store = Store(tmp / "data")
+        store.update_config(lambda c: c.update(
+            provider="local", model="qwen2.5:14b", local_base_url="http://127.0.0.1:11434/v1"
+        ))
+        sample = store.create_sample(title="样本A", text="今天去超市买菜啦 / 买了两盒草莓嘛")
+        store.add_sample_comments(sample["id"], [{"text": "求链接！干皮能用吗？", "likes": 5, "is_question": True}])
+        example_dna = json.loads(EXAMPLE_DNA_PATH.read_text(encoding="utf-8"))
+
+        recorded_temps = []
+
+        def local_stand_in(method, url, headers, body):
+            self.assertEqual(url, "http://127.0.0.1:11434/v1/chat/completions")
+            recorded_temps.append(body.get("temperature"))
+            return {
+                "choices": [{
+                    "message": {
+                        "content": json.dumps({
+                            "persona_summary": example_dna["persona_summary"],
+                            "cadence_and_syntax": example_dna["cadence_and_syntax"],
+                            "anti_voice_blacklist": example_dna["anti_voice_blacklist"],
+                            "script_lines": [{"spoken_script_zh": "今天去超市买菜啦 / 顺手拿了两盒草莓嘛"}],
+                            "ideas": [{"title_zh": "周末超市第二期", "evidence_titles": ["样本A"]}],
+                            "suggestions": [{"line_no": 1, "spoken_script_zh": "今天顺路去超市买菜啦", "why_zh": "更顺口", "why_en": "Smoother"}],
+                            "overall_sentiment": "positive",
+                            "summary_zh": "好评",
+                            "summary_en": "Positive",
+                        }, ensure_ascii=False)
+                    }
+                }]
+            }
+
+        pipeline.learn_voice(store, transport=local_stand_in)
+        script = pipeline.generate_script(store, notes="买草莓", target_sec=30, video_format="VLOG_VOICEOVER", transport=local_stand_in)
+        pipeline.recommend_topics(store, transport=local_stand_in)
+        pipeline.discover(store, focus="买菜", transport=local_stand_in)
+        suggest.suggest(store, script["id"], suggest.HOOKS, 0, transport=local_stand_in)
+        suggest.suggest(store, script["id"], suggest.REWRITE, 0, transport=local_stand_in)
+        suggest.suggest(store, script["id"], suggest.SHORTEN, 0, transport=local_stand_in)
+        suggest.suggest(store, script["id"], suggest.CRITIC, transport=local_stand_in)
+        rednote_analytics.analyze_sample_sentiment_ai(store, sample["id"], transport=local_stand_in)
+
+        self.assertEqual(recorded_temps, [0.2, 0.55, 0.3, 0.3, 0.55, 0.55, 0.3, 0.2, 0.2])
+
+    def test_http_400_mentioning_temperature_retries_once_without_temperature_across_all_providers(self) -> None:
+        # 1. OpenAI reasoning model rejecting temperature
+        oai_bodies = []
+
+        def oai_transport(method, url, headers, body):
+            oai_bodies.append(dict(body))
+            if "temperature" in body:
+                raise llm.LLMError(
+                    "HTTP 400: Unsupported parameter: 'temperature' is not supported with this model.",
+                    "http",
+                )
+            return {"choices": [{"message": {"content": '{"provider": "openai"}'}}]}
+
+        self.assertEqual(
+            llm.complete_json("openai", "sk-fake-00000000", "o3-mini", "sys", "usr", oai_transport, temperature=0.55),
+            {"provider": "openai"},
+        )
+        self.assertEqual([b.get("temperature") for b in oai_bodies], [0.55, None])
+        self.assertNotIn("temperature", oai_bodies[1])
+
+        # 2. Local server rejecting temperature
+        local_bodies = []
+
+        def local_transport(method, url, headers, body):
+            local_bodies.append(dict(body))
+            if "temperature" in body:
+                raise llm.LLMError("HTTP 400: temperature is not supported for reasoning mode", "http")
+            return {"choices": [{"message": {"content": '{"provider": "local"}'}}]}
+
+        self.assertEqual(
+            llm.complete_json("local", "", "deepseek-r1", "sys", "usr", local_transport,
+                              base_url="http://127.0.0.1:11434/v1", temperature=0.3),
+            {"provider": "local"},
+        )
+        self.assertEqual([b.get("temperature") for b in local_bodies], [0.3, None])
+
+        # 3. Gemini rejecting temperature in generationConfig
+        gem_cfgs = []
+
+        def gem_transport(method, url, headers, body):
+            gem_cfgs.append(dict(body["generationConfig"]))
+            if "temperature" in body["generationConfig"]:
+                raise llm.LLMError("HTTP 400: Invalid value at 'generation_config.temperature'", "http")
+            return {"candidates": [{"content": {"parts": [{"text": '{"provider": "gemini"}'}]}}]}
+
+        self.assertEqual(
+            llm.complete_json("gemini", "AIzaSyFake0000000000", "gemini-2.5-pro", "sys", "usr", gem_transport, temperature=0.2),
+            {"provider": "gemini"},
+        )
+        self.assertEqual(gem_cfgs, [{"responseMimeType": "application/json", "temperature": 0.2},
+                                     {"responseMimeType": "application/json"}])
+
+        # 4. Anthropic rejecting temperature (and sequential max_tokens + temperature)
+        ant_bodies = []
+
+        def ant_transport(method, url, headers, body):
+            ant_bodies.append(dict(body))
+            if "temperature" in body:
+                raise llm.LLMError("HTTP 400: `temperature` may only be set to 1 when thinking is enabled", "http")
+            return {"stop_reason": "end_turn", "content": [{"type": "text", "text": '{"provider": "anthropic"}'}]}
+
+        self.assertEqual(
+            llm.complete_json("anthropic", "sk-ant-fake-0001", "claude-sonnet-4-5", "sys", "usr", ant_transport, temperature=0.55),
+            {"provider": "anthropic"},
+        )
+        self.assertEqual([b.get("temperature") for b in ant_bodies], [0.55, None])
+
+        both_bodies = []
+
+        def ant_both_transport(method, url, headers, body):
+            both_bodies.append((body.get("max_tokens"), body.get("temperature")))
+            if body.get("max_tokens") > 4096:
+                raise llm.LLMError("HTTP 400: max_tokens: 8192 > 4096", "http")
+            if "temperature" in body:
+                raise llm.LLMError("HTTP 400: temperature is not supported", "http")
+            return {"stop_reason": "end_turn", "content": [{"type": "text", "text": '{"both": true}'}]}
+
+        self.assertEqual(
+            llm.complete_json("anthropic", "sk-ant-fake-0001", "claude-3-haiku", "sys", "usr", ant_both_transport, temperature=0.2),
+            {"both": True},
+        )
+        self.assertEqual(both_bodies, [(8192, 0.2), (4096, 0.2), (4096, None)])
+
+        # 5. Never loops when the second attempt also fails with HTTP 400 mentioning temperature
+        for provider, key, model, base_url in (
+            ("openai", "sk-fake-00000000", "o3", None),
+            ("gemini", "AIzaSyFake0000000000", "gemini-2.5-pro", None),
+            ("anthropic", "sk-ant-fake-0001", "claude-sonnet-4-5", None),
+            ("local", "", "local-model", "http://127.0.0.1:11434/v1"),
+        ):
+            tries = []
+
+            def always_reject_temp(method, url, headers, body, tries=tries):
+                tries.append(1)
+                raise llm.LLMError("HTTP 400: temperature is rejected even when omitted", "http")
+
+            with self.assertRaises(llm.LLMError) as ctx:
+                llm.complete_json(provider, key, model, "sys", "usr", always_reject_temp, base_url=base_url, temperature=0.3)
+            self.assertEqual(ctx.exception.code, "http", provider)
+            self.assertEqual(len(tries), 2, provider)
+
+        # 6. End-to-end wire HTTP 400 JSON fallback over loopback local server
+        def wire_temp_reject(h):
+            body = json.loads(h.rfile_last if hasattr(h, "rfile_last") else "{}")  # unused; inspect seen[-1]
+            req = json.loads(seen[-1]["body"])
+            if "temperature" in req:
+                err = b'{"error":{"message":"Unsupported parameter: temperature"}}'
+                h.send_response(400)
+                h.send_header("Content-Type", "application/json")
+                h.send_header("Content-Length", str(len(err)))
+                h.end_headers()
+                h.wfile.write(err)
+            else:
+                ok = b'{"choices":[{"message":{"content":"{\\"wire\\":true}"}}]}'
+                h.send_response(200)
+                h.send_header("Content-Type", "application/json")
+                h.send_header("Content-Length", str(len(ok)))
+                h.end_headers()
+                h.wfile.write(ok)
+
+        srv, base, seen = _start_stub(wire_temp_reject)
+        self.addCleanup(srv.server_close)
+        self.addCleanup(srv.shutdown)
+        with loopback_only():
+            res = llm.complete_json("local", "", "qwen-reasoning", "sys", "usr", base_url=base + "/v1", temperature=0.55)
+        self.assertEqual(res, {"wire": True})
+        self.assertEqual(len(seen), 2)
+        self.assertEqual(json.loads(seen[0]["body"]).get("temperature"), 0.55)
+        self.assertNotIn("temperature", json.loads(seen[1]["body"]))
 
 
 if __name__ == "__main__":

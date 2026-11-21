@@ -48,6 +48,7 @@ STAGE2 = "02_voice_dna_synthesizer.md"
 STAGE4 = "04_script_generator_normal_and_sponsored.md"
 STAGE6 = "06_content_recommender.md"
 STAGE7 = "07_trend_researcher.md"
+STAGE_TEMPERATURES = llm.STAGE_TEMPERATURES
 VIDEO_FORMATS = ("VLOG_VOICEOVER", "COUPLE_VLOG", "FAVORITES_ROUNDUP", "SINGLE_PRODUCT_SHARE")
 
 DEFAULT_SPEAKING_RATE = 240       # used until her real rate is typed in or measured from timed material
@@ -159,7 +160,8 @@ def single_prompt(system: str, user: str) -> str:
     return "%s\n\n%s\n\n%s\n" % (system.strip(), user.strip(), MANUAL_REPLY_RULE)
 
 
-def complete(store: Store, system: str, user: str, transport: Optional[llm.Transport] = None) -> Dict[str, Any]:
+def complete(store: Store, system: str, user: str, transport: Optional[llm.Transport] = None,
+             *, temperature: Optional[float] = None) -> Dict[str, Any]:
     """Call the provider chosen in settings."""
     config = store.load_config()
     provider, model = config.get("provider") or "", config.get("model") or ""
@@ -169,7 +171,8 @@ def complete(store: Store, system: str, user: str, transport: Optional[llm.Trans
     base_url = config.get("local_base_url") or None
     if not model or (provider == "local" and not base_url) or (provider != "local" and not api_key):
         raise llm.LLMError("AI is not set up yet", "not_configured")
-    return llm.complete_json(provider, api_key, model, system, user, transport=transport, base_url=base_url)
+    return llm.complete_json(provider, api_key, model, system, user, transport=transport, base_url=base_url,
+                             temperature=temperature)
 
 
 # ---- drafting ---------------------------------------------------------------
@@ -371,7 +374,7 @@ def generate_script(store: Store, *, notes: str, target_sec: int, video_format: 
                     keywords: Any = None) -> Dict[str, Any]:
     system, user, basis = _build_draft(store, notes=notes, target_sec=target_sec, video_format=video_format,
                                        keywords=keywords)
-    result = complete(store, system, user, transport)
+    result = complete(store, system, user, transport, temperature=STAGE_TEMPERATURES["draft"])
     return apply_draft(store, result, notes=notes, target_sec=target_sec, video_format=video_format,
                        default_title=default_title, keywords=keywords, basis=basis)
 
@@ -829,7 +832,7 @@ def discard_voice(store: Store) -> bool:
 def learn_voice(store: Store, transport: Optional[llm.Transport] = None) -> Dict[str, Any]:
     """Ask the configured model for a profile and store it as a proposal (see ``propose_voice``)."""
     system, user, info = _build_voice(store)
-    return propose_voice(store, complete(store, system, user, transport), brief=info)
+    return propose_voice(store, complete(store, system, user, transport, temperature=STAGE_TEMPERATURES["voice"]), brief=info)
 
 
 def set_speaking_rate(store: Store, cpm: int) -> Dict[str, Any]:
@@ -1083,7 +1086,7 @@ def apply_ideas(store: Store, result: Dict[str, Any], focus: Any = "", lookup: A
 def recommend_topics(store: Store, idea_count: int = 6, transport: Optional[llm.Transport] = None,
                      focus: Any = "") -> Dict[str, Any]:
     system, user = ideas_prompt(store, idea_count, focus)
-    return apply_ideas(store, complete(store, system, user, transport), focus=focus)
+    return apply_ideas(store, complete(store, system, user, transport, temperature=STAGE_TEMPERATURES["ideas"]), focus=focus)
 
 
 # ---- trend research ---------------------------------------------------------
@@ -1239,7 +1242,8 @@ def discover(store: Store, focus: Any = "", transport: Optional[llm.Transport] =
     say("thinking", None)
     try:
         system, user = ideas_prompt(store, focus=focus)
-        saved = apply_ideas(store, complete(store, system, user, transport), focus=focus, lookup=record)
+        saved = apply_ideas(store, complete(store, system, user, transport, temperature=STAGE_TEMPERATURES["ideas"]),
+                            focus=focus, lookup=record)
         ideas: Dict[str, Any] = {"status": "done", "count": len(saved["ideas"])}
     except llm.LLMError as exc:
         ideas = {"status": "failed", "reason": exc.code, "message": _cut(str(exc), MAX_IDEA_TEXT_CHARS),

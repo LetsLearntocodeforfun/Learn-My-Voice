@@ -33,6 +33,21 @@ ANTHROPIC_VERSION = "2023-06-01"
 ANTHROPIC_MAX_TOKENS = 8192
 ANTHROPIC_FALLBACK_MAX_TOKENS = 4096        # older Claude models cap output at 4,096 tokens
 SEARCH_PROVIDERS = ("gemini", "openai")     # the providers whose API can search the web while answering
+
+# Per-stage temperatures matching the markdown blueprints in prompts/ so code and blueprints stay in step:
+# prompts/02 (0.2), prompts/03 (0.3), prompts/04 (0.55), prompts/05 & 08 CRITIC (0.2),
+# prompts/06 low temperature (0.3), prompts/08 HOOKS/REWRITE (0.55) & SHORTEN (0.3), prompts/09 (0.2).
+STAGE_TEMPERATURES: Dict[str, float] = {
+    "voice": 0.2,
+    "sponsored_brief": 0.3,
+    "draft": 0.55,
+    "critic": 0.2,
+    "ideas": 0.3,
+    "hooks": 0.55,
+    "rewrite": 0.55,
+    "shorten": 0.3,
+    "sentiment": 0.2,
+}
 GEMINI_API_REVISION = "2026-05-20"          # the revision of Gemini's Interactions API that ``search_json`` is written for
 DEFAULT_LOCAL_BASE = "http://127.0.0.1:11434/v1"  # Ollama's OpenAI-compatible endpoint
 _LOOPBACK_HOSTS = ("127.0.0.1", "localhost", "::1")
@@ -1055,14 +1070,24 @@ def complete_json(provider: str, api_key: str, model: str, system: str, user: st
             temp_val = max(0.0, min(1.0, float(temperature)))
     if provider == "gemini":
         safe_model = _gemini_model_segment(model)
+        gem_url = "%s/models/%s:generateContent" % (GEMINI_BASE, safe_model)
+        gem_headers = {"x-goog-api-key": api_key}
         gen_cfg: Dict[str, Any] = {"responseMimeType": "application/json"}
         if temp_val is not None:
             gen_cfg["temperature"] = temp_val
-        data = call("POST", "%s/models/%s:generateContent" % (GEMINI_BASE, safe_model), {"x-goog-api-key": api_key}, {
+        gem_body: Dict[str, Any] = {
             "systemInstruction": {"parts": [{"text": system}]},
             "contents": [{"role": "user", "parts": [{"text": user}]}],
-            "generationConfig": gen_cfg,
-        })
+            "generationConfig": dict(gen_cfg),
+        }
+        try:
+            data = call("POST", gem_url, gem_headers, gem_body)
+        except LLMError as exc:
+            if "temperature" in gen_cfg and _is_http_400_mentioning(exc, "temperature"):
+                no_temp_cfg = {k: v for k, v in gen_cfg.items() if k != "temperature"}
+                data = call("POST", gem_url, gem_headers, dict(gem_body, generationConfig=no_temp_cfg))
+            else:
+                raise
         try:
             if not isinstance(data, dict):
                 raise TypeError("response is not an object")
@@ -1076,23 +1101,36 @@ def complete_json(provider: str, api_key: str, model: str, system: str, user: st
 
     if provider == "anthropic":
         safe_model = validate_model_name(model, "anthropic")
-        req_body: Dict[str, Any] = {
-            "model": safe_model,
-            "max_tokens": ANTHROPIC_MAX_TOKENS,
-            "system": system + "\n\nReturn ONLY a single valid JSON object with no surrounding prose.",
-            "messages": [{"role": "user", "content": user}],
-        }
-        if temp_val is not None:
-            req_body["temperature"] = temp_val
         ant_headers = {"x-api-key": api_key, "anthropic-version": ANTHROPIC_VERSION}
-        try:
-            data = call("POST", ANTHROPIC_BASE + "/messages", ant_headers, dict(req_body))
-        except LLMError as exc:
-            if req_body.get("max_tokens") == ANTHROPIC_MAX_TOKENS and _is_http_400_mentioning(exc, "max_tokens"):
-                req_body = dict(req_body, max_tokens=ANTHROPIC_FALLBACK_MAX_TOKENS)
-                data = call("POST", ANTHROPIC_BASE + "/messages", ant_headers, dict(req_body))
-            else:
-                raise
+        cur_max_tokens = ANTHROPIC_MAX_TOKENS
+        cur_temp = temp_val
+        retried_tokens = False
+        retried_temp = False
+        data = None
+        for _ in range(3):
+            req_body: Dict[str, Any] = {
+                "model": safe_model,
+                "max_tokens": cur_max_tokens,
+                "system": system + "\n\nReturn ONLY a single valid JSON object with no surrounding prose.",
+                "messages": [{"role": "user", "content": user}],
+            }
+            if cur_temp is not None:
+                req_body["temperature"] = cur_temp
+            try:
+                data = call("POST", ANTHROPIC_BASE + "/messages", ant_headers, req_body)
+                break
+            except LLMError as exc:
+                adjusted = False
+                if not retried_tokens and cur_max_tokens == ANTHROPIC_MAX_TOKENS and _is_http_400_mentioning(exc, "max_tokens"):
+                    cur_max_tokens = ANTHROPIC_FALLBACK_MAX_TOKENS
+                    retried_tokens = True
+                    adjusted = True
+                if not retried_temp and cur_temp is not None and _is_http_400_mentioning(exc, "temperature"):
+                    cur_temp = None
+                    retried_temp = True
+                    adjusted = True
+                if not adjusted:
+                    raise
         if not isinstance(data, dict):
             raise LLMError("Unexpected Anthropic response shape", "bad_response",
                            "Anthropic 返回的内容格式无法识别")
@@ -1140,7 +1178,14 @@ def complete_json(provider: str, api_key: str, model: str, system: str, user: st
     }
     if temp_val is not None:
         oai_body["temperature"] = temp_val
-    data = call("POST", base + "/chat/completions", headers, oai_body)
+    try:
+        data = call("POST", base + "/chat/completions", headers, dict(oai_body))
+    except LLMError as exc:
+        if "temperature" in oai_body and _is_http_400_mentioning(exc, "temperature"):
+            no_temp_body = {k: v for k, v in oai_body.items() if k != "temperature"}
+            data = call("POST", base + "/chat/completions", headers, no_temp_body)
+        else:
+            raise
     try:
         if not isinstance(data, dict):
             raise TypeError("response is not an object")

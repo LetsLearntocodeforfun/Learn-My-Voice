@@ -539,4 +539,6 @@ def suggest(store: Store, script_id: Any, kind: Any, line_index: Any = None, ins
             transport: Optional[llm.Transport] = None) -> Dict[str, Any]:
     """Ask the AI service in settings for proposals and return them checked (``apply_suggest``)."""
     system, user = suggest_prompt(store, script_id, kind, line_index, instruction)
-    return apply_suggest(store, pipeline.complete(store, system, user, transport), script_id, kind, line_index)
+    temp = llm.STAGE_TEMPERATURES.get(str(kind))
+    return apply_suggest(store, pipeline.complete(store, system, user, transport, temperature=temp),
+                         script_id, kind, line_index)
