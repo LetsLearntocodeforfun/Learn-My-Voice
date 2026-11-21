@@ -645,6 +645,7 @@ def _try_out(store: Store) -> None:
             setup_status.voice_history(store), wordlist.payload(store), pipeline.lessons_payload(store),
             store.load_recommendations(), store.list_video_plans(),
             len(store.list_metric_snapshots()), store.list_sample_sentiments(),
+            store.list_sponsor_briefs(),
         ]
         json.dumps(answers, ensure_ascii=False)
     except Exception as exc:  # noqa: BLE001 - whatever a reader trips over, the file is not used
