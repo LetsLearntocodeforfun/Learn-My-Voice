@@ -14,8 +14,10 @@ What it does, on whatever system it runs on:
    with Chinese text, has it checked, exports it, and deletes it;
 5. stops the app and removes the folder.
 
-It needs no network: the app only listens on this computer and no AI service is asked. Nothing outside the
-unpacked folder is written. ``--result`` writes what happened to a file, for the release notes.
+It needs no network: the app only listens on this computer and no AI service is asked. A started app would
+also ask GitHub whether a newer release is there; every app started here is told not to (NO_UPDATE_CHECK_ENV),
+and is then asked whether it knows that. Nothing outside the unpacked folder is written. ``--result`` writes
+what happened to a file, for the release notes.
 
 Standard library only. Used by .github/workflows/release-candidate.yml; it runs the same on a desk.
 """
@@ -40,6 +42,9 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
 START_TIMEOUT_SEC = 90
+# Set to 1 for every app a trial starts: the app then asks GitHub nothing (as in studio/server.py). A trial runs
+# on a machine nobody sits at, and what it finds must not depend on what GitHub answers that day.
+NO_UPDATE_CHECK_ENV = "LEARN_MY_VOICE_NO_UPDATE_CHECK"
 LAUNCHERS = {"Darwin": ["bash", "Start Learn My Voice.command"], "Windows": ["cmd", "/c", "Start Learn My Voice.bat"],
              "Linux": ["sh", "start-learn-my-voice.sh"]}
 SPOKEN = "这周又去超市补货啦 / 然后拿了两盒水饺"
@@ -149,6 +154,11 @@ def use(base: str, version: str, checks: List[str]) -> None:
                (status, headers.get("Content-Type")))
     status, state, _ = ask(base, "GET", "/api/state")
     expect("the app answers with its state", status == 200 and isinstance(state, dict) and "settings" in state, state)
+    # The plain state, which asks GitHub nothing whether looking is on or off: asking for a look here would, if
+    # the variable had not reached the app, cause the very request this is there to rule out.
+    status, updates, _ = ask(base, "GET", "/api/update")
+    expect("started by a trial, it does not look for updates and says so",
+           status == 200 and isinstance(updates, dict) and updates.get("checks") == {"on": False}, updates)
     expect("it says which build it is: %s" % version, state.get("build", {}).get("version") == version and not state["build"]["from_source"],
            state.get("build"))
     status, made, _ = ask(base, "POST", "/api/scripts", {"title": "试一下", "lines": [{"spoken_script_zh": SPOKEN}]})
@@ -180,7 +190,8 @@ def run_once(app: Path, command: List[str], version: str, how: str, checks: List
     log_path = app.parent / ("log-%d.txt" % port)
     env = dict(os.environ, PYTHONDONTWRITEBYTECODE="1")
     env.pop("STUDIO_DATA_DIR", None)                         # the app keeps its data where a person's copy would
-    env.pop("LEARN_MY_VOICE_WINDOW_CHECK", None)             # and is started the way a person starts it
+    env.pop("LEARN_MY_VOICE_WINDOW_CHECK", None)             # and is started the way a person starts it,
+    env[NO_UPDATE_CHECK_ENV] = "1"                           # but for one thing: it asks GitHub nothing
     options: Dict[str, Any] = {"creationflags": subprocess.CREATE_NEW_PROCESS_GROUP} if os.name == "nt" else {"start_new_session": True}
     with open(str(log_path), "wb") as log:
         process = subprocess.Popen(command + ["--no-browser", "--port", str(port)], cwd=str(app), stdin=subprocess.DEVNULL,

@@ -1705,23 +1705,23 @@ class Handler(BaseHTTPRequestHandler):
                 return self._json({"ok": True})
 
         # ---- auto-updater & cross-version settings persistence --------------
+        # ``app.update_checks`` goes with every call: the module itself asks GitHub nothing while it is off, and the
+        # answer tells the page so (``checks.on``).
         if route == ("GET", "/api/update"):
-            do_check = app.update_checks and ((self.query.get("check") == ["1"]) or (self.query.get("force") == ["1"]))
             force = self.query.get("force") == ["1"]
             try:
-                if do_check:
-                    return self._json(updater.check_for_updates(store, force=force, transport=app.update_transport))
-                return self._json(updater.status_payload(store))
+                if force or self.query.get("check") == ["1"]:
+                    return self._json(updater.check_for_updates(store, checks_on=app.update_checks, force=force,
+                                                                transport=app.update_transport))
+                return self._json(updater.status_payload(store, checks_on=app.update_checks))
             except updater.UpdateError as exc:
                 raise ApiError(exc.status, exc.code, exc.message, exc.message_zh)
         if route == ("POST", "/api/update/settings"):
-            return self._json(updater.save_update_settings(store, self._read_json()))
+            return self._json(updater.save_update_settings(store, self._read_json(), checks_on=app.update_checks))
         if route == ("POST", "/api/update/download"):
-            if not app.update_checks:
-                raise ApiError(409, "updates_off", "Looking for updates is switched off for this run of the app.",
-                               "这次运行没有开启检查更新。")
             try:
-                res = updater.download_release_asset(store, app.outside, transport=app.update_transport)
+                res = updater.download_release_asset(store, app.outside, checks_on=app.update_checks,
+                                                     transport=app.update_transport)
             except updater.UpdateError as exc:
                 raise ApiError(exc.status, exc.code, exc.message, exc.message_zh)
             app.remember_saved(Path(res["saved"]["path"]))

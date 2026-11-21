@@ -266,8 +266,8 @@ def _stored_settings(store: Store) -> Dict[str, Any]:
     }
 
 
-def save_update_settings(store: Store, changes: Dict[str, Any]) -> Dict[str, Any]:
-    """Persist startup prompt preference or dismissed version inside ``config.json["updates"]``."""
+def save_update_settings(store: Store, changes: Dict[str, Any], *, checks_on: bool = False) -> Dict[str, Any]:
+    """Persist startup prompt preference or dismissed version inside ``config.json["updates"]``. Asks GitHub nothing."""
     def mutate(cfg: Dict[str, Any]) -> None:
         cur = dict(cfg.get("updates") if isinstance(cfg.get("updates"), dict) else {})
         if "auto_check" in changes and isinstance(changes["auto_check"], bool):
@@ -279,7 +279,7 @@ def save_update_settings(store: Store, changes: Dict[str, Any]) -> Dict[str, Any
         cfg["updates"] = cur
 
     store.update_config(mutate)
-    return status_payload(store, network=False)
+    return status_payload(store, checks_on=checks_on)
 
 
 def _select_asset(assets: Any, version: str, target: Dict[str, str]) -> Tuple[Optional[Dict[str, Any]], Optional[Dict[str, Any]]]:
@@ -361,10 +361,17 @@ def _pick_best_release(releases: Any, *, include_prereleases: bool,
     return candidates[0][1]
 
 
-def check_for_updates(store: Store, *, force: bool = False,
+def check_for_updates(store: Store, *, checks_on: bool = False, force: bool = False,
                       transport: Optional[UpdateTransport] = None,
                       now: Optional[float] = None) -> Dict[str, Any]:
-    """Return update status, querying GitHub Releases when forced or when the 12h cache expired."""
+    """Return update status, querying GitHub Releases when forced or when the 12h cache expired.
+
+    With ``checks_on`` false nothing is asked, forced or not, and ``transport`` is never called: the answer is
+    what ``status_payload`` gives. The switch is looked at here and not only where a request comes in, so that
+    no caller can forget it.
+    """
+    if not checks_on:
+        return status_payload(store, checks_on=False)
     now_ts = time.time() if now is None else float(now)
     prefs = _stored_settings(store)
     cur = current_version_info()
@@ -418,34 +425,39 @@ def check_for_updates(store: Store, *, force: bool = False,
             }
             latest = prefs["cached"]
 
-    return _compose_status(store, cur, target, prefs, latest, check_error=check_error)
+    return _compose_status(store, cur, target, prefs, latest, check_error=check_error, checks_on=True)
 
 
-def status_payload(store: Store, *, network: bool = False,
-                   transport: Optional[UpdateTransport] = None) -> Dict[str, Any]:
-    """Return current update status without network I/O unless ``network=True``."""
-    if network:
-        return check_for_updates(store, force=False, transport=transport)
+def status_payload(store: Store, *, checks_on: bool = False) -> Dict[str, Any]:
+    """What is known about updates, from what is stored. Nothing is asked of GitHub here, whatever ``checks_on`` is.
+
+    ``checks_on`` says whether this run of the app may ask GitHub at all (``server.App.update_checks``). The
+    answer repeats it as ``checks.on``, so that the page offers no look when it is off and says why.
+    """
     prefs = _stored_settings(store)
     cur = current_version_info()
     target = current_platform_target(is_desktop=cur["desktop"])
-    return _compose_status(store, cur, target, prefs, prefs["cached"])
+    return _compose_status(store, cur, target, prefs, prefs["cached"], checks_on=checks_on)
 
 
 def _compose_status(store: Store, cur: Dict[str, Any], target: Dict[str, str],
                     prefs: Dict[str, Any], latest: Optional[Dict[str, Any]],
-                    check_error: Optional[Dict[str, str]] = None) -> Dict[str, Any]:
+                    check_error: Optional[Dict[str, str]] = None, checks_on: bool = False) -> Dict[str, Any]:
     latest_ver = latest.get("version") if isinstance(latest, dict) else None
     newer = bool(latest_ver and is_newer(latest_ver, cur["version"]))
-    # When running from a git checkout (from_source), report availability in Settings but do not nag at startup
+    # When running from a git checkout (from_source), report availability in Settings but do not nag at startup.
+    # With looking switched off for this run nothing is put in front of the creator either: what is stored may be old.
     prompt_startup = bool(
         newer
+        and checks_on
         and prefs["auto_check"]
         and not cur["from_source"]
         and latest_ver != prefs["dismissed_version"]
     )
     previous = discover_previous_installations(store)
     out: Dict[str, Any] = {
+        # Whether this run may ask GitHub at all. Off: the page offers no look and no download, and says why.
+        "checks": {"on": bool(checks_on)},
         "current": cur,
         "target": target,
         "data_dir": str(Path(store.data_dir).resolve()),
@@ -466,14 +478,32 @@ def _compose_status(store: Store, cur: Dict[str, Any], target: Dict[str, str],
     return out
 
 
-def download_release_asset(store: Store, outside_mod: Any, *,
+def updates_off() -> UpdateError:
+    """The refusal for anything that would ask GitHub while looking for updates is off for this run."""
+    return UpdateError(
+        "updates_off",
+        "Looking for updates is switched off for this run of the app, so nothing was asked of GitHub and nothing "
+        "was downloaded. It is off when the app is started with LEARN_MY_VOICE_NO_UPDATE_CHECK=1, or by a script "
+        "that tries it.",
+        "这次运行没有开启检查更新，所以没有向 GitHub 询问，也没有下载任何东西。"
+        "用 LEARN_MY_VOICE_NO_UPDATE_CHECK=1 启动应用，或者由试运行的脚本启动时，检查更新是关着的。",
+        409,
+    )
+
+
+def download_release_asset(store: Store, outside_mod: Any, *, checks_on: bool = False,
                            transport: Optional[UpdateTransport] = None,
                            on_progress: Optional[Callable[[str], None]] = None) -> Dict[str, Any]:
-    """Download the latest matching release asset, verify its SHA-256 sidecar, and save to Downloads."""
-    status = check_for_updates(store, force=False, transport=transport)
+    """Download the latest matching release asset, verify its SHA-256 sidecar, and save to Downloads.
+
+    Refused with ``updates_off()`` when ``checks_on`` is false, before ``transport`` is called for anything.
+    """
+    if not checks_on:
+        raise updates_off()
+    status = check_for_updates(store, checks_on=True, force=False, transport=transport)
     latest = status.get("latest")
     if not isinstance(latest, dict) or not isinstance(latest.get("asset"), dict):
-        status = check_for_updates(store, force=True, transport=transport)
+        status = check_for_updates(store, checks_on=True, force=True, transport=transport)
         latest = status.get("latest")
     if not isinstance(latest, dict) or not isinstance(latest.get("asset"), dict):
         raise UpdateError(

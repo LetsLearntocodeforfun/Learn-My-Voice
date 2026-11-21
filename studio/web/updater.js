@@ -26,6 +26,7 @@ Object.assign(I18N.zh, {
   up_migrate_btn: '一键迁移此旧版数据与设置',
   up_migrating: '正在迁移…',
   up_migrated_ok: '已成功迁移 {sc} 篇脚本、{sa} 条素材及全部设置！',
+  up_off: '这次运行没有开启检查更新：应用是用 LEARN_MY_VOICE_NO_UPDATE_CHECK=1 启动的，或者是由试运行的脚本启动的。所以这里不会向 GitHub 询问，也不提供下载。',
 });
 
 Object.assign(I18N.en, {
@@ -54,6 +55,7 @@ Object.assign(I18N.en, {
   up_migrate_btn: 'Carry over settings & data',
   up_migrating: 'Migrating…',
   up_migrated_ok: 'Migrated {sc} scripts, {sa} library items, and all settings!',
+  up_off: 'Looking for updates is switched off for this run: the app was started with LEARN_MY_VOICE_NO_UPDATE_CHECK=1, or by a script that tries it. So nothing is asked of GitHub here, and no download is offered.',
 });
 
 const upState = {
@@ -220,7 +222,8 @@ async function upPaintSettings(box) {
     const latest = st.latest;
     const dl = upState.lastDownload;
     const prevList = Array.isArray(st.previous_versions) ? st.previous_versions : [];
-    const latestHtml = st.update_available && latest ? `
+    const on = !!(st.checks && st.checks.on);
+    const latestHtml = !on ? '' : st.update_available && latest ? `
       <div class="banner" style="margin-top:14px">
         <div class="row" style="flex-wrap:wrap;gap:10px;align-items:center">
           <div class="spacer"><strong>${esc(tf('up_found_banner', { v: latest.version, cur: (st.current && st.current.version) || '' }))}</strong></div>
@@ -248,7 +251,7 @@ async function upPaintSettings(box) {
       <div class="card" id="up-settings-card">
         <p class="hint" style="margin-top:0">${esc(t('up_sec_sub'))}</p>
         <p class="meta mono">${esc(tf('up_data_path', { path: st.data_dir }))}</p>
-        <div class="row" style="margin-top:12px;flex-wrap:wrap;gap:14px">
+        ${on ? `<div class="row" style="margin-top:12px;flex-wrap:wrap;gap:14px">
           <label class="row" style="gap:6px;cursor:pointer">
             <input type="checkbox" id="up-auto-chk" ${st.auto_check ? 'checked' : ''}>
             <span>${esc(t('up_auto_label'))}</span>
@@ -259,7 +262,7 @@ async function upPaintSettings(box) {
           </label>
           <span class="spacer"></span>
           <button type="button" class="btn" id="up-force-btn">${esc(t('up_check_btn'))}</button>
-        </div>
+        </div>` : `<p class="hint" id="up-off">${esc(t('up_off'))}</p>`}
         ${latestHtml}
         ${prevHtml}
       </div>`;
