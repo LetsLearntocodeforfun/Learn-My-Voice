@@ -53,6 +53,7 @@ RUNNING_FILE = "desktop-running.json"                              # as in src-t
 PROBLEM_FILE = "desktop-problem.txt"                               # as in src-tauri/src/main.rs
 START_TIMEOUT_SEC = 180
 WINDOW_CHECK_ENV = "LEARN_MY_VOICE_WINDOW_CHECK"                   # as in studio/server.py
+NO_UPDATE_CHECK_ENV = "LEARN_MY_VOICE_NO_UPDATE_CHECK"             # as in studio/server.py and tools/try_release.py
 # How long the page in the window has for its check. Each of its steps gives up after 30 seconds
 # (STEP_MS in studio/web/windowcheck.js), so within this time even a check in which every step waited in vain
 # has reported.
@@ -375,6 +376,10 @@ def start(program: Path, data: Optional[Path], log: Path, window_check: bool = F
     env = dict(os.environ)
     env.pop("LEARN_MY_VOICE_DATA_DIR", None)
     env.pop(WINDOW_CHECK_ENV, None)
+    # Every start of the installed app, also the one "as a person starts it": the page in the window would
+    # otherwise ask GitHub for the list of releases as soon as it has loaded. The shell hands its environment on
+    # to the core (src-tauri/src/main.rs adds one variable and clears none), which reads this.
+    env[NO_UPDATE_CHECK_ENV] = "1"
     if data is not None:
         env["LEARN_MY_VOICE_DATA_DIR"] = str(data)
     if window_check:
@@ -481,6 +486,11 @@ def try_installer(installer: Path, shots: Optional[Path], label: str) -> Dict[st
         if trial.ask(str(note["url"]).rstrip("/"), "GET", "/api/window-check")[0] != 404:
             raise Failed("started the way a person starts it, the app still offers the window check")
         checks.append("started the way a person starts it, there is no window check")
+        status, updates, _ = trial.ask(str(note["url"]).rstrip("/"), "GET", "/api/update")      # the plain state: it asks nothing
+        if status != 200 or not isinstance(updates, dict) or updates.get("checks") != {"on": False}:
+            raise Failed("started by this trial, the app should not look for updates and should say so (it answered %s: %r)"
+                         % (status, updates if not isinstance(updates, dict) else updates.get("checks")))
+        checks.append("started by this trial, it does not look for updates and says so")
         checks.append("started again without a folder named, it keeps its data in the system's folder for application data")
         end_abruptly(int(note["shell_pid"]))
         process.wait(timeout=30)
