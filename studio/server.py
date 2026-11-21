@@ -2216,6 +2216,10 @@ class StudioServer(ThreadingHTTPServer):
     request_queue_size = 128
 
     def server_bind(self) -> None:
+        addr = getattr(self, "server_address", None)
+        if isinstance(addr, tuple) and len(addr) >= 2 and addr[1] == 0:
+            # Port 0 asks the kernel for a free ephemeral port; without SO_REUSEADDR it avoids ports still in TIME_WAIT.
+            self.allow_reuse_address = False
         exclusive = getattr(socket, "SO_EXCLUSIVEADDRUSE", None)        # Windows only
         if os.name == "nt" and exclusive is not None:
             self.socket.setsockopt(socket.SOL_SOCKET, exclusive, 1)
