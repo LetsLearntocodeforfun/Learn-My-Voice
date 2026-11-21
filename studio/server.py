@@ -1709,13 +1709,15 @@ class Handler(BaseHTTPRequestHandler):
         # answer tells the page so (``checks.on``).
         if route == ("GET", "/api/update"):
             force = self.query.get("force") == ["1"]
+            scan = self.query.get("scan") == ["1"]
             try:
                 if force or self.query.get("check") == ["1"]:
-                    return self._json(updater.check_for_updates(store, checks_on=app.update_checks, force=force,
-                                                                transport=app.update_transport))
-                return self._json(updater.status_payload(store, checks_on=app.update_checks))
+                    return self._json(updater.check_for_updates(
+                        store, checks_on=app.update_checks, force=force, scan_previous=scan,
+                        transport=app.update_transport))
+                return self._json(updater.status_payload(store, checks_on=app.update_checks, scan_previous=scan))
             except updater.UpdateError as exc:
-                raise ApiError(exc.status, exc.code, exc.message, exc.message_zh)
+                raise ApiError(exc.status, exc.code, exc.message, exc.message_zh, extra=exc.extra)
         if route == ("POST", "/api/update/settings"):
             return self._json(updater.save_update_settings(store, self._read_json(), checks_on=app.update_checks))
         if route == ("POST", "/api/update/download"):
@@ -1723,29 +1725,33 @@ class Handler(BaseHTTPRequestHandler):
                 res = updater.download_release_asset(store, app.outside, checks_on=app.update_checks,
                                                      transport=app.update_transport)
             except updater.UpdateError as exc:
-                raise ApiError(exc.status, exc.code, exc.message, exc.message_zh)
+                raise ApiError(exc.status, exc.code, exc.message, exc.message_zh, extra=exc.extra)
             app.remember_saved(Path(res["saved"]["path"]))
             return self._json(res, 201)
         if route == ("POST", "/api/update/migrate"):
-            body = self._read_json()
-            wanted = str(body.get("source_path") or "").strip()
-            allowed = {item["path"] for item in updater.discover_previous_installations(store)}
-            if not wanted or wanted not in allowed:
-                raise ApiError(400, "bad_source", "Choose one of the detected previous version folders.",
-                               "请选择检测到的旧版应用文件夹。")
+            raw_source = self._read_json().get("source_path")
+            wanted = raw_source.strip() if isinstance(raw_source, str) else ""
+            wanted_path = Path(wanted) if wanted else None
+            resolved_wanted = str(wanted_path.resolve()) if (wanted_path is not None and not wanted_path.is_symlink()) else ""
+            allowed = {item["path"] for item in updater.discover_previous_installations(store, explicit=True)}
+            if not resolved_wanted or resolved_wanted not in allowed:
+                raise ApiError(400, "bad_source", "Choose one of the detected earlier version folders.",
+                               "请选择检测到的旧版本应用文件夹。")
             try:
-                res = updater.migrate_from_previous_folder(store, Path(wanted))
+                res = updater.migrate_from_previous_folder(store, Path(resolved_wanted), backups=app.backups, jobs=app.jobs)
             except updater.UpdateError as exc:
-                raise ApiError(exc.status, exc.code, exc.message, exc.message_zh)
+                raise ApiError(exc.status, exc.code, exc.message, exc.message_zh, extra=exc.extra)
             return self._json(res)
         if route == ("POST", "/api/update/apply-zip"):
-            wanted_zip = str(self._read_json().get("zip_path") or "").strip()
+            raw_zip = self._read_json().get("zip_path")
+            wanted_zip = raw_zip.strip() if isinstance(raw_zip, str) else ""
             if not wanted_zip or wanted_zip not in app.saved_files:
-                raise ApiError(404, "not_found", "Download the update package first.", "请先通过应用下载新版压缩包。")
+                raise ApiError(404, "not_found", "Download the update package in the app first.",
+                               "请先在应用内下载新版压缩包。")
             try:
-                res = updater.unpack_and_migrate_zip(store, Path(wanted_zip))
+                res = updater.unpack_and_migrate_zip(store, Path(wanted_zip), jobs=app.jobs)
             except updater.UpdateError as exc:
-                raise ApiError(exc.status, exc.code, exc.message, exc.message_zh)
+                raise ApiError(exc.status, exc.code, exc.message, exc.message_zh, extra=exc.extra)
             return self._json(res, 201)
 
         # ---- RedNote view-count velocity, Creator Center import & sentiment -
