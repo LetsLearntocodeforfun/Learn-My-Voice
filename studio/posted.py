@@ -37,7 +37,7 @@ import sqlite3
 from typing import Any, Dict, List, Optional, Tuple
 
 from . import corpus, learning, pipeline, textstats, voicematch
-from .store import MAX_SAMPLE_CHARS, METRIC_FIELDS, ORIGIN_SCRIPT, StaleScript, Store, TextTooLong, _metric
+from .store import MAX_SAMPLE_CHARS, METRIC_FIELDS, MODE_SPONSORED, ORIGIN_SCRIPT, StaleScript, Store, TextTooLong, _metric
 
 WAITING, CONFIRMED, SPOKEN, TRANSCRIPT_WAITING = "waiting", "confirmed", "spoken", "transcript_waiting"
 
@@ -197,6 +197,18 @@ def wording_facts(sample: Dict[str, Any]) -> Dict[str, Any]:
     return found
 
 
+def from_brief(script: Dict[str, Any]) -> bool:
+    """Whether a script was drafted from a brand's brief (``studio.sponsored``): its ``mode`` says so, for good.
+
+    The library item of such a script is sponsored whatever a request to mark it as posted says. Being
+    sponsored is what keeps an item out of the measured habits, the material a voice is learned from, the
+    examples a draft is anchored on, the voice-match reference and the creator's own openings; a script
+    written to a brief holds wording the brand asked for, and that must not arrive there as the creator's.
+    In the library the item is the creator's like any other, and the tick there stays theirs to change.
+    """
+    return script.get("mode") == MODE_SPONSORED
+
+
 def facts(sample: Dict[str, Any]) -> Optional[Dict[str, Any]]:
     """What the pages show about a library item that came from a script, or None for any other item.
 
@@ -334,7 +346,9 @@ def _create(store: Store, script: Dict[str, Any], body: Dict[str, Any]) -> Tuple
     link = clean_link(body.get("note_url"))
     try:
         item = store.create_sample(
-            title=script["title"], text=text, is_sponsored=bool(body.get("is_sponsored")), metrics=metrics, kind="script",
+            # A script drafted from a brand's brief is sponsored, whatever the request says (``from_brief``).
+            title=script["title"], text=text, is_sponsored=bool(body.get("is_sponsored")) or from_brief(script),
+            metrics=metrics, kind="script",
             posted={"script_id": script["id"], "posted_on": posted_on, "note_url": link, "metrics_on": metrics_on,
                     "ai_draft": _ai_draft(store, script), "snapshot": _fingerprint(script["title"], text)})
     except sqlite3.IntegrityError:
@@ -359,6 +373,8 @@ def _change(store: Store, script: Dict[str, Any], item: Dict[str, Any], body: Di
             raise TextTooLong(len(text))
     columns = _checked_columns(item, body)
     changes = {key: body[key] for key in METRIC_FIELDS + ("is_sponsored",) if key in body}
+    if "is_sponsored" in changes and from_brief(script):
+        changes["is_sponsored"] = True          # marking never makes the item of such a script non-sponsored
     store.update_sample(item["id"], changes, posted=columns)
     if refresh:
         # New text is new wording: it waits again, and what an AI wrote of it is counted again.
@@ -380,7 +396,8 @@ def mark(store: Store, script_id: Any, body: Dict[str, Any], update_only: bool =
     - ``posted_on``: the day it was posted, ``YYYY-MM-DD``; today for a new item; never after today.
     - ``note_url``: the link to the note, an http(s) address kept as text (``clean_link``); "" for none.
     - ``is_sponsored``; ``views``, ``likes``, ``collects``, ``comments``: read as the library reads them
-      (a blank or unusable value is "not entered").
+      (a blank or unusable value is "not entered"). The item of a script drafted from a brand's brief is
+      sponsored whatever is sent here (``from_brief``).
     - ``metrics_on``: the day the numbers were read; today when numbers are given without it.
     - ``refresh_text`` true, for an item that exists: replace its title and text with the script as it
       stands now. The new text waits for the creator's confirmation again.
