@@ -1965,11 +1965,29 @@ class Store:
             for r in rows
         }
 
-    # ---- upcoming video content planner ---------------------------------
+    # ---- the plan: videos the creator means to make (studio/planner.py) ----
+    # One row is one planned video. This part only stores: what a plan is, what may be put into one and what its
+    # state is are in ``studio/planner.py``, which checks everything before it calls these methods.
+    #
+    # ``status`` holds what the creator said about the plan (planner.MARKS), never whether a script exists or
+    # was posted: that is read from the scripts and the library each time (``planner.state_of``), so no row has
+    # to be written when a script is made, posted or deleted elsewhere. ``script_id`` is the one link, set when
+    # a script is made from the plan and cleared by ``delete_script``.
+    #
+    # The column ``priority`` is left from round 1. No page ever set it and nothing reads it. It stays in the
+    # table because the layout of data version 3 is held by tests that other work changes at the same time.
+    _PLAN_TEXT_COLUMNS = ("title", "video_format", "scheduled_for", "status", "source_kind", "notes",
+                          "rationale_zh", "rationale_en")
+
     @staticmethod
     def _plan_row(row: sqlite3.Row) -> Dict[str, Any]:
-        kws = loads_stored(row["keywords_json"] or "[]")
-        qs = loads_stored(row["questions_json"] or "[]")
+        def texts(encoded: Any) -> List[str]:
+            try:
+                value = loads_stored(encoded or "[]")
+            except ValueError:
+                return []
+            return [item for item in value if isinstance(item, str)] if isinstance(value, list) else []
+
         return {
             "id": row["id"],
             "title": row["title"],
@@ -1977,116 +1995,126 @@ class Store:
             "target_sec": int(row["target_sec"] or 60),
             "scheduled_for": row["scheduled_for"] or "",
             "status": row["status"] or "PLANNED",
-            "priority": int(row["priority"] if row["priority"] is not None else 2),
             "source_kind": row["source_kind"] or "manual",
             "notes": row["notes"] or "",
             "rationale_zh": row["rationale_zh"] or "",
             "rationale_en": row["rationale_en"] or "",
-            "keywords": [str(k) for k in kws if isinstance(k, str)] if isinstance(kws, list) else [],
-            "questions": [str(q) for q in qs if isinstance(q, str)] if isinstance(qs, list) else [],
+            "keywords": texts(row["keywords_json"]),
+            "questions": texts(row["questions_json"]),
             "script_id": row["script_id"],
             "created_at": row["created_at"],
             "updated_at": row["updated_at"],
         }
 
     def list_video_plans(self) -> List[Dict[str, Any]]:
+        """Every plan as it is stored: those with a day first, the earliest day first, then the rest, newest first."""
         with self._db() as db:
             rows = db.execute(
                 "SELECT * FROM video_plans ORDER BY"
                 " CASE WHEN scheduled_for != '' THEN 0 ELSE 1 END ASC,"
-                " scheduled_for ASC, priority ASC, updated_at DESC, rowid DESC"
+                " scheduled_for ASC, created_at DESC, rowid DESC"
             ).fetchall()
         return [self._plan_row(r) for r in rows]
 
     def plans_count(self) -> int:
+        """How many plans are not posted yet: those with no script, or with a script that has no item in the library."""
         with self._db() as db:
-            return int(db.execute("SELECT COUNT(*) FROM video_plans WHERE status != 'POSTED'").fetchone()[0])
+            return int(db.execute(
+                "SELECT COUNT(*) FROM video_plans WHERE script_id IS NULL"
+                " OR script_id NOT IN (SELECT script_id FROM samples WHERE script_id IS NOT NULL)").fetchone()[0])
+
+    def plans_without_script(self) -> int:
+        """How many plans have no script yet: what ``planner.MAX_OPEN_PLANS`` counts."""
+        with self._db() as db:
+            return int(db.execute("SELECT COUNT(*) FROM video_plans WHERE script_id IS NULL").fetchone()[0])
 
     def get_video_plan(self, plan_id: str) -> Optional[Dict[str, Any]]:
         with self._db() as db:
             row = db.execute("SELECT * FROM video_plans WHERE id = ?", (plan_id,)).fetchone()
         return self._plan_row(row) if row else None
 
-    def create_video_plan(self, *, title: str, video_format: str = "VLOG_VOICEOVER",
-                          target_sec: int = 60, scheduled_for: str = "", status: str = "PLANNED",
-                          priority: int = 2, source_kind: str = "manual", notes: str = "",
-                          rationale_zh: str = "", rationale_en: str = "",
+    def create_video_plans(self, plans: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+        """Store several new plans in one step: all of them, or, when one cannot be stored, none.
+
+        Each is a dict with ``title`` and any of ``video_format``, ``target_sec``, ``scheduled_for``, ``status``,
+        ``source_kind``, ``notes``, ``rationale_zh``, ``rationale_en``, ``keywords``, ``questions``, ``script_id``.
+        Returns them as stored, in the order given.
+        """
+        now = time.time()
+        ids: List[str] = []
+        with self._db() as db:
+            for offset, plan in enumerate(plans):
+                plan_id = uuid.uuid4().hex[:12]
+                ids.append(plan_id)
+                script_id = plan.get("script_id")
+                stamp = now + (len(plans) - offset) * 0.000001      # the first given stands first where the newest is shown first
+                db.execute(
+                    "INSERT INTO video_plans (id, title, video_format, target_sec, scheduled_for, status,"
+                    " source_kind, notes, rationale_zh, rationale_en, keywords_json, questions_json, script_id,"
+                    " created_at, updated_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                    (plan_id, str(plan["title"]), str(plan.get("video_format") or "VLOG_VOICEOVER"),
+                     int(plan.get("target_sec") or 60), str(plan.get("scheduled_for") or ""),
+                     str(plan.get("status") or "PLANNED"), str(plan.get("source_kind") or "manual"),
+                     str(plan.get("notes") or ""), str(plan.get("rationale_zh") or ""),
+                     str(plan.get("rationale_en") or ""), _dumps(normalize_keywords(plan.get("keywords"))),
+                     _dumps([q for q in plan.get("questions") or [] if isinstance(q, str)]),
+                     script_id if isinstance(script_id, str) and script_id else None, stamp, stamp),
+                )
+            rows = {row["id"]: row for row in db.execute(
+                "SELECT * FROM video_plans WHERE id IN (%s)" % ",".join("?" * len(ids)), ids)} if ids else {}
+        return [self._plan_row(rows[plan_id]) for plan_id in ids]
+
+    def create_video_plan(self, *, title: str, video_format: str = "VLOG_VOICEOVER", target_sec: int = 60,
+                          scheduled_for: str = "", status: str = "PLANNED", source_kind: str = "manual",
+                          notes: str = "", rationale_zh: str = "", rationale_en: str = "",
                           keywords: Any = None, questions: Any = None,
                           script_id: Optional[str] = None) -> Dict[str, Any]:
-        clean_title = (title or "").strip()[:MAX_SCRIPT_TITLE_CHARS] or "未命名选题"
-        clean_fmt = (video_format or "VLOG_VOICEOVER").strip()[:MAX_META_FIELD_CHARS] or "VLOG_VOICEOVER"
-        clean_sec = max(15, min(int(target_sec or 60), 900))
-        clean_day = (scheduled_for or "").strip()[:10]
-        if clean_day and not re.fullmatch(r"[0-9]{4}-[0-9]{2}-[0-9]{2}", clean_day):
-            clean_day = ""
-        clean_status = (status or "PLANNED").strip().upper()[:24]
-        if clean_status not in ("IDEA", "PLANNED", "SCRIPTING", "READY", "POSTED"):
-            clean_status = "PLANNED"
-        clean_pri = max(1, min(int(priority if priority is not None else 2), 3))
-        clean_src = (source_kind or "manual").strip()[:32]
-        clean_notes = (notes or "").strip()[:MAX_NOTES_CHARS]
-        clean_rzh = (rationale_zh or "").strip()[:2000]
-        clean_ren = (rationale_en or "").strip()[:2000]
-        clean_qs = [str(q).strip()[:300] for q in (questions if isinstance(questions, list) else []) if isinstance(q, str) and str(q).strip()][:12]
-        now = time.time()
-        plan_id = uuid.uuid4().hex[:12]
-        with self._db() as db:
-            db.execute(
-                "INSERT INTO video_plans (id, title, video_format, target_sec, scheduled_for, status, priority,"
-                " source_kind, notes, rationale_zh, rationale_en, keywords_json, questions_json, script_id,"
-                " created_at, updated_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
-                (plan_id, clean_title, clean_fmt, clean_sec, clean_day, clean_status, clean_pri,
-                 clean_src, clean_notes, clean_rzh, clean_ren, _dumps(normalize_keywords(keywords)),
-                 _dumps(clean_qs), script_id, now, now),
-            )
-            db.execute(
-                "DELETE FROM video_plans WHERE rowid NOT IN (SELECT rowid FROM video_plans ORDER BY updated_at DESC, rowid DESC LIMIT 1000)"
-            )
-        return self.get_video_plan(plan_id)  # type: ignore[return-value]
+        """Store one new plan (``create_video_plans``)."""
+        return self.create_video_plans([{
+            "title": title, "video_format": video_format, "target_sec": target_sec, "scheduled_for": scheduled_for,
+            "status": status, "source_kind": source_kind, "notes": notes, "rationale_zh": rationale_zh,
+            "rationale_en": rationale_en, "keywords": keywords, "questions": questions, "script_id": script_id}])[0]
 
     def update_video_plan(self, plan_id: str, changes: Dict[str, Any]) -> Optional[Dict[str, Any]]:
-        existing = self.get_video_plan(plan_id)
-        if existing is None:
-            return None
+        """Write new values into a plan's row and return the row, or None when there is no such plan.
+
+        ``changes`` may name the text columns, ``target_sec``, ``keywords`` and ``questions``; anything else in
+        it is left alone. The link to a script is not changed here (``link_plan_script``).
+        """
         sets: List[str] = []
-        vals: List[Any] = []
-        if isinstance(changes.get("title"), str):
-            sets.append("title = ?"); vals.append(changes["title"].strip()[:MAX_SCRIPT_TITLE_CHARS] or "未命名选题")
-        if isinstance(changes.get("video_format"), str):
-            sets.append("video_format = ?"); vals.append(changes["video_format"].strip()[:MAX_META_FIELD_CHARS] or "VLOG_VOICEOVER")
-        if isinstance(changes.get("target_sec"), (int, float)) and not isinstance(changes.get("target_sec"), bool):
-            sets.append("target_sec = ?"); vals.append(max(15, min(int(changes["target_sec"]), 900)))
-        if "scheduled_for" in changes and isinstance(changes.get("scheduled_for"), str):
-            d = changes["scheduled_for"].strip()[:10]
-            sets.append("scheduled_for = ?"); vals.append(d if re.fullmatch(r"[0-9]{4}-[0-9]{2}-[0-9]{2}", d) else "")
-        if isinstance(changes.get("status"), str):
-            st = changes["status"].strip().upper()[:24]
-            if st in ("IDEA", "PLANNED", "SCRIPTING", "READY", "POSTED"):
-                sets.append("status = ?"); vals.append(st)
-        if isinstance(changes.get("priority"), (int, float)) and not isinstance(changes.get("priority"), bool):
-            sets.append("priority = ?"); vals.append(max(1, min(int(changes["priority"]), 3)))
-        if isinstance(changes.get("notes"), str):
-            sets.append("notes = ?"); vals.append(changes["notes"].strip()[:MAX_NOTES_CHARS])
-        if isinstance(changes.get("rationale_zh"), str):
-            sets.append("rationale_zh = ?"); vals.append(changes["rationale_zh"].strip()[:2000])
-        if isinstance(changes.get("rationale_en"), str):
-            sets.append("rationale_en = ?"); vals.append(changes["rationale_en"].strip()[:2000])
+        values: List[Any] = []
+        for column in self._PLAN_TEXT_COLUMNS:
+            if isinstance(changes.get(column), str):
+                sets.append("%s = ?" % column)
+                values.append(changes[column])
+        if isinstance(changes.get("target_sec"), int) and not isinstance(changes.get("target_sec"), bool):
+            sets.append("target_sec = ?")
+            values.append(changes["target_sec"])
         if "keywords" in changes:
-            sets.append("keywords_json = ?"); vals.append(_dumps(normalize_keywords(changes["keywords"])))
-        if "questions" in changes and isinstance(changes.get("questions"), list):
-            qs = [str(q).strip()[:300] for q in changes["questions"] if isinstance(q, str) and str(q).strip()][:12]
-            sets.append("questions_json = ?"); vals.append(_dumps(qs))
-        if "script_id" in changes:
-            sid = changes["script_id"]
-            sets.append("script_id = ?"); vals.append(str(sid) if isinstance(sid, str) and sid else None)
+            sets.append("keywords_json = ?")
+            values.append(_dumps(normalize_keywords(changes["keywords"])))
+        if isinstance(changes.get("questions"), list):
+            sets.append("questions_json = ?")
+            values.append(_dumps([q for q in changes["questions"] if isinstance(q, str)]))
         if sets:
-            sets.append("updated_at = ?"); vals.append(time.time())
-            vals.append(plan_id)
             with self._db() as db:
-                db.execute("UPDATE video_plans SET %s WHERE id = ?" % ", ".join(sets), vals)
+                db.execute("UPDATE video_plans SET %s, updated_at = ? WHERE id = ?" % ", ".join(sets),
+                           values + [time.time(), plan_id])
         return self.get_video_plan(plan_id)
 
+    def link_plan_script(self, plan_id: str, script_id: str) -> bool:
+        """Say that this script was made from this plan. False, and nothing written, when the plan is gone,
+        already has a script that exists, or the script is gone or belongs to another plan: one plan has one
+        script and one script one plan, however many windows ask at the same moment."""
+        with self._db() as db:
+            return db.execute(
+                "UPDATE video_plans SET script_id = ?, updated_at = ? WHERE id = ?"
+                " AND (script_id IS NULL OR script_id NOT IN (SELECT id FROM scripts))"
+                " AND EXISTS (SELECT 1 FROM scripts WHERE id = ?)"
+                " AND NOT EXISTS (SELECT 1 FROM video_plans WHERE script_id = ? AND id != ?)",
+                (script_id, time.time(), plan_id, script_id, script_id, plan_id)).rowcount > 0
+
     def delete_video_plan(self, plan_id: str) -> bool:
+        """Remove a plan. A script made from it is the creator's work and stays."""
         with self._db() as db:
             return db.execute("DELETE FROM video_plans WHERE id = ?", (plan_id,)).rowcount > 0
-

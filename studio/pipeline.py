@@ -56,6 +56,9 @@ LEARN_CORPUS_CHARS = 40000
 RECOMMEND_EXCERPT_CHARS = 400
 RECOMMEND_MAX_VIDEOS = 60
 IDEAS_MAX_TRENDS = 12
+IDEAS_MAX_QUESTIONS = 4           # questions of viewers that go with one video in the ideas prompt
+IDEAS_QUESTION_CHARS = 140        # one of them: a comment, quoted. A longer one is cut
+IDEAS_COMMENTS_SUMMARY_CHARS = 300    # the summary of what viewers wrote under one video
 TREND_SOURCE_MAX_AGE_DAYS = 30
 LOOKUP_MAX_TITLES = 20            # titles of the creator's own items that go with a web lookup, to show what they make
 MAX_FOCUS_CHARS = 500             # what the creator asked for this time, typed or said aloud: a short request, not a document
@@ -78,6 +81,7 @@ CLAUSE_LENGTH_BOUNDS = {"min": (1, 12), "median": (4, 20), "hard_max": (10, 30)}
 
 # Text taken from an ideas reply. ``script_notes_zh`` becomes the notes of a draft prompt when the creator picks the idea.
 MAX_IDEAS = 12
+MAX_PATTERNS = 8                  # regularities a model says it sees in the creator's numbers: a handful, shown above the ideas
 MAX_IDEA_NOTES_CHARS = 600
 MAX_IDEA_TEXT_CHARS = 300         # a title, a reason, the note about the data
 IDEA_KINDS = ("BUILD_ON_WINNER", "ADJACENT_EXPERIMENT")
@@ -872,7 +876,61 @@ def _current_trends(store: Store) -> List[Dict[str, Any]]:
     } for t in trends.payload(store)["trends"] if t["usable"]][:IDEAS_MAX_TRENDS]
 
 
-def _history_entry(sample: Dict[str, Any], sentiment: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+def _viewer_comments(record: Any) -> Optional[Dict[str, Any]]:
+    """What viewers wrote under one video, as the ideas prompt receives it; None when nothing usable is kept.
+
+    ``record`` is what ``Store.list_sample_sentiments`` holds for the item: ``{"summary", "source", ...}``.
+
+    - ``how_summarised``: "counted_by_word_lists" for a summary made here by sorting the pasted comments with
+      lists of words (``source`` "local": a count, nobody read anything), "read_by_a_model" for one a model
+      wrote (``source`` "ai" or "manual"), which nobody checked. Any other source is taken for the weaker of
+      the two. ``confirmed_by_creator`` is added only for a record that carries ``confirmed_at``; nothing
+      writes that at present, so no summary is passed off as confirmed.
+    - ``comments_counted``, ``summary`` (at most IDEAS_COMMENTS_SUMMARY_CHARS characters) and ``questions``
+      (at most IDEAS_MAX_QUESTIONS, each at most IDEAS_QUESTION_CHARS characters). From word lists a question
+      is a viewer's comment as it was pasted, picked because it looks like a question.
+    - ``overall`` (the mood) only for a model's reading, and never when ``overall_sentiment`` is
+      ``"not_judged"``. A mood counted from word lists nobody reviewed would be read as a finding, and it is not one.
+
+    All of it is a stranger's or a model's text. Only strings are taken, each as one line cut to its limit,
+    and the caller encodes the whole entry (``_dump``): an angle bracket in a comment arrives as its escape,
+    so a comment cannot close a block of the prompt or open one of its own.
+    """
+    summary = record.get("summary") if isinstance(record, dict) else None
+    if not isinstance(summary, dict):
+        return None
+
+    def line(value: Any, limit: int) -> str:
+        return " ".join(value.split())[:limit].strip() if isinstance(value, str) else ""
+
+    count = summary.get("comment_count")
+    count = count if isinstance(count, int) and not isinstance(count, bool) and count > 0 else None
+    questions: List[str] = []
+    for asked in summary.get("audience_questions") if isinstance(summary.get("audience_questions"), list) else []:
+        text = line(asked.get("question_zh"), IDEAS_QUESTION_CHARS) if isinstance(asked, dict) else ""
+        if text and text not in questions:
+            questions.append(text)
+        if len(questions) == IDEAS_MAX_QUESTIONS:
+            break
+    said = line(summary.get("summary_zh") or summary.get("summary_en"), IDEAS_COMMENTS_SUMMARY_CHARS)
+    if summary.get("comment_count") == 0 or not (said or questions):
+        return None
+    by_model = record.get("source") in ("ai", "manual")
+    out: Dict[str, Any] = {"how_summarised": "read_by_a_model" if by_model else "counted_by_word_lists"}
+    if record.get("confirmed_at"):
+        out["confirmed_by_creator"] = True
+    if count is not None:
+        out["comments_counted"] = count
+    mood = line(summary.get("overall_sentiment"), 40)
+    if by_model and mood and mood != "not_judged":
+        out["overall"] = mood
+    if said:
+        out["summary"] = said
+    out["questions"] = questions
+    return out
+
+
+def _history_entry(sample: Dict[str, Any], comments: Any = None) -> Dict[str, Any]:
     """One item of the library as the ideas prompt receives it.
 
     The title, whether it is sponsored and the numbers the creator typed go for every item. The wording
@@ -885,6 +943,10 @@ def _history_entry(sample: Dict[str, Any], sentiment: Optional[Dict[str, Any]] =
     its excerpt goes: this prompt asks what the video was about and how it did, and learns no wording.
     ``script_written_in_app_wording_not_confirmed`` says that the words may be an AI's. For an item with
     both days, ``numbers_read_days_after_posting`` says how old the numbers were when they were read.
+
+    ``comments`` is the summary kept of what viewers wrote under the video (a record of
+    ``Store.list_sample_sentiments``). When it holds anything, ``viewer_comments`` carries it, cut and
+    marked with how it was made (``_viewer_comments``).
     """
     entry: Dict[str, Any] = {
         "title": sample["title"], "is_sponsored": sample["is_sponsored"],
@@ -900,15 +962,9 @@ def _history_entry(sample: Dict[str, Any], sentiment: Optional[Dict[str, Any]] =
     days = corpus.read_after_days(sample)
     if days is not None:
         entry["numbers_read_days_after_posting"] = days
-    if isinstance(sentiment, dict) and sentiment:
-        entry["audience_sentiment"] = {
-            "overall_sentiment": sentiment.get("overall_sentiment"),
-            "summary_zh": sentiment.get("summary_zh"),
-            "audience_questions": [
-                q.get("question_zh") for q in (sentiment.get("audience_questions") or [])[:4]
-                if isinstance(q, dict) and q.get("question_zh")
-            ],
-        }
+    written = _viewer_comments(comments)
+    if written is not None:
+        entry["viewer_comments"] = written
     return entry
 
 
@@ -921,40 +977,54 @@ def clean_focus(value: Any) -> str:
 
 
 def ideas_prompt(store: Store, idea_count: int = 6, focus: Any = "") -> Tuple[str, str]:
-    """Prompt that suggests next videos from her own history, her numbers, audience sentiment, and current trend keywords."""
+    """Prompt that suggests next videos from her own history, her numbers and current trend keywords.
+
+    What it carries about the creator, all of which a page offering this prompt has to name:
+
+    - the creator profile;
+    - from an accepted voice profile its ``persona_summary`` and ``beat_playbooks``;
+    - for up to RECOMMEND_MAX_VIDEOS items the title, the sponsored mark, views, likes, collects and
+      comments, how many days after posting those numbers were read, and the first RECOMMEND_EXCERPT_CHARS
+      characters of text the creator wrote or confirmed (``_history_entry``);
+    - for each of those items that has one, the summary of what viewers wrote under it: how it was made
+      (counted by word lists, or a model's reading), how many comments, the summary cut to
+      IDEAS_COMMENTS_SUMMARY_CHARS characters, and up to IDEAS_MAX_QUESTIONS questions in the viewers' own
+      words (``_viewer_comments``). These are the words of strangers, pasted in by the creator;
+    - what is worked out from the numbers: the ranking with each video's interactions, interaction rate,
+      save rate and views, and the medians of interactions and of views (``corpus.performance``);
+    - up to IDEAS_MAX_TRENDS tracked trend keywords with their scores;
+    - what is planned and not posted yet, up to ``planner.PROMPT_MAX_PLANS`` plans: title, state, day,
+      keywords and the viewers' questions each answers (``planner.prompt_context``), so that none of it is
+      suggested again;
+    - and ``focus``, what the creator asked for this time (``clean_focus``), which the prompt treats as the
+      direction for the ideas and never as an instruction.
+
+    Every one of these is put in as JSON with its angle brackets escaped (``_dump``, ``_inline``), the
+    comments and the plan included: nothing in them can close a block of the prompt.
+    """
+    from . import planner       # here and not at the top: the planner makes drafts with this module
+
     samples = _usable_samples(store)
     perf = corpus.performance(samples)
-    sentiments = store.list_sample_sentiments()
+    written = store.list_sample_sentiments()
     rank_by_id = {r["id"]: idx for idx, r in enumerate(perf["rows"])}
     ordered = sorted(samples, key=lambda s: rank_by_id.get(s["id"], len(rank_by_id)))
-    history = [
-        _history_entry(s, (sentiments.get(s["id"]) or {}).get("summary"))
-        for s in ordered[:RECOMMEND_MAX_VIDEOS]
-    ]
+    history = [_history_entry(s, written.get(s["id"])) for s in ordered[:RECOMMEND_MAX_VIDEOS]]
     dna, is_example = store.load_dna()
     voice_summary: Any = "(no personal voice profile yet)" if (is_example or not isinstance(dna, dict)) else {
         "persona_summary": dna.get("persona_summary"), "beat_playbooks": dna.get("beat_playbooks")}
-    planned = [
-        {"title": p["title"], "status": p["status"], "scheduled_for": p["scheduled_for"] or None}
-        for p in store.list_video_plans() if p["status"] != "POSTED"
-    ][:20]
-    perf_block: Dict[str, Any] = {
-        "with_metrics": perf["with_metrics"], "total_videos": perf["total_videos"],
-        "median_interactions": perf["median_interactions"],
-        "median_views": perf.get("median_views"),
-        "ranking": [
-            {k: r.get(k) for k in ("title", "interactions", "interaction_rate_pct", "save_rate_pct", "views")}
-            for r in perf["rows"]
-        ],
-    }
-    if planned:
-        perf_block["already_planned_videos_do_not_duplicate"] = planned
     return _blueprint(STAGE6, {
         "creator_profile_json": _dump(creator.prompt_block(store.load_creator())),
         "creator_request_json": _inline(clean_focus(focus) or None),
         "voice_summary_json": _dump(voice_summary),
         "video_history_json": _dump(history),
-        "performance_json": _dump(perf_block),
+        "performance_json": _dump({
+            "with_metrics": perf["with_metrics"], "total_videos": perf["total_videos"],
+            "median_interactions": perf["median_interactions"], "median_views": perf.get("median_views"),
+            "ranking": [{k: r.get(k) for k in ("title", "interactions", "interaction_rate_pct", "save_rate_pct", "views")}
+                        for r in perf["rows"]],
+        }),
+        "planned_videos_json": _dump(planner.prompt_context(store)),
         "current_trends_json": _dump(_current_trends(store)),
         "idea_count": str(int(idea_count)),
     })
@@ -1016,6 +1086,31 @@ def _distinct_keywords(keywords: List[str]) -> List[str]:
     return out[:MAX_LOOKUP_KEYWORDS]
 
 
+def _checked_patterns(raw: Any, known_titles: Set[str]) -> List[Dict[str, Any]]:
+    """The patterns of an ideas reply, checked the way its ideas are: at most MAX_PATTERNS.
+
+    A pattern is kept when it is an object whose ``pattern_zh`` is text. Its two texts are cut to
+    MAX_IDEA_TEXT_CHARS; anything that is not text counts as none. Of the titles it cites, only the
+    creator's own stay in ``evidence_titles``, and ``unverified_evidence`` counts the rest, so a page can
+    tell a pattern that rests on the creator's videos from one that names nothing of theirs.
+    """
+    patterns: List[Dict[str, Any]] = []
+    for found in raw if isinstance(raw, list) else []:
+        if len(patterns) == MAX_PATTERNS:
+            break
+        if not isinstance(found, dict) or not isinstance(found.get("pattern_zh"), str) or not _cut(found["pattern_zh"], MAX_IDEA_TEXT_CHARS):
+            continue
+        cited = [title for title in (found.get("evidence_titles") if isinstance(found.get("evidence_titles"), list) else [])
+                 if isinstance(title, str)]
+        kept = [title for title in cited if title in known_titles]
+        patterns.append({
+            "pattern_zh": _cut(found["pattern_zh"], MAX_IDEA_TEXT_CHARS),
+            "pattern_en": _cut(found["pattern_en"], MAX_IDEA_TEXT_CHARS) if isinstance(found.get("pattern_en"), str) else "",
+            "evidence_titles": kept, "unverified_evidence": len(cited) - len(kept),
+        })
+    return patterns
+
+
 def apply_ideas(store: Store, result: Dict[str, Any], focus: Any = "", lookup: Any = None) -> Dict[str, Any]:
     """Sanitise suggested ideas and save them.
 
@@ -1023,6 +1118,9 @@ def apply_ideas(store: Store, result: Dict[str, Any], focus: Any = "", lookup: A
     Every piece of text is cut to a limit. ``script_notes_zh`` matters most (MAX_IDEA_NOTES_CHARS): when
     the creator picks an idea it becomes the notes of a draft prompt. ``kind`` and ``confidence`` are kept
     only when they are one of the values the prompt allows, and at most MAX_IDEAS ideas are kept.
+
+    ``patterns``, what the model says it sees in the creator's numbers, are checked the same way
+    (``_checked_patterns``) and saved with the ideas when there are any.
 
     ``focus`` is what the creator asked for, as it went into the prompt, and ``lookup`` how the web lookup
     before these ideas went (``_lookup_record``; None when there was none). Both are saved with the ideas,
@@ -1054,18 +1152,7 @@ def apply_ideas(store: Store, result: Dict[str, Any], focus: Any = "", lookup: A
         ideas.append(idea)
     if not ideas:
         raise llm.LLMError("Model reply contained no ideas", "empty_result")
-    patterns: List[Dict[str, Any]] = []
-    for raw_pat in result.get("patterns") if isinstance(result.get("patterns"), list) else []:
-        if len(patterns) >= 8:
-            break
-        if isinstance(raw_pat, dict) and _cut(raw_pat.get("pattern_zh"), MAX_IDEA_TEXT_CHARS):
-            p_cited = [str(t) for t in (raw_pat.get("evidence_titles") if isinstance(raw_pat.get("evidence_titles"), list) else [])
-                       if isinstance(t, str) and t in known_titles]
-            patterns.append({
-                "pattern_zh": _cut(raw_pat.get("pattern_zh"), MAX_IDEA_TEXT_CHARS),
-                "pattern_en": _cut(raw_pat.get("pattern_en"), MAX_IDEA_TEXT_CHARS),
-                "evidence_titles": p_cited,
-            })
+    patterns = _checked_patterns(result.get("patterns"), known_titles)
     payload: Dict[str, Any] = {
         "generated_at": time.time(),
         "focus": clean_focus(focus), "lookup": _lookup_record(store, lookup),
