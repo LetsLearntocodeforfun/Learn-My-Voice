@@ -11,9 +11,10 @@ Scoring is deterministic:
       freshness = 0.5 ** (days since last seen / HALF_LIFE_DAYS)
     performance = 0.5 + shrunk / 4, clamped                          0..1; 0.5 = like her usual video
       shrunk    = average log2(interactions / her median) over her on-topic
-                  videos, each capped at +-LOG_CAP, then averaged together with
-                  PRIOR_VIDEOS ordinary videos. Working in logs with a cap means
-                  one viral video cannot dominate.
+                  videos (or log2(views / her median views) for a video that
+                  carries views alone), each capped at +-LOG_CAP, then averaged
+                  together with PRIOR_VIDEOS ordinary videos. Working in logs
+                  with a cap means one viral video cannot dominate.
     score       = w_trend * trend + w_mine * performance             shown as 0..100
 
 The constants and weights below are judgement calls. They have not been tuned
@@ -227,9 +228,7 @@ def score_trends(trend_rows: List[Dict[str, Any]], samples: List[Dict[str, Any]]
         matched = [m for m in matched if m[0] >= RELEVANT_AT]
         log_ratios: List[Tuple[float, float]] = []
         for rel, _, total, views in matched:
-            if total is not None and baseline and views is not None and views_baseline:
-                log_ratios.append((rel, 0.6 * _log_ratio(float(total), baseline) + 0.4 * _log_ratio(float(views), views_baseline)))
-            elif total is not None and baseline:
+            if total is not None and baseline:
                 log_ratios.append((rel, _log_ratio(float(total), baseline)))
             elif total is None and views is not None and views_baseline:
                 log_ratios.append((rel, _log_ratio(float(views), views_baseline)))
@@ -261,8 +260,7 @@ def score_trends(trend_rows: List[Dict[str, Any]], samples: List[Dict[str, Any]]
     return {
         "trends": [item for _, item in scored], "weight": weight,
         "weights": {"trend": w_trend, "mine": w_mine},
-        "baseline_interactions": baseline, "baseline_views": views_baseline,
-        "videos_with_numbers": len(totals),
+        "baseline_interactions": baseline, "videos_with_numbers": len(totals),
         "half_life_days": HALF_LIFE_DAYS, "prior_videos": PRIOR_VIDEOS,
     }
 

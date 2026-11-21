@@ -87,7 +87,7 @@ WINDOW_CHECK_ENV = "LEARN_MY_VOICE_WINDOW_CHECK"
 NO_UPDATE_CHECK_ENV = "LEARN_MY_VOICE_NO_UPDATE_CHECK"
 DEFAULT_PORT = 8765
 UNTITLED = {"zh": "未命名脚本", "en": "Untitled script"}
-MANUAL_TASKS = ("draft", "voice", "ideas", "trends", "suggest", "video_ingest", "sentiment")
+MANUAL_TASKS = ("draft", "voice", "ideas", "trends", "suggest", "video_ingest", "sentiment", "comment_ocr")
 IDLE_TIMEOUT_SEC = 30                   # a connection that sends nothing for this long while it is being read is closed
 
 # Sent with every answer. The pages load their scripts and their style sheet from this server, style some
@@ -991,12 +991,17 @@ class Handler(BaseHTTPRequestHandler):
             except rednote_analytics.AnalyticsError as exc:
                 raise ApiError(exc.status, exc.code, exc.message, exc.message_zh)
             return {"prompt": pipeline.single_prompt(system, user), "brief_id": brief_id}
+        elif task == "comment_ocr":
+            system, user = rednote_analytics.build_comment_screenshot_prompt()
+            return {"prompt": pipeline.single_prompt(system, user)}
         else:
             system, user = pipeline.ideas_prompt(store, focus=_focus(body))
         return {"prompt": pipeline.single_prompt(system, user)}
 
     def _manual_reply(self, body: Dict[str, Any]) -> None:
         store, task = self.app.store, _task(body)
+        if task == "comment_ocr":
+            return self._json(_counting(lambda: rednote_analytics.apply_screenshot_ocr_reply(str(body.get("reply") or ""))))
         # For ideas: what was asked, and the lookup that came before. Malformed ones are refused before the reply is read.
         focus, lookup = (_focus(body), _pasted_lookup(body)) if task == "ideas" else ("", None)
         result = llm.parse_manual_reply(str(body.get("reply") or ""), task)
@@ -1754,27 +1759,25 @@ class Handler(BaseHTTPRequestHandler):
                 raise ApiError(exc.status, exc.code, exc.message, exc.message_zh, extra=exc.extra)
             return self._json(res, 201)
 
-        # ---- RedNote view-count velocity, Creator Center import & sentiment -
+        # ---- numbers by day, a table from the Creator Center, comments (studio/rednote_analytics.py) ----
         if route == ("GET", "/api/rednote/overview"):
             return self._json(rednote_analytics.analytics_overview(store))
-        if route == ("POST", "/api/rednote/extract-link"):
-            return self._json(rednote_analytics.extract_share_link(self._read_json().get("text")))
+        if route == ("POST", "/api/rednote/import/preview"):
+            # A table the creator saved from the Creator Center: {"name", "text" or "file_base64"} and, once the
+            # creator has picked them, "fields". Looking stores nothing.
+            return self._json(_counting(lambda: rednote_analytics.preview(store, self._read_json())))
         if route == ("POST", "/api/rednote/import"):
+            # The same file, the columns, and the "fingerprint" of the preview: exactly what that preview showed is stored.
+            return self._json(_counting(lambda: rednote_analytics.bring_in(store, self._read_json())), 201)
+        if route == ("POST", "/api/rednote/comments/ocr"):
+            self._require_ai()
+            return self._json(_counting(lambda: rednote_analytics.read_comments_from_screenshots_ai(
+                store, self._read_json(), transport=app.transport)))
+
+        m = re.fullmatch(r"/api/samples/([0-9a-f]{12})/posted-on", path)
+        if m and method == "PUT":
             body = self._read_json()
-            b64 = body.get("data_base64")
-            if not isinstance(b64, str) or not b64.strip():
-                raise ApiError(400, "missing_file", "Choose a CSV, TSV, or XLSX file to import.",
-                               "请选择要导入的 CSV、TSV 或 XLSX 数据表。")
-            try:
-                raw_bytes = base64.b64decode(b64, validate=False)
-            except Exception:
-                raise ApiError(400, "bad_base64", "Invalid file encoding.", "文件编码无效。")
-            try:
-                rows = rednote_analytics.parse_creator_center_rows(raw_bytes, str(body.get("filename") or "analytics.csv"))
-                synced = rednote_analytics.sync_analytics_rows(store, rows, create_missing=bool(body.get("create_missing")))
-            except rednote_analytics.AnalyticsError as exc:
-                raise ApiError(exc.status, exc.code, exc.message, exc.message_zh)
-            return self._json(dict(synced, overview=rednote_analytics.analytics_overview(store)), 201)
+            return self._json(_counting(lambda: rednote_analytics.set_sample_posted_on(store, m.group(1), body.get("posted_on"))))
 
         m = re.fullmatch(r"/api/samples/([0-9a-f]{12})/comments", path)
         if m:
@@ -1788,10 +1791,12 @@ class Handler(BaseHTTPRequestHandler):
                 snaps = store.list_metric_snapshots(sid)
                 return self._json({
                     "sample_id": sid,
+                    "posted_on": sample.get("posted_on"),
+                    "from_script": sample.get("origin") == rednote_analytics.ORIGIN_SCRIPT,
                     "comments": comments,
                     "sentiment": sent["summary"] if sent else rednote_analytics.build_local_sentiment_summary(sample, comments),
                     "sentiment_source": sent["source"] if sent else "local",
-                    "velocity": rednote_analytics.sample_velocity(sample, snaps),
+                    "per_day": rednote_analytics.views_per_day(sample, snaps),
                 })
             if method == "POST":
                 body = self._read_json()
@@ -1895,6 +1900,15 @@ def _posting(work: Any) -> Any:
         raise _stale_script(exc)
     except TextTooLong as exc:
         raise ApiError(413, exc.code, exc.message, exc.message_zh, extra={"limit": exc.limit})
+
+
+def _counting(work: Any) -> Any:
+    """Run a step about numbers or comments, turning its refusals (``rednote_analytics.AnalyticsError``) into answers
+    a page can show, in both languages."""
+    try:
+        return work()
+    except rednote_analytics.AnalyticsError as exc:
+        raise ApiError(exc.status, exc.code, exc.message, exc.message_zh)
 
 
 def _referring(work: Any) -> Any:

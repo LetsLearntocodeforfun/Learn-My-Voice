@@ -32,6 +32,8 @@ CLOUD_PROVIDERS = ("gemini", "openai", "anthropic")
 PROVIDERS = CLOUD_PROVIDERS + ("local",)
 MANUAL_PROVIDER = "manual"  # copy-and-paste with a chat subscription: no key, no model
 METRIC_FIELDS = ("views", "likes", "collects", "comments")
+EXTRA_METRIC_FIELDS = ("shares", "new_followers", "click_rate_pct", "avg_watch_sec", "completion_rate_pct")
+SNAPSHOT_FIELDS = METRIC_FIELDS + EXTRA_METRIC_FIELDS
 MAX_KEYWORD_CHARS = 40
 MAX_KEYWORDS_PER_SCRIPT = 8
 MAX_TRENDS = 2000           # tracked trend keywords kept in SQLite; oldest unverified entries go first when full
@@ -39,6 +41,7 @@ SAMPLE_KINDS = ("script", "subtitle", "video")   # typed or pasted text; a subti
 MAX_SOURCE_NAME_CHARS = 200
 MAX_BRIEFS = 200            # records of what a prompt contained; the oldest are dropped
 MAX_AI_SUGGESTIONS = 300    # texts an AI suggested for the lines of one script that are remembered; the oldest are dropped
+MAX_SNAPSHOTS_PER_SAMPLE = 365      # days on which the numbers of one library item were read that are kept; the oldest are dropped
 # The text of one library item, in characters. No real script or transcript comes near it: at a fast 300
 # characters a minute this is more than 27 hours of speech in Chinese, and about 9 hours in English. It is
 # there so that one file somebody handed the creator cannot make every page slow or fill the database.
@@ -85,6 +88,7 @@ def kept_value(name: Any, value: Any) -> Optional[str]:
     return None
 
 _DNA_LOCK = threading.RLock()       # one replacement of the active voice profile at a time
+_DAY_TEXT = re.compile(r"[0-9]{4}-[0-9]{2}-[0-9]{2}", re.ASCII)      # a day as it is stored: YYYY-MM-DD
 # Copies of earlier voice profiles: voice_dna-<date>-<time>[-<n>].json, or .unreadable for one that could not be read.
 _HISTORY_FILE = re.compile(r"voice_dna-([0-9]{8}-[0-9]{6})(?:-([0-9]{1,6}))?\.(json|unreadable)")
 HISTORY_ID = r"[0-9]{8}-[0-9]{6}(?:-[0-9]{1,6})?"     # the id of an earlier profile: the part of the name between "voice_dna-" and ".json"
@@ -265,19 +269,22 @@ CREATE TABLE IF NOT EXISTS script_pins (
 CREATE TABLE IF NOT EXISTS metric_snapshots (
     id TEXT PRIMARY KEY,
     sample_id TEXT NOT NULL,
-    recorded_on TEXT NOT NULL DEFAULT '',
+    read_on TEXT NOT NULL,
     views INTEGER,
     likes INTEGER,
     collects INTEGER,
     comments INTEGER,
-    note_url TEXT NOT NULL DEFAULT '',
+    shares INTEGER,
+    new_followers INTEGER,
+    click_rate_pct REAL,
+    avg_watch_sec REAL,
+    completion_rate_pct REAL,
     created_at REAL NOT NULL
 );
 CREATE INDEX IF NOT EXISTS metric_snapshots_by_sample ON metric_snapshots (sample_id);
 CREATE TABLE IF NOT EXISTS sample_comments (
     id TEXT PRIMARY KEY,
     sample_id TEXT NOT NULL,
-    author TEXT NOT NULL DEFAULT '',
     text TEXT NOT NULL,
     likes INTEGER,
     sentiment TEXT NOT NULL DEFAULT 'neutral',
@@ -372,6 +379,11 @@ def _script_summary(lines: List[Dict[str, Any]]) -> Tuple[int, str]:
     return len(lines), preview[:60]
 
 
+def _today(now: Optional[float] = None) -> str:
+    """Today by this computer's clock, as a day is stored (``YYYY-MM-DD``)."""
+    return time.strftime("%Y-%m-%d", time.localtime(now))
+
+
 def _metric(value: Any) -> Optional[int]:
     """A non-negative count, or None for blank / invalid input (a number that is not finite or too large to store included)."""
     if isinstance(value, bool) or value is None or value == "":
@@ -381,6 +393,36 @@ def _metric(value: Any) -> Optional[int]:
     except (TypeError, ValueError, OverflowError):
         return None
     return number if 0 <= number < 2 ** 63 else None
+
+
+def _rate_pct(value: Any) -> Optional[float]:
+    """A percentage from 0 to 100, or None for blank / invalid input."""
+    if isinstance(value, bool) or value is None or value == "":
+        return None
+    try:
+        number = float(value)
+    except (TypeError, ValueError, OverflowError):
+        return None
+    return round(number, 2) if math.isfinite(number) and 0.0 <= number <= 100.0 else None
+
+
+def _seconds_val(value: Any) -> Optional[float]:
+    """A non-negative duration in seconds (< 86,400), or None for blank / invalid input."""
+    if isinstance(value, bool) or value is None or value == "":
+        return None
+    try:
+        number = float(value)
+    except (TypeError, ValueError, OverflowError):
+        return None
+    return round(number, 1) if math.isfinite(number) and 0.0 <= number < 86400.0 else None
+
+
+def _snapshot_value(field: str, value: Any) -> Any:
+    if field in ("click_rate_pct", "completion_rate_pct"):
+        return _rate_pct(value)
+    if field == "avg_watch_sec":
+        return _seconds_val(value)
+    return _metric(value)
 
 
 def clean_keyword(text: Any) -> str:
@@ -1003,6 +1045,8 @@ class Store:
                 "note_url": row["note_url"] or "", "metrics_on": row["metrics_on"],
                 "ai_draft": _json_object(row["ai_json"]), "snapshot": row["snapshot"] or "",
             })
+        elif row["posted_on"]:
+            sample["posted_on"] = row["posted_on"]
         return sample
 
     def list_samples(self) -> List[Dict[str, Any]]:
@@ -1067,6 +1111,9 @@ class Store:
         learned from until the creator says the words are theirs. One script has one item: a second one for
         the same script raises ``sqlite3.IntegrityError`` and nothing is stored.
 
+        The numbers an item arrives with are its first reading, kept under the day they were read
+        (``record_metric_snapshot``): the day ``posted`` names, else today.
+
         Text longer than MAX_SAMPLE_CHARS raises ``TextTooLong`` and nothing is stored.
         """
         text = text.replace("\r\n", "\n").strip()
@@ -1107,18 +1154,13 @@ class Store:
                  _dumps(ai_draft) if isinstance(ai_draft, dict) else None,
                  str(posted.get("snapshot") or "") if posted else "", now, now),
             )
-        if any(x is not None for x in (v_val, l_val, c_val, m_val)):
-            rec_day = str((posted or {}).get("metrics_on") or time.strftime("%Y-%m-%d", time.localtime(now)))
-            rec_url = str((posted or {}).get("note_url") or "")
-            self.record_metric_snapshot(
-                sample_id, views=v_val, likes=l_val, collects=c_val, comments=m_val,
-                recorded_on=rec_day, note_url=rec_url,
-            )
+            numbers = {field: value for field, value in zip(METRIC_FIELDS, (v_val, l_val, c_val, m_val)) if value is not None}
+            if numbers:
+                self._keep_reading(db, sample_id, str((posted or {}).get("metrics_on") or _today(now)), numbers, now)
         return self.get_sample(sample_id)  # type: ignore[return-value]
 
     def update_sample(self, sample_id: str, changes: Dict[str, Any],
-                      posted: Optional[Dict[str, Any]] = None,
-                      *, record_snapshot: bool = True) -> Optional[Dict[str, Any]]:
+                      posted: Optional[Dict[str, Any]] = None) -> Optional[Dict[str, Any]]:
         """Apply ``changes`` (unknown keys are ignored; ``kind`` and ``timing`` cannot be changed).
 
         ``posted`` holds new values for a posted item's own columns (POSTED_COLUMNS), already checked by
@@ -1128,6 +1170,12 @@ class Store:
         ``needs_review`` changes only when it is given as a boolean. Editing the
         text does not confirm an item: confirming is its own act. ``reviewed_at``
         is the moment an item that was waiting got confirmed, and is cleared if it is put back to waiting.
+
+        A number that ``changes`` names was read now, or cleared now, so it is also kept in the item's reading of
+        the day (``record_metric_snapshot``): the day ``posted`` gives for the numbers, else the day the item
+        already has for them, else today. A number the request does not name is not written into that reading: it
+        was read on some other day. When ``posted`` only moves the day of numbers that stay as they are, their
+        reading moves with them.
 
         Text longer than MAX_SAMPLE_CHARS raises ``TextTooLong`` and none of ``changes`` is applied.
         """
@@ -1151,13 +1199,11 @@ class Store:
             sets.append("text = ?"); values.append(text)
         if "is_sponsored" in changes:
             sets.append("is_sponsored = ?"); values.append(int(bool(changes["is_sponsored"])))
-        metrics_touched = False
+        read: Dict[str, Optional[int]] = {}     # the numbers this request names
         for field in METRIC_FIELDS:
             if field in changes:
-                new_m = _metric(changes[field])
-                if new_m != existing.get(field):
-                    metrics_touched = True
-                sets.append("%s = ?" % field); values.append(new_m)
+                read[field] = _metric(changes[field])
+                sets.append("%s = ?" % field); values.append(read[field])
         if changes.get("needs_review") is True:
             sets.append("needs_review = 1"); sets.append("reviewed_at = NULL")
         elif changes.get("needs_review") is False:
@@ -1170,22 +1216,18 @@ class Store:
         if sets:
             sets.append("updated_at = ?"); values.append(now)
             values.append(sample_id)
+            day_was = existing.get("metrics_on")
+            day_is = posted["metrics_on"] if (isinstance(posted, dict) and "metrics_on" in posted) else day_was
             with self._db() as db:
                 db.execute("UPDATE samples SET %s WHERE id = ?" % ", ".join(sets), values)
-        updated = self.get_sample(sample_id)
-        if record_snapshot and updated and metrics_touched and any(updated.get(f) is not None for f in METRIC_FIELDS):
-            rec_day = str((posted or {}).get("metrics_on") or updated.get("metrics_on") or time.strftime("%Y-%m-%d", time.localtime(now)))
-            rec_url = str((posted or {}).get("note_url") or updated.get("note_url") or "")
-            self.record_metric_snapshot(
-                sample_id,
-                views=updated.get("views"),
-                likes=updated.get("likes"),
-                collects=updated.get("collects"),
-                comments=updated.get("comments"),
-                recorded_on=rec_day,
-                note_url=rec_url,
-            )
-        return updated
+                if read:
+                    self._keep_reading(db, sample_id, day_is or _today(now), read, now)
+                if day_is and day_is != day_was and all(read[field] == existing.get(field) for field in read):
+                    # Numbers that stay as they are and get a day, or another day: their reading is that day's.
+                    if day_was:
+                        db.execute("DELETE FROM metric_snapshots WHERE sample_id = ? AND read_on = ?", (sample_id, day_was))
+                    self._keep_reading(db, sample_id, day_is, {field: existing.get(field) for field in METRIC_FIELDS}, now)
+        return self.get_sample(sample_id)
 
     def replace_sample_text(self, sample_id: str, *, text: str, kind: str, needs_review: bool,
                             timing: Optional[Dict[str, Any]] = None, source_name: str = "",
@@ -1728,63 +1770,112 @@ class Store:
         payload = _json_object(row["payload_json"]) if row else None
         return {"id": row["id"], "payload": payload, "created_at": row["created_at"]} if payload is not None else None
 
-    # ---- RedNote metric snapshots, viewer comments & sentiment ----------
-    def record_metric_snapshot(self, sample_id: str, *, views: Any = None, likes: Any = None,
-                               collects: Any = None, comments: Any = None,
-                               recorded_on: str = "", note_url: str = "") -> Optional[Dict[str, Any]]:
-        """Record or refresh a daily metric snapshot for ``sample_id`` (capped at 365 points per item)."""
-        v_val, l_val = _metric(views), _metric(likes)
-        c_val, m_val = _metric(collects), _metric(comments)
-        if all(x is None for x in (v_val, l_val, c_val, m_val)):
-            return None
+    # ---- numbers by day (studio/rednote_analytics.py) ------------------------
+    @staticmethod
+    def _keep_reading(db: sqlite3.Connection, sample_id: str, read_on: str, values: Dict[str, Any], now: float) -> None:
+        """Inside a transaction that already holds the write lock: what ``record_metric_snapshot`` does to one reading."""
+        if not isinstance(read_on, str) or not _DAY_TEXT.fullmatch(read_on):
+            raise ValueError("a reading needs the day it was read, as YYYY-MM-DD")
+        given = {field: _snapshot_value(field, values[field]) for field in SNAPSHOT_FIELDS if field in values}
+        if not given:
+            return
+        row = db.execute("SELECT * FROM metric_snapshots WHERE sample_id = ? AND read_on = ? ORDER BY rowid LIMIT 1",
+                         (sample_id, read_on)).fetchone()
+        held = {field: (row[field] if row else None) for field in SNAPSHOT_FIELDS}
+        held.update(given)
+        numbers = [held[field] for field in SNAPSHOT_FIELDS]
+        if all(number is None for number in numbers):
+            if row:
+                db.execute("DELETE FROM metric_snapshots WHERE id = ?", (row["id"],))
+        elif row:
+            db.execute("UPDATE metric_snapshots SET %s, created_at = ? WHERE id = ?" % ", ".join("%s = ?" % f for f in SNAPSHOT_FIELDS),
+                       numbers + [now, row["id"]])
+        else:
+            db.execute("INSERT INTO metric_snapshots (id, sample_id, read_on, %s, created_at) VALUES (?,?,?,%s,?)"
+                       % (", ".join(SNAPSHOT_FIELDS), ",".join("?" * len(SNAPSHOT_FIELDS))),
+                       [uuid.uuid4().hex[:12], sample_id, read_on] + numbers + [now])
+            db.execute("DELETE FROM metric_snapshots WHERE sample_id = ? AND rowid NOT IN"
+                       " (SELECT rowid FROM metric_snapshots WHERE sample_id = ? ORDER BY read_on DESC, rowid DESC LIMIT ?)",
+                       (sample_id, sample_id, MAX_SNAPSHOTS_PER_SAMPLE))
+
+    def record_metric_snapshot(self, sample_id: str, read_on: str, values: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+        """Keep the numbers of a library item as they were read on one day. Returns that day's reading, or None.
+
+        The numbers of a video keep changing, and what an item carries (``views`` and the rest) is only the last
+        reading. Kept by day, two readings say how much was gained in between. ``read_on`` is the day the numbers
+        were read (``YYYY-MM-DD``), never the day the video was posted and not the day this was stored.
+
+        ``values`` names the numbers that were read (METRIC_FIELDS). A name left out was not read that day and keeps
+        what the day's reading already holds; a number given as None, or as something that is no count, was cleared.
+        An item has one reading a day: reading it again on the same day changes that reading. A reading left
+        without any number is removed. Of one item the readings of MAX_SNAPSHOTS_PER_SAMPLE days are kept; the
+        oldest days go first.
+
+        None when the item is not in the library, or when nothing is left of that day's reading. A ``read_on`` in
+        another form raises ``ValueError``: the callers check what a person typed before it gets here.
+        """
         now = time.time()
-        day = (recorded_on or "").strip()[:10]
-        if not re.fullmatch(r"[0-9]{4}-[0-9]{2}-[0-9]{2}", day):
-            day = time.strftime("%Y-%m-%d", time.localtime(now))
-        clean_url = str(note_url or "").strip()[:1000]
         with self._db() as db:
             db.execute("BEGIN IMMEDIATE")
             if db.execute("SELECT 1 FROM samples WHERE id = ?", (sample_id,)).fetchone() is None:
                 return None
-            existing = db.execute(
-                "SELECT id, note_url FROM metric_snapshots WHERE sample_id = ? AND recorded_on = ? ORDER BY rowid DESC LIMIT 1",
-                (sample_id, day),
-            ).fetchone()
-            if existing is not None:
-                snap_id = existing["id"]
-                db.execute(
-                    "UPDATE metric_snapshots SET views = ?, likes = ?, collects = ?, comments = ?, note_url = ?, created_at = ? WHERE id = ?",
-                    (v_val, l_val, c_val, m_val, clean_url or existing["note_url"] or "", now, snap_id),
-                )
-            else:
-                snap_id = uuid.uuid4().hex[:12]
-                db.execute(
-                    "INSERT INTO metric_snapshots (id, sample_id, recorded_on, views, likes, collects, comments, note_url, created_at)"
-                    " VALUES (?,?,?,?,?,?,?,?,?)",
-                    (snap_id, sample_id, day, v_val, l_val, c_val, m_val, clean_url, now),
-                )
-                db.execute(
-                    "DELETE FROM metric_snapshots WHERE sample_id = ? AND rowid NOT IN"
-                    " (SELECT rowid FROM metric_snapshots WHERE sample_id = ? ORDER BY recorded_on DESC, rowid DESC LIMIT 365)",
-                    (sample_id, sample_id),
-                )
-            row = db.execute("SELECT * FROM metric_snapshots WHERE id = ?", (snap_id,)).fetchone()
+            self._keep_reading(db, sample_id, read_on, values, now)
+            row = db.execute("SELECT * FROM metric_snapshots WHERE sample_id = ? AND read_on = ? ORDER BY rowid LIMIT 1",
+                             (sample_id, read_on)).fetchone()
         return dict(row) if row else None
 
+    def apply_readings(self, readings: List[Dict[str, Any]]) -> int:
+        """Store the readings an import brings, all of them or none. Returns how many were stored.
+
+        Each is ``{"sample_id", "read_on", "values", "current"}``. The numbers in ``values`` (METRIC_FIELDS) are kept
+        as the item's reading of that day (``record_metric_snapshot``). Where ``current`` is true they also become
+        the numbers the item carries, the ones every page and every ranking reads; an item made from a posted
+        script keeps the day its numbers were read beside them (``metrics_on``), so that day moves with them.
+
+        Raises ``KeyError`` when one of the items is not in the library (any more). Nothing is stored then: all of it
+        is written in one transaction.
+        """
+        now = time.time()
+        with self._db() as db:
+            db.execute("BEGIN IMMEDIATE")
+            for reading in readings:
+                sample_id, read_on = reading["sample_id"], reading["read_on"]
+                row = db.execute("SELECT origin FROM samples WHERE id = ?", (sample_id,)).fetchone()
+                if row is None:
+                    raise KeyError(sample_id)
+                snap_vals = {field: _snapshot_value(field, reading["values"][field])
+                             for field in SNAPSHOT_FIELDS if field in reading["values"]}
+                self._keep_reading(db, sample_id, read_on, snap_vals, now)
+                numbers = {field: snap_vals[field] for field in METRIC_FIELDS if field in snap_vals}
+                if reading.get("current") and numbers:
+                    sets = ["%s = ?" % field for field in numbers] + ["updated_at = ?"]
+                    values = list(numbers.values()) + [now]
+                    if row["origin"] == ORIGIN_SCRIPT:
+                        sets.append("metrics_on = ?"); values.append(read_on)
+                    db.execute("UPDATE samples SET %s WHERE id = ?" % ", ".join(sets), values + [sample_id])
+        return len(readings)
+
     def list_metric_snapshots(self, sample_id: Optional[str] = None) -> List[Dict[str, Any]]:
-        """Time-series metric snapshots ordered chronologically (oldest to newest)."""
+        """The readings that are kept, the oldest day first: those of one library item, or of all of them.
+
+        Each is ``{"id", "sample_id", "read_on", "views", "likes", "collects", "comments", "created_at"}``. A number
+        that was not read on that day is None.
+        """
+        query = "SELECT * FROM metric_snapshots %s ORDER BY read_on ASC, rowid ASC"
         with self._db() as db:
             if sample_id is None:
-                rows = db.execute("SELECT * FROM metric_snapshots ORDER BY recorded_on ASC, created_at ASC, rowid ASC").fetchall()
+                rows = db.execute(query % "").fetchall()
             else:
-                rows = db.execute(
-                    "SELECT * FROM metric_snapshots WHERE sample_id = ? ORDER BY recorded_on ASC, created_at ASC, rowid ASC",
-                    (sample_id,),
-                ).fetchall()
-        return [dict(r) for r in rows]
+                rows = db.execute(query % "WHERE sample_id = ?", (sample_id,)).fetchall()
+        return [dict(row) for row in rows]
 
+    # ---- what viewers wrote under a video (studio/rednote_analytics.py) -----
     def add_sample_comments(self, sample_id: str, items: List[Dict[str, Any]], *, replace: bool = False) -> int:
-        """Store viewer comments for ``sample_id`` (capped at 500 newest/highest-liked comments)."""
+        """Store cleaned viewer comments for ``sample_id`` (up to 500, highest-liked and newest kept).
+
+        No commenter names or handles are stored: ``sample_comments`` holds only the comment text, optional like
+        count, word-list tag, and question flag.
+        """
         now = time.time()
         cleaned: List[Tuple[Any, ...]] = []
         for raw in items[:500]:
@@ -1793,13 +1884,12 @@ class Store:
             txt = str(raw.get("text") or "").strip()[:2000]
             if not txt:
                 continue
-            author = str(raw.get("author") or "").strip()[:120]
             likes = _metric(raw.get("likes"))
             sentiment = str(raw.get("sentiment") or "neutral").strip().lower()
             if sentiment not in ("positive", "neutral", "negative", "mixed"):
                 sentiment = "neutral"
             is_q = 1 if bool(raw.get("is_question")) else 0
-            cleaned.append((uuid.uuid4().hex[:12], sample_id, author, txt, likes, sentiment, is_q, now))
+            cleaned.append((uuid.uuid4().hex[:12], sample_id, txt, likes, sentiment, is_q, now))
         with self._db() as db:
             db.execute("BEGIN IMMEDIATE")
             if db.execute("SELECT 1 FROM samples WHERE id = ?", (sample_id,)).fetchone() is None:
@@ -1808,8 +1898,8 @@ class Store:
                 db.execute("DELETE FROM sample_comments WHERE sample_id = ?", (sample_id,))
             if cleaned:
                 db.executemany(
-                    "INSERT INTO sample_comments (id, sample_id, author, text, likes, sentiment, is_question, created_at)"
-                    " VALUES (?,?,?,?,?,?,?,?)",
+                    "INSERT INTO sample_comments (id, sample_id, text, likes, sentiment, is_question, created_at)"
+                    " VALUES (?,?,?,?,?,?,?)",
                     cleaned,
                 )
                 db.execute(
@@ -1820,13 +1910,14 @@ class Store:
         return len(cleaned)
 
     def list_sample_comments(self, sample_id: str) -> List[Dict[str, Any]]:
+        """Stored viewer comments for ``sample_id``, highest-liked then newest first."""
         with self._db() as db:
             rows = db.execute(
                 "SELECT * FROM sample_comments WHERE sample_id = ? ORDER BY COALESCE(likes, 0) DESC, created_at DESC, rowid DESC",
                 (sample_id,),
             ).fetchall()
         return [{
-            "id": r["id"], "sample_id": r["sample_id"], "author": r["author"] or "",
+            "id": r["id"], "sample_id": r["sample_id"],
             "text": r["text"], "likes": r["likes"], "sentiment": r["sentiment"] or "neutral",
             "is_question": bool(r["is_question"]), "created_at": r["created_at"],
         } for r in rows]
