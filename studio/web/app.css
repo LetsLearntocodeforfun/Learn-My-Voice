@@ -584,3 +584,27 @@ table.bk-table td, table.bk-table th { text-align: left; overflow-wrap: anywhere
   .wrap.rf-on > #rf-box { position: absolute; top: 0; right: calc(-1 * var(--rf-out)); bottom: -80px; width: var(--rf-w); margin: 0; }
   .wrap.rf-on .rf-panel { position: sticky; top: calc(16px - var(--view-pad)); max-height: calc(100vh - 32px); }
 }
+
+/* ---------- the plan: a week or a month of days (planner.js) ----------
+   No colour of its own: a day is a card, a plan in it a quiet button, today the accent, a posted plan the green label. */
+.pl-scroll { overflow-x: auto; padding-bottom: 4px; }
+.pl-cal { display: grid; grid-template-columns: repeat(7, minmax(0, 1fr)); gap: 6px; min-width: 640px; }
+.pl-wd { font-size: 12.5px; color: var(--muted); text-align: center; padding: 2px 0; }
+.pl-day { display: flex; flex-direction: column; gap: 4px; min-width: 0; min-height: 86px; padding: 6px;
+  background: var(--card); border: 1px solid var(--line); border-radius: 10px; }
+.pl-cal.week .pl-day { min-height: 150px; }
+.pl-day.out { background: none; }
+.pl-num { align-self: flex-start; border: 0; background: none; color: var(--ink); font: inherit; font-size: 13px;
+  border-radius: 980px; padding: 1px 8px; cursor: pointer; }
+.pl-num:hover { background: var(--fill); }
+.pl-day.today .pl-num { background: var(--accent); color: var(--on-accent); font-weight: 600; }
+.pl-chip { display: block; width: 100%; border: 0; border-radius: 7px; padding: 4px 7px; background: var(--fill); color: var(--ink);
+  font: inherit; font-size: 12.5px; line-height: 1.35; text-align: left; cursor: pointer;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.pl-chip:hover { background: var(--fill-hover); }
+.pl-chip.posted { background: var(--ok-soft); color: var(--ok); }
+.pl-chip.on { box-shadow: 0 0 0 2px var(--accent); }
+.pl-loose { display: flex; flex-wrap: wrap; gap: 6px; }
+.pl-loose .pl-chip { width: auto; max-width: 100%; }
+.pl-pick { display: flex; gap: 10px; align-items: flex-start; padding: 7px 0; cursor: pointer; }
+.pl-pick input { flex: none; margin-top: 5px; }
