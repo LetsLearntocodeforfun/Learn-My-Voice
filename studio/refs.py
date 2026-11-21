@@ -53,11 +53,12 @@ import re
 from typing import Any, Callable, Dict, List, Optional, Sequence, Tuple
 
 from . import corpus, hooks, trends
-from .store import METRIC_FIELDS, ORIGIN_SCRIPT, Store, keyword_key, normalize_keywords
+from .store import BEAT_TYPES, METRIC_FIELDS, ORIGIN_SCRIPT, Store, keyword_key, normalize_keywords
 
 MAX_PINS = 8                # items pinned to one script
 BASIS_MAX = 8               # titles of "what the draft saw" that are looked up and listed
 RELATED_MAX = 8             # items listed as on the same topic
+BEATS_MAX = 8               # confirmed non-sponsored beats matching the script's beat roles
 SEARCH_MAX = 8              # items one search lists
 TITLE_CHARS = 120           # of a title, in an answer
 TITLE_SCAN_CHARS = 400      # of a title, read for measuring and for finding an item by its title
@@ -111,7 +112,7 @@ class RefsError(ValueError):
 
 def limits() -> Dict[str, Any]:
     """The bounds an answer keeps to, as the page states them."""
-    return {"pins": MAX_PINS, "basis": BASIS_MAX, "related": RELATED_MAX, "search": SEARCH_MAX,
+    return {"pins": MAX_PINS, "basis": BASIS_MAX, "related": RELATED_MAX, "beats": BEATS_MAX, "search": SEARCH_MAX,
             "excerpt_chars": EXCERPT_CHARS, "scan_chars": SCAN_CHARS, "text_part_chars": TEXT_PART_CHARS,
             "query_chars": QUERY_CHARS, "relevant_at": trends.RELEVANT_AT}
 
@@ -394,6 +395,118 @@ def _basis(script: Dict[str, Any], heads: List[Dict[str, Any]],
     return {"items": items, "missing": missing, "left_out": max(0, len(roles) - BASIS_MAX)}
 
 
+_FORMAT_DEFAULT_BEATS: Dict[str, Tuple[str, ...]] = {
+    "COUPLE_VLOG": ("HOOK", "COUPLE_BANTER", "VLOG_STORY", "CLOSING_CTA"),
+    "FAVORITES_ROUNDUP": ("HOOK", "PRODUCT_EXPERIENCE", "REALISTIC_CAVEAT", "CLOSING_CTA"),
+    "SINGLE_PRODUCT_SHARE": ("HOOK", "PRODUCT_EXPERIENCE", "REALISTIC_CAVEAT", "CLOSING_CTA"),
+    "VLOG_VOICEOVER": ("HOOK", "VLOG_STORY", "TRANSITION_BRIDGE", "CLOSING_CTA"),
+}
+
+
+def _script_beat_types(script: Dict[str, Any]) -> Tuple[Tuple[str, ...], bool]:
+    """``(wanted_beat_types, from_script_lines)`` for a script."""
+    seen: List[str] = []
+    for line in script.get("lines") if isinstance(script.get("lines"), list) else []:
+        if not isinstance(line, dict):
+            continue
+        bt = str(line.get("beat_type") or "").strip().upper()
+        if bt in BEAT_TYPES and bt not in seen:
+            seen.append(bt)
+    if seen:
+        return tuple(seen), True
+    fmt = str(script.get("video_format") or "VLOG_VOICEOVER")
+    return _FORMAT_DEFAULT_BEATS.get(fmt, _FORMAT_DEFAULT_BEATS["VLOG_VOICEOVER"]), False
+
+
+def _beats_for_script(
+    store: Store,
+    script: Dict[str, Any],
+    evidence: Dict[str, List[Dict[str, Any]]],
+    usual: Optional[float],
+) -> Dict[str, Any]:
+    """Matching confirmed, non-sponsored beats for the beat roles of ``script``, bounded to ``BEATS_MAX``."""
+    wanted, from_lines = _script_beat_types(script)
+    raw = [
+        b for b in store.list_confirmed_organic_beats(wanted)
+        if b.get("sample_script_id") != script["id"]
+    ]
+    type_rank = {bt: idx for idx, bt in enumerate(wanted)}
+
+    def beat_key(b: Dict[str, Any]) -> Tuple[Any, ...]:
+        on_topic = b["sample_id"] in evidence
+        sample_metrics = {
+            "views": b.get("sample_views"),
+            "likes": b.get("sample_likes"),
+            "collects": b.get("sample_collects"),
+            "comments": b.get("sample_comments"),
+        }
+        total = corpus.interactions(sample_metrics)
+        return (
+            0 if on_topic else 1,
+            -(total if total is not None else -1),
+            -(b.get("sample_created_at") or 0.0),
+            type_rank.get(b["beat_type"], 99),
+            b["beat_index"],
+            b["id"],
+        )
+
+    ordered = sorted(raw, key=beat_key)
+    by_type: Dict[str, List[Dict[str, Any]]] = {bt: [] for bt in wanted}
+    for b in ordered:
+        by_type.setdefault(b["beat_type"], []).append(b)
+    picked: List[Dict[str, Any]] = []
+    picked_ids: set = set()
+    # One beat of each wanted role first so no single role crowds out the others, then the remaining in rank order.
+    for bt in wanted:
+        if len(picked) >= BEATS_MAX:
+            break
+        bucket = by_type.get(bt) or []
+        if bucket:
+            picked.append(bucket[0])
+            picked_ids.add(bucket[0]["id"])
+    for b in ordered:
+        if len(picked) >= BEATS_MAX:
+            break
+        if b["id"] not in picked_ids:
+            picked.append(b)
+            picked_ids.add(b["id"])
+
+    items: List[Dict[str, Any]] = []
+    for b in picked:
+        sample_metrics = {
+            "views": b.get("sample_views"),
+            "likes": b.get("sample_likes"),
+            "collects": b.get("sample_collects"),
+            "comments": b.get("sample_comments"),
+        }
+        total = corpus.interactions(sample_metrics)
+        title = str(b.get("sample_title") or "")
+        items.append({
+            "id": b["id"],
+            "sample_id": b["sample_id"],
+            "sample_title": title[:TITLE_CHARS],
+            "title_cut": len(title) > TITLE_CHARS,
+            "beat_index": b["beat_index"],
+            "beat_type": b["beat_type"],
+            "audio_mode": b["audio_mode"],
+            "delivery": b["delivery"],
+            "start_sec": b["start_sec"],
+            "end_sec": b["end_sec"],
+            "spoken_text": b["spoken_text"],
+            "english_meaning": b["english_meaning"],
+            "visual_summary": b["visual_summary"],
+            "on_topic": b["sample_id"] in evidence,
+            "interactions": total,
+            "times_usual": hooks._times_usual(total, usual),
+        })
+    return {
+        "wanted_types": list(wanted),
+        "from_script_lines": from_lines,
+        "items": items,
+        "found": len(ordered),
+    }
+
+
 # ---- the requests -------------------------------------------------------------------------------------------
 def _script(store: Store, script_id: Any) -> Dict[str, Any]:
     script = store.get_script(script_id) if isinstance(script_id, str) else None
@@ -439,6 +552,7 @@ def for_script(store: Store, script_id: Any) -> Dict[str, Any]:
         "basis": basis,
         "related": {"terms": wanted, "needs_terms": not wanted, "items": [show(head) for head in related[:RELATED_MAX]],
                     "found": len(related), "listed_above": len(on_topic) - len(related)},
+        "beats": _beats_for_script(store, script, evidence, usual),
     }
 
 

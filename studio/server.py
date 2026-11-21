@@ -1034,7 +1034,7 @@ class Handler(BaseHTTPRequestHandler):
                 )
             except TextTooLong as exc:
                 raise ApiError(413, exc.code, exc.message, exc.message_zh, extra={"limit": exc.limit})
-            return self._json({"sample": posted.shown(store, sample)}, 201)
+            return self._json({"sample": store.attach_beats_one(posted.shown(store, sample))}, 201)
         if task == "sentiment":
             try:
                 saved = rednote_analytics.apply_sentiment_reply(store, str(body.get("sample_id") or ""), result, source="manual")
@@ -1365,7 +1365,7 @@ class Handler(BaseHTTPRequestHandler):
             # measured: speaking rate from the timestamps of non-sponsored timed items, or null under a minute of them.
             # Transcripts waiting for confirmation count here: their timing does not depend on the wording.
             # An item that came from a posted script carries ``posted``: its days, its link and how its wording stands.
-            return self._json({"samples": posted.for_page(store, samples), "stats": stats,
+            return self._json({"samples": store.attach_beats(posted.for_page(store, samples)), "stats": stats,
                                "measured": pipeline.measured_rate(samples)})
         if route == ("POST", "/api/samples"):
             body = self._read_json()
@@ -1394,15 +1394,15 @@ class Handler(BaseHTTPRequestHandler):
                 if body.get("attach_to") is not None:
                     # The subtitle file of a posted video, for the item its script already has: its words take
                     # the place of the script's text there, and no second item is made.
-                    return self._json(posted.shown(store, _posting(lambda: posted.attach_transcript(
-                        store, body["attach_to"], text=text, kind=kind, timing=measured_timing, source_name=source_name))))
+                    return self._json(store.attach_beats_one(posted.shown(store, _posting(lambda: posted.attach_transcript(
+                        store, body["attach_to"], text=text, kind=kind, timing=measured_timing, source_name=source_name)))))
                 sample = store.create_sample(
                     title=str(body.get("title") or ""), text=text,
                     is_sponsored=bool(body.get("is_sponsored")), metrics=body, kind=kind, timing=measured_timing,
                     source_name=source_name)
             except TextTooLong as exc:
                 raise ApiError(413, exc.code, exc.message, exc.message_zh, extra={"limit": exc.limit})
-            return self._json(posted.shown(store, sample), 201)
+            return self._json(store.attach_beats_one(posted.shown(store, sample)), 201)
         if route == ("POST", "/api/voice/learn"):
             self._read_json()
             self._require_ai()
@@ -1593,7 +1593,7 @@ class Handler(BaseHTTPRequestHandler):
                     # a number changed here takes today as the day it was read (``posted.update_item``).
                     updated = _posting(lambda: posted.update_item(store, sample, body))
                     # None: the item was removed in the same moment; answered with null, as before.
-                    return self._json(posted.shown(store, updated) if updated is not None else None)
+                    return self._json(store.attach_beats_one(posted.shown(store, updated)) if updated is not None else None)
                 except TextTooLong as exc:
                     raise ApiError(413, exc.code, exc.message, exc.message_zh, extra={"limit": exc.limit})
             if method == "DELETE":

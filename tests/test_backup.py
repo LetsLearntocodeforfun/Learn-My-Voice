@@ -58,7 +58,7 @@ OWN = [
 MARKUP = "<img src=x onerror=alert(1)>"
 ASSUMES = re.compile(r"\b(she|her|hers|herself|husband|wife|couple)\b", re.I)
 # The layout of the database this version of the data stands for (backup.layout_fingerprint()).
-LAYOUT_OF_DATA_VERSION = {1: "dc489db00a5395ce", 2: "b0612eef1d02873d", 3: "a28cf92a48fb189a"}
+LAYOUT_OF_DATA_VERSION = {1: "dc489db00a5395ce", 2: "b0612eef1d02873d", 3: "2ef0c55af558f471"}
 
 # The tables as the code at 3fdd3a6 creates them: the commit this feature was built on.
 SCHEMA_AT_3FDD3A6 = """
@@ -210,6 +210,13 @@ def fill(store, tag="甲"):
     store.pin_sample(drafted["id"], first_sample["id"], limit=10)
     store.add_sample_comments(first_sample["id"], [{"text": tag + "求链接？", "likes": 3, "sentiment": "positive", "is_question": True}])
     store.save_sample_sentiment(first_sample["id"], {"overall_sentiment": "positive", "summary_zh": tag + "好评"})
+    store.save_sample_beats(first_sample["id"], [{
+        "beat_type": "HOOK", "audio_mode": "VOICEOVER", "delivery": "轻松",
+        "start_sec": 0.0, "end_sec": 3.5,
+        "spoken_text": "上周末跟我老公去 Costco 补货嘛 / 结果某人又走不动哈",
+        "english_meaning": tag + "Weekend Costco run",
+        "visual_summary": tag + "Pushing cart into Costco",
+    }])
     store.create_video_plan(title=tag + "下期计划", scheduled_for="2026-11-28", script_id=drafted["id"])
     store.create_sample(title=tag + "字幕", text=OWN[1], kind="subtitle", source_name="a.srt",
                         timing={"units": 40, "spoken_sec": 12.5, "speaking_rate_cpm": 192})
@@ -417,8 +424,8 @@ class ContentsTest(Case):
         inside.write_bytes(held["studio.db"])
         self.assertEqual(rows(inside), rows(self.store.db_path))
         self.assertEqual(sorted(rows(inside)), ["ai_suggestions", "briefs", "lessons", "metric_snapshots",
-                                                "sample_comments", "sample_sentiments", "samples", "script_pins",
-                                                "scripts", "trends", "video_plans"])
+                                                "sample_beats", "sample_comments", "sample_sentiments", "samples",
+                                                "script_pins", "scripts", "trends", "video_plans"])
         for table, found in rows(inside).items():
             self.assertTrue(found, table)                                    # the made-up folder has something in every table
         self.assertEqual(json.loads(held["settings.json"].decode("utf-8")),
@@ -608,10 +615,11 @@ class RoundTripTest(Case):
     def test_every_table_the_app_makes_is_written_the_plain_way_a_backup_can_check(self):
         layout = backup.reference_layout()
         self.assertEqual(sorted(layout["tables"]), ["ai_suggestions", "briefs", "lessons", "metric_snapshots",
-                                                    "sample_comments", "sample_sentiments", "samples", "script_pins",
-                                                    "scripts", "trends", "video_plans"])
+                                                    "sample_beats", "sample_comments", "sample_sentiments", "samples",
+                                                    "script_pins", "scripts", "trends", "video_plans"])
         self.assertEqual(sorted(layout["indexes"]), ["ai_suggestions_by_script", "metric_snapshots_by_sample",
-                                                     "sample_comments_by_sample", "samples_by_script"])
+                                                     "sample_beats_by_sample", "sample_comments_by_sample",
+                                                     "samples_by_script"])
         columns = {name: [column for column, _kind, _written in found if column] for name, found in layout["tables"].items()}
         self.assertEqual(columns["scripts"][:3], ["id", "title", "mode"])
         self.assertEqual(columns["ai_suggestions"], ["script_id", "text", "created_at"])

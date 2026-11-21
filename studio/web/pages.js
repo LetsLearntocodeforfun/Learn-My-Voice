@@ -197,10 +197,26 @@ Object.assign(I18N.en, {
 Object.assign(I18N.zh, {
   err_never_uncheckable: '有一条不说的话没法检查：只由括号或省略号这类符号组成的内容对不上任何台词，请写成具体的词句。',
   err_too_many_never: '不说的话最多可以列 50 条。',
+  bt_HOOK: '开场抓人', bt_VLOG_STORY: '日常叙事', bt_COUPLE_BANTER: '双人互动', bt_TRANSITION_BRIDGE: '自然过渡',
+  bt_PRODUCT_EXPERIENCE: '使用体验', bt_REALISTIC_CAVEAT: '真实提醒', bt_CLOSING_CTA: '结尾收束',
+  bm_VOICEOVER: '旁白', bm_TALKING_HEAD: '对镜口播', bm_LIVE_CLIP: '现场原声',
+  lib_beats_summary: '段落拆解 · {n} 段',
+  lib_beats_ready: '已确认 · 非商单：写初稿和编辑器「参考」面板可直接参考这些段落。',
+  lib_beats_wait_review: '待你确认文字后，这些段落才会用于写初稿和「参考」面板。',
+  lib_beats_wait_sponsored: '这条标为商单，这些段落不会放进日常初稿示例。',
+  lib_beat_meaning: '大意：', lib_beat_visual: '画面：',
 });
 Object.assign(I18N.en, {
   err_never_uncheckable: 'One of the refused phrases cannot be checked: text made only of brackets or an ellipsis can never match a line. Use actual words.',
   err_too_many_never: 'The list of refused phrases can hold at most 50.',
+  bt_HOOK: 'Opening hook', bt_VLOG_STORY: 'Story beat', bt_COUPLE_BANTER: 'Two-person banter', bt_TRANSITION_BRIDGE: 'Transition',
+  bt_PRODUCT_EXPERIENCE: 'Product experience', bt_REALISTIC_CAVEAT: 'Honest caveat', bt_CLOSING_CTA: 'Closing',
+  bm_VOICEOVER: 'Spoken over B-roll', bm_TALKING_HEAD: 'Direct to camera', bm_LIVE_CLIP: 'Live scene audio',
+  lib_beats_summary: '{n} video beats', lib_beats_summary_one: '1 video beat',
+  lib_beats_ready: 'Confirmed and non-sponsored: available as beat examples when drafting and in References.',
+  lib_beats_wait_review: 'Waiting for {@name} to confirm the transcript before these beats are used in drafts or References.',
+  lib_beats_wait_sponsored: 'Marked as sponsored: these beats are kept out of organic draft examples.',
+  lib_beat_meaning: 'Meaning: ', lib_beat_visual: 'On screen: ',
 });
 
 const tf = (key, vars) => t(key).replace(/\{(\w+)\}/g, (_, k) => (vars[k] !== undefined ? vars[k] : ''));
@@ -509,6 +525,46 @@ async function importFiles(files) {
   return added;
 }
 
+const LIB_BEAT_TYPES = {
+  HOOK: 'bt_HOOK', VLOG_STORY: 'bt_VLOG_STORY', COUPLE_BANTER: 'bt_COUPLE_BANTER',
+  TRANSITION_BRIDGE: 'bt_TRANSITION_BRIDGE', PRODUCT_EXPERIENCE: 'bt_PRODUCT_EXPERIENCE',
+  REALISTIC_CAVEAT: 'bt_REALISTIC_CAVEAT', CLOSING_CTA: 'bt_CLOSING_CTA',
+};
+const LIB_BEAT_MODES = { VOICEOVER: 'bm_VOICEOVER', TALKING_HEAD: 'bm_TALKING_HEAD', LIVE_CLIP: 'bm_LIVE_CLIP' };
+
+function fmtBeatRange(b) {
+  if (typeof b.start_sec !== 'number' || typeof b.end_sec !== 'number') return '';
+  return `${b.start_sec.toFixed(1)}s–${b.end_sec.toFixed(1)}s`;
+}
+
+function sampleBeatsHtml(s) {
+  const beats = Array.isArray(s && s.beats) ? s.beats : [];
+  if (!beats.length) return '';
+  const gateKey = s.needs_review ? 'lib_beats_wait_review' : (s.is_sponsored ? 'lib_beats_wait_sponsored' : 'lib_beats_ready');
+  const rows = beats.map((b) => {
+    const typeLabel = LIB_BEAT_TYPES[b.beat_type] ? t(LIB_BEAT_TYPES[b.beat_type]) : b.beat_type;
+    const modeLabel = LIB_BEAT_MODES[b.audio_mode] ? t(LIB_BEAT_MODES[b.audio_mode]) : (b.audio_mode || '');
+    const span = fmtBeatRange(b);
+    const delivery = b.delivery ? `<span class="tag">${esc(b.delivery)}</span>` : '';
+    const timeTag = span ? `<span class="meta">${esc(span)}</span>` : '';
+    const meaning = b.english_meaning ? `<div class="meta">${esc(t('lib_beat_meaning'))}${esc(b.english_meaning)}</div>` : '';
+    const visual = b.visual_summary ? `<div class="meta">${esc(t('lib_beat_visual'))}${esc(b.visual_summary)}</div>` : '';
+    return `<div class="card soft" data-beat-row="${esc(b.beat_type)}" style="margin-top:8px;padding:10px 12px">
+      <div class="row" style="gap:6px;flex-wrap:wrap">
+        <span class="tag ok">${esc(typeLabel)}</span>
+        <span class="tag">${esc(modeLabel)}</span>${delivery}${timeTag}
+      </div>
+      <div style="margin-top:6px">${esc(b.spoken_text)}</div>
+      ${meaning}${visual}
+    </div>`;
+  }).join('');
+  return `<details class="sample-beats" data-beats-count="${beats.length}" style="margin:8px 0">
+    <summary><span class="tag ok">${esc(tf(countKey('lib_beats_summary', beats.length), { n: beats.length }))}</span></summary>
+    <p class="hint" style="margin:6px 0 4px">${esc(t(gateKey))}</p>
+    ${rows}
+  </details>`;
+}
+
 function sampleHtml(s) {
   const metric = (f) => `<label>${esc(t('m_' + f))}<input type="number" min="0" inputmode="numeric" data-f="${f}" value="${s[f] === null ? '' : esc(s[f])}"></label>`;
   const kind = ['script', 'subtitle', 'video'].includes(s.kind) ? s.kind : 'script';
@@ -523,6 +579,7 @@ function sampleHtml(s) {
     </div>
     <div class="metrics">${['views', 'likes', 'collects', 'comments'].map(metric).join('')}</div>
     ${visualIngestHtml(s)}
+    <div data-sample-beats>${sampleBeatsHtml(s)}</div>
     ${poSampleHtml(s)}${s.needs_review ? reviewNoteHtml(s) : ''}
     <details ${s.needs_review ? 'open' : ''}><summary><span class="tag ${kind === 'script' ? '' : 'ok'}">${esc(t('mt_kind_' + kind))}</span>
       ${esc(t('show_text'))} · ${spokenUnits(s.text)}${lang === 'zh' ? '' : ' '}${esc(t('chars'))}${esc(timed)}</summary>
@@ -617,8 +674,13 @@ async function renderLibrary() {
     if (!card || !field) return;
     const value = e.target.type === 'checkbox' ? e.target.checked : e.target.value;
     /* posted.js draws an item that came from a posted script again: a number typed here takes the day it was read with it */
-    try { poAfterSampleSave(card, await api('PUT', '/api/samples/' + card.dataset.id, { [field]: value })); toast(t('saved')); }
-    catch (err) { showError(err); }
+    try {
+      const saved = await api('PUT', '/api/samples/' + card.dataset.id, { [field]: value });
+      poAfterSampleSave(card, saved);
+      const beatSlot = card.querySelector('[data-sample-beats]');
+      if (beatSlot && saved) beatSlot.innerHTML = sampleBeatsHtml(saved);
+      toast(t('saved'));
+    } catch (err) { showError(err); }
   };
   $list.onclick = async (e) => {
     const card = e.target.closest('.sample');
