@@ -19,7 +19,7 @@ import traceback
 from pathlib import Path
 from typing import Any, BinaryIO, Callable, Dict, List, Optional
 
-from . import checks, corpus, creator, exports, llm, outside, pipeline, trends
+from . import checks, corpus, creator, exports, llm, outside, pipeline, planner, rednote_analytics, tone_analyzer, trends
 from .store import StaleScript, Store, TextTooLong, _owner_only
 
 PROTOCOL_VERSIONS = ("2025-06-18", "2025-03-26", "2024-11-05")
@@ -341,6 +341,39 @@ def t_add_trend_keywords(store: Store, args: Dict[str, Any]) -> Dict[str, Any]:
     return dict(counts, note="Saved as AI-found and unverified. Each source link can be opened on the 热点 page.")
 
 
+def t_get_rednote_analytics(store: Store, _args: Dict[str, Any]) -> Dict[str, Any]:
+    return rednote_analytics.analytics_overview(store)
+
+
+def t_get_tone_analysis(store: Store, args: Dict[str, Any]) -> Dict[str, Any]:
+    sid = args.get("script_id")
+    if isinstance(sid, str) and sid.strip():
+        script = store.get_script(sid.strip())
+        if script is None:
+            raise ValueError("No script with id %r" % sid)
+        return tone_analyzer.compare_script_tone(store, script)
+    return tone_analyzer.corpus_tone_profile(store)
+
+
+def t_list_video_plans(store: Store, _args: Dict[str, Any]) -> Dict[str, Any]:
+    return planner.payload(store)
+
+
+def t_add_video_plan(store: Store, args: Dict[str, Any]) -> Dict[str, Any]:
+    created = planner.create_plan_item(store, {
+        "title": args.get("title"),
+        "video_format": args.get("video_format") or pipeline.VIDEO_FORMATS[0],
+        "target_sec": args.get("target_duration_sec") or 60,
+        "scheduled_for": args.get("scheduled_for") or "",
+        "notes": args.get("notes") or "",
+        "rationale_zh": args.get("rationale_zh") or "",
+        "rationale_en": args.get("rationale_en") or "",
+        "keywords": args.get("keywords") or [],
+        "source_kind": "mcp",
+    })
+    return {"plan": created}
+
+
 _KEYWORDS_PROP = {"type": "array", "items": {"type": "string"},
                   "description": "Optional trend or search keywords to work in where they fit the creator's voice, "
                                  "usually chosen from list_trends. At most 8."}
@@ -458,6 +491,28 @@ TOOLS: Dict[str, Dict[str, Any]] = {t["public"]["name"]: t for t in [
                   "source_date": {"type": "string", "description": "YYYY-MM-DD the page was published or updated."},
                   "why_zh": {"type": "string"}, "why_en": {"type": "string"}}}}},
           ["keywords"], read_only=False),
+    _tool("get_rednote_analytics", t_get_rednote_analytics,
+          "Use this to inspect dynamic RedNote view counts, save/comment conversion rates, view velocity, audience "
+          "sentiment summaries, top viewer questions, and content follow-up opportunities across the library.",
+          {}, [], read_only=True),
+    _tool("get_tone_analysis", t_get_tone_analysis,
+          "Use this to inspect the creator's multi-dimensional Voice & Tone Analyzer profile (particles, connectors, "
+          "sensory texture, 5-axis warmth/humor/restraint/naturalness/energy, and acoustic prosody), or compare one "
+          "saved script against the creator's organic tone baseline.",
+          {"script_id": {"type": "string", "description": "Optional script id to compare against the baseline."}},
+          [], read_only=True),
+    _tool("list_video_plans", t_list_video_plans,
+          "Use this to read the upcoming video planning queue, scheduled dates, statuses, and content opportunities.",
+          {}, [], read_only=True),
+    _tool("add_video_plan", t_add_video_plan,
+          "Use this to add an upcoming video topic to the creator's content planning queue (#/plan).",
+          {"title": {"type": "string", "description": "Planned video title in Chinese."},
+           "video_format": _FORMAT_PROP, "target_duration_sec": _DURATION_PROP,
+           "scheduled_for": {"type": "string", "description": "Optional target date YYYY-MM-DD."},
+           "notes": {"type": "string", "description": "Optional script direction or bullet notes."},
+           "rationale_zh": {"type": "string"}, "rationale_en": {"type": "string"},
+           "keywords": _KEYWORDS_PROP},
+          ["title"], read_only=False),
 ]}
 
 

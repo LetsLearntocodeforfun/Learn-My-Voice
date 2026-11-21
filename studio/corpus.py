@@ -180,26 +180,30 @@ def interactions(sample: Dict[str, Any]) -> Optional[int]:
 
 
 def performance(samples: List[Dict[str, Any]]) -> Dict[str, Any]:
-    """Rank her videos by interactions; rate is interactions / views when views are known."""
+    """Rank her videos by interactions and views; rates are interactions / views and collects / views when views are known."""
     rows = []
     for s in samples:
         total = interactions(s)
         if total is None and s.get("views") is None:
             continue
         views = s.get("views")
+        collects = s.get("collects")
         rows.append({
             "id": s["id"], "title": s["title"], "is_sponsored": bool(s.get("is_sponsored")),
-            "views": views, "likes": s.get("likes"), "collects": s.get("collects"), "comments": s.get("comments"),
+            "views": views, "likes": s.get("likes"), "collects": collects, "comments": s.get("comments"),
             "interactions": total,
             "interaction_rate_pct": round(100 * total / views, 1) if (total is not None and views) else None,
+            "save_rate_pct": round(100 * collects / views, 1) if (collects is not None and views) else None,
         })
     rows.sort(key=lambda r: (r["interactions"] is not None, r["interactions"] or 0, r["views"] or 0), reverse=True)
     totals = sorted(r["interactions"] for r in rows if r["interactions"] is not None)
+    view_totals = sorted(r["views"] for r in rows if r["views"] is not None)
     return {
         "rows": rows,
         "with_metrics": len(rows),
         "total_videos": len(samples),
         "median_interactions": _percentile(totals, 50) if totals else None,
+        "median_views": _percentile(view_totals, 50) if view_totals else None,
     }
 
 

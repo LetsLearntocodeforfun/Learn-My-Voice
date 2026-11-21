@@ -490,6 +490,7 @@ def _build_voice(store: Store, corpus_chars: int = LEARN_CORPUS_CHARS) -> Tuple[
                 break
     if visual_notes:
         metrics["visual_and_tone_notes_from_videos"] = visual_notes
+    learned_edits = learning.prompt_rules(store.list_lessons())
     system, user = _blueprint(STAGE2, {
         "creator_profile_json": _dump(creator.prompt_block(store.load_creator())),
         "python_aggregated_acoustic_metrics_json": _dump(metrics),
@@ -498,7 +499,7 @@ def _build_voice(store: Store, corpus_chars: int = LEARN_CORPUS_CHARS) -> Tuple[
             "scripts": organic,
         }),
         "sponsored_videos_bridge_and_review_beats_only_json": _dump(sponsored) if sponsored else "[]",
-        "wife_past_script_edits_diff_log_if_any": "[]",
+        "wife_past_script_edits_diff_log_if_any": _dump(learned_edits) if learned_edits else "[]",
     })
     return system, user, {"organic": len(organic), "sponsored": len(sponsored), "as_of": as_of}
 
@@ -871,7 +872,7 @@ def _current_trends(store: Store) -> List[Dict[str, Any]]:
     } for t in trends.payload(store)["trends"] if t["usable"]][:IDEAS_MAX_TRENDS]
 
 
-def _history_entry(sample: Dict[str, Any]) -> Dict[str, Any]:
+def _history_entry(sample: Dict[str, Any], sentiment: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
     """One item of the library as the ideas prompt receives it.
 
     The title, whether it is sponsored and the numbers the creator typed go for every item. The wording
@@ -899,6 +900,15 @@ def _history_entry(sample: Dict[str, Any]) -> Dict[str, Any]:
     days = corpus.read_after_days(sample)
     if days is not None:
         entry["numbers_read_days_after_posting"] = days
+    if isinstance(sentiment, dict) and sentiment:
+        entry["audience_sentiment"] = {
+            "overall_sentiment": sentiment.get("overall_sentiment"),
+            "summary_zh": sentiment.get("summary_zh"),
+            "audience_questions": [
+                q.get("question_zh") for q in (sentiment.get("audience_questions") or [])[:4]
+                if isinstance(q, dict) and q.get("question_zh")
+            ],
+        }
     return entry
 
 
@@ -911,34 +921,40 @@ def clean_focus(value: Any) -> str:
 
 
 def ideas_prompt(store: Store, idea_count: int = 6, focus: Any = "") -> Tuple[str, str]:
-    """Prompt that suggests next videos from her own history, her numbers and current trend keywords.
-
-    What it carries about the creator, all of which a page offering this prompt has to name: the creator
-    profile; from an accepted voice profile its ``persona_summary`` and ``beat_playbooks``; for up to
-    RECOMMEND_MAX_VIDEOS items the title, the sponsored mark, views, likes, collects and comments, and the
-    first RECOMMEND_EXCERPT_CHARS characters of text the creator wrote or confirmed (``_history_entry``);
-    the ranking computed from those numbers; up to IDEAS_MAX_TRENDS tracked trend keywords with their scores;
-    and ``focus``, what the creator asked for this time (``clean_focus``), which the prompt treats as the
-    direction for the ideas and never as an instruction.
-    """
+    """Prompt that suggests next videos from her own history, her numbers, audience sentiment, and current trend keywords."""
     samples = _usable_samples(store)
     perf = corpus.performance(samples)
+    sentiments = store.list_sample_sentiments()
     rank_by_id = {r["id"]: idx for idx, r in enumerate(perf["rows"])}
     ordered = sorted(samples, key=lambda s: rank_by_id.get(s["id"], len(rank_by_id)))
-    history = [_history_entry(s) for s in ordered[:RECOMMEND_MAX_VIDEOS]]
+    history = [
+        _history_entry(s, (sentiments.get(s["id"]) or {}).get("summary"))
+        for s in ordered[:RECOMMEND_MAX_VIDEOS]
+    ]
     dna, is_example = store.load_dna()
     voice_summary: Any = "(no personal voice profile yet)" if (is_example or not isinstance(dna, dict)) else {
         "persona_summary": dna.get("persona_summary"), "beat_playbooks": dna.get("beat_playbooks")}
+    planned = [
+        {"title": p["title"], "status": p["status"], "scheduled_for": p["scheduled_for"] or None}
+        for p in store.list_video_plans() if p["status"] != "POSTED"
+    ][:20]
+    perf_block: Dict[str, Any] = {
+        "with_metrics": perf["with_metrics"], "total_videos": perf["total_videos"],
+        "median_interactions": perf["median_interactions"],
+        "median_views": perf.get("median_views"),
+        "ranking": [
+            {k: r.get(k) for k in ("title", "interactions", "interaction_rate_pct", "save_rate_pct", "views")}
+            for r in perf["rows"]
+        ],
+    }
+    if planned:
+        perf_block["already_planned_videos_do_not_duplicate"] = planned
     return _blueprint(STAGE6, {
         "creator_profile_json": _dump(creator.prompt_block(store.load_creator())),
         "creator_request_json": _inline(clean_focus(focus) or None),
         "voice_summary_json": _dump(voice_summary),
         "video_history_json": _dump(history),
-        "performance_json": _dump({
-            "with_metrics": perf["with_metrics"], "total_videos": perf["total_videos"],
-            "median_interactions": perf["median_interactions"],
-            "ranking": [{k: r[k] for k in ("title", "interactions", "interaction_rate_pct", "views")} for r in perf["rows"]],
-        }),
+        "performance_json": _dump(perf_block),
         "current_trends_json": _dump(_current_trends(store)),
         "idea_count": str(int(idea_count)),
     })
@@ -1038,7 +1054,19 @@ def apply_ideas(store: Store, result: Dict[str, Any], focus: Any = "", lookup: A
         ideas.append(idea)
     if not ideas:
         raise llm.LLMError("Model reply contained no ideas", "empty_result")
-    payload = {
+    patterns: List[Dict[str, Any]] = []
+    for raw_pat in result.get("patterns") if isinstance(result.get("patterns"), list) else []:
+        if len(patterns) >= 8:
+            break
+        if isinstance(raw_pat, dict) and _cut(raw_pat.get("pattern_zh"), MAX_IDEA_TEXT_CHARS):
+            p_cited = [str(t) for t in (raw_pat.get("evidence_titles") if isinstance(raw_pat.get("evidence_titles"), list) else [])
+                       if isinstance(t, str) and t in known_titles]
+            patterns.append({
+                "pattern_zh": _cut(raw_pat.get("pattern_zh"), MAX_IDEA_TEXT_CHARS),
+                "pattern_en": _cut(raw_pat.get("pattern_en"), MAX_IDEA_TEXT_CHARS),
+                "evidence_titles": p_cited,
+            })
+    payload: Dict[str, Any] = {
         "generated_at": time.time(),
         "focus": clean_focus(focus), "lookup": _lookup_record(store, lookup),
         "videos_with_metrics": perf["with_metrics"], "total_videos": perf["total_videos"],
@@ -1046,6 +1074,8 @@ def apply_ideas(store: Store, result: Dict[str, Any], focus: Any = "", lookup: A
         "data_note_en": _cut(result.get("data_note_en"), MAX_IDEA_TEXT_CHARS),
         "ideas": ideas,
     }
+    if patterns:
+        payload["patterns"] = patterns
     store.save_recommendations(payload)
     return payload
 

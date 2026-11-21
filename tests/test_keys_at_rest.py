@@ -222,7 +222,7 @@ class MovedFolderAndPlaintextPrecedenceTest(IsolatedKeystoreCase):
         with mock.patch.dict(os.environ, {"STUDIO_KEYSTORE_FILE": str(comp2_key)}):
             s2 = Store(data_dir)
             pub = s2.public_settings()
-            self.assertEqual(pub["keys"], {"gemini": False, "openai": False, "local": False})
+            self.assertEqual(pub["keys"], {"gemini": False, "openai": False, "anthropic": False, "local": False})
             self.assertEqual(pub["keys_unreadable"], ["gemini", "openai"])
             self.assertFalse(pub["configured"])
             # Reading must NOT create comp2_key on disk.

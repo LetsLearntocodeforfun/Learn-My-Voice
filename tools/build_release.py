@@ -38,7 +38,8 @@ from typing import Any, Dict, List, Optional, Tuple
 ROOT = Path(__file__).resolve().parent.parent
 NAME = "learn-my-voice"
 # What a person who only wants to use the app has no use for. Everything else that is committed goes in.
-LEFT_OUT = (".github/", "tests/", "tools/", "desktop/", ".gitattributes", ".gitignore", "AUDIT_AND_REMEDIATION_LOG.md")
+LEFT_OUT = (".github/", "tests/", "tools/", "desktop/", ".gitattributes", ".gitignore", "AUDIT_AND_REMEDIATION_LOG.md",
+            "docs/AGENT_TEAM_ROADMAP.md")
 BUILD_FILE = "studio/build.json"
 LAUNCHERS = {"macos": "Start Learn My Voice.command", "windows": "Start Learn My Voice.bat", "linux": "start-learn-my-voice.sh"}
 SYSTEMS = (("macos", "macOS"), ("windows", "Windows"), ("linux", "Linux"))
@@ -63,8 +64,12 @@ def base_version(changelog: Optional[str] = None) -> str:
     return found.group(1)
 
 
-def version_for(base: str, rc: Optional[int], attempt: int = 1) -> str:
-    """``<base>.rc.N`` for a release candidate (``.rc.N.A`` when the same run was started again), ``<base>.dev`` otherwise."""
+def version_for(base: str, rc: Optional[int], attempt: int = 1, *, release: bool = False) -> str:
+    """``<base>`` for a tagged release, ``<base>.rc.N`` for a release candidate, ``<base>.dev`` otherwise."""
+    if release:
+        if rc is not None:
+            raise SystemExit("--release and --rc cannot be used together")
+        return base
     if rc is None:
         return base + ".dev"
     if rc < 1 or attempt < 1:
@@ -89,9 +94,9 @@ def committed_files() -> List[Tuple[str, int, str]]:
     return sorted(out)
 
 
-def build_package(out_dir: Path, rc: Optional[int] = None, attempt: int = 1) -> Dict[str, Any]:
+def build_package(out_dir: Path, rc: Optional[int] = None, attempt: int = 1, *, release: bool = False) -> Dict[str, Any]:
     """Write the zip and its checksum file into ``out_dir``; returns ``{"version", "tag", "file", "path", "sha256", "files", "commit"}``."""
-    version = version_for(base_version(git("show", "HEAD:CHANGELOG.md").decode("utf-8")), rc, attempt)
+    version = version_for(base_version(git("show", "HEAD:CHANGELOG.md").decode("utf-8")), rc, attempt, release=release)
     commit = git("rev-parse", "HEAD").decode("ascii").strip()
     committed_at = int(git("show", "-s", "--format=%ct", "HEAD").decode("ascii").strip())
     stamp = time.gmtime(committed_at)[:6]                    # the time of the commit, in UTC: the same on every system
@@ -435,6 +440,7 @@ def main(argv: Optional[List[str]] = None) -> int:
     build = commands.add_parser("build")
     build.add_argument("--rc", type=int)
     build.add_argument("--attempt", type=int, default=1)
+    build.add_argument("--release", action="store_true", help="stamp the exact base version from CHANGELOG.md without .rc or .dev")
     build.add_argument("--out", default="dist")
     verify = commands.add_parser("verify")
     verify.add_argument("package")
@@ -467,7 +473,7 @@ def main(argv: Optional[List[str]] = None) -> int:
     if args.command == "build":
         if git("status", "--porcelain", "--untracked-files=no").strip():
             print("Note: there are changes that are not committed. They are NOT in the package, which is built from HEAD.", file=sys.stderr)
-        made = build_package(Path(args.out), args.rc, args.attempt)
+        made = build_package(Path(args.out), args.rc, args.attempt, release=bool(args.release))
         verify_package(Path(made["path"]), made["sha256"])
         print(json.dumps(made, indent=1))
         _github_output({key: made[key] for key in ("version", "tag", "file", "sha256")})

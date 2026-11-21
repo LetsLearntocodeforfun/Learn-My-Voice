@@ -28,7 +28,7 @@ from . import keystore
 
 ROOT = Path(__file__).resolve().parent.parent
 EXAMPLE_DNA_PATH = ROOT / "schemas" / "voice_dna.example.json"
-CLOUD_PROVIDERS = ("gemini", "openai")
+CLOUD_PROVIDERS = ("gemini", "openai", "anthropic")
 PROVIDERS = CLOUD_PROVIDERS + ("local",)
 MANUAL_PROVIDER = "manual"  # copy-and-paste with a chat subscription: no key, no model
 METRIC_FIELDS = ("views", "likes", "collects", "comments")
@@ -261,6 +261,53 @@ CREATE TABLE IF NOT EXISTS script_pins (
     sample_id TEXT NOT NULL,
     created_at REAL NOT NULL,
     PRIMARY KEY (script_id, sample_id)
+);
+CREATE TABLE IF NOT EXISTS metric_snapshots (
+    id TEXT PRIMARY KEY,
+    sample_id TEXT NOT NULL,
+    recorded_on TEXT NOT NULL DEFAULT '',
+    views INTEGER,
+    likes INTEGER,
+    collects INTEGER,
+    comments INTEGER,
+    note_url TEXT NOT NULL DEFAULT '',
+    created_at REAL NOT NULL
+);
+CREATE INDEX IF NOT EXISTS metric_snapshots_by_sample ON metric_snapshots (sample_id);
+CREATE TABLE IF NOT EXISTS sample_comments (
+    id TEXT PRIMARY KEY,
+    sample_id TEXT NOT NULL,
+    author TEXT NOT NULL DEFAULT '',
+    text TEXT NOT NULL,
+    likes INTEGER,
+    sentiment TEXT NOT NULL DEFAULT 'neutral',
+    is_question INTEGER NOT NULL DEFAULT 0,
+    created_at REAL NOT NULL
+);
+CREATE INDEX IF NOT EXISTS sample_comments_by_sample ON sample_comments (sample_id);
+CREATE TABLE IF NOT EXISTS sample_sentiments (
+    sample_id TEXT PRIMARY KEY,
+    summary_json TEXT NOT NULL DEFAULT '{}',
+    source TEXT NOT NULL DEFAULT 'local',
+    updated_at REAL NOT NULL
+);
+CREATE TABLE IF NOT EXISTS video_plans (
+    id TEXT PRIMARY KEY,
+    title TEXT NOT NULL,
+    video_format TEXT NOT NULL DEFAULT 'VLOG_VOICEOVER',
+    target_sec INTEGER NOT NULL DEFAULT 60,
+    scheduled_for TEXT NOT NULL DEFAULT '',
+    status TEXT NOT NULL DEFAULT 'PLANNED',
+    priority INTEGER NOT NULL DEFAULT 2,
+    source_kind TEXT NOT NULL DEFAULT 'manual',
+    notes TEXT NOT NULL DEFAULT '',
+    rationale_zh TEXT NOT NULL DEFAULT '',
+    rationale_en TEXT NOT NULL DEFAULT '',
+    keywords_json TEXT NOT NULL DEFAULT '[]',
+    questions_json TEXT NOT NULL DEFAULT '[]',
+    script_id TEXT,
+    created_at REAL NOT NULL,
+    updated_at REAL NOT NULL
 );
 """
 
@@ -1041,14 +1088,17 @@ class Store:
         sample_id = uuid.uuid4().hex[:12]
         posted = posted if isinstance(posted, dict) else None
         ai_draft = posted.get("ai_draft") if posted else None
+        v_val = _metric(metrics.get("views"))
+        l_val = _metric(metrics.get("likes"))
+        c_val = _metric(metrics.get("collects"))
+        m_val = _metric(metrics.get("comments"))
         with self._db() as db:
             db.execute(
                 "INSERT INTO samples (id, title, text, is_sponsored, views, likes, collects, comments,"
                 " kind, timing_json, source_name, needs_review, origin, script_id, posted_on, note_url, metrics_on,"
                 " ai_json, snapshot, created_at, updated_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
                 (sample_id, title, text, int(bool(is_sponsored)),
-                 _metric(metrics.get("views")), _metric(metrics.get("likes")),
-                 _metric(metrics.get("collects")), _metric(metrics.get("comments")),
+                 v_val, l_val, c_val, m_val,
                  kind, _dumps(timing) if isinstance(timing, dict) else None,
                  clean_file_name(source_name), int(kind == "video" or posted is not None),
                  ORIGIN_SCRIPT if posted else "", posted.get("script_id") if posted else None,
@@ -1057,10 +1107,18 @@ class Store:
                  _dumps(ai_draft) if isinstance(ai_draft, dict) else None,
                  str(posted.get("snapshot") or "") if posted else "", now, now),
             )
+        if any(x is not None for x in (v_val, l_val, c_val, m_val)):
+            rec_day = str((posted or {}).get("metrics_on") or time.strftime("%Y-%m-%d", time.localtime(now)))
+            rec_url = str((posted or {}).get("note_url") or "")
+            self.record_metric_snapshot(
+                sample_id, views=v_val, likes=l_val, collects=c_val, comments=m_val,
+                recorded_on=rec_day, note_url=rec_url,
+            )
         return self.get_sample(sample_id)  # type: ignore[return-value]
 
     def update_sample(self, sample_id: str, changes: Dict[str, Any],
-                      posted: Optional[Dict[str, Any]] = None) -> Optional[Dict[str, Any]]:
+                      posted: Optional[Dict[str, Any]] = None,
+                      *, record_snapshot: bool = True) -> Optional[Dict[str, Any]]:
         """Apply ``changes`` (unknown keys are ignored; ``kind`` and ``timing`` cannot be changed).
 
         ``posted`` holds new values for a posted item's own columns (POSTED_COLUMNS), already checked by
@@ -1093,9 +1151,13 @@ class Store:
             sets.append("text = ?"); values.append(text)
         if "is_sponsored" in changes:
             sets.append("is_sponsored = ?"); values.append(int(bool(changes["is_sponsored"])))
+        metrics_touched = False
         for field in METRIC_FIELDS:
             if field in changes:
-                sets.append("%s = ?" % field); values.append(_metric(changes[field]))
+                new_m = _metric(changes[field])
+                if new_m != existing.get(field):
+                    metrics_touched = True
+                sets.append("%s = ?" % field); values.append(new_m)
         if changes.get("needs_review") is True:
             sets.append("needs_review = 1"); sets.append("reviewed_at = NULL")
         elif changes.get("needs_review") is False:
@@ -1110,7 +1172,20 @@ class Store:
             values.append(sample_id)
             with self._db() as db:
                 db.execute("UPDATE samples SET %s WHERE id = ?" % ", ".join(sets), values)
-        return self.get_sample(sample_id)
+        updated = self.get_sample(sample_id)
+        if record_snapshot and updated and metrics_touched and any(updated.get(f) is not None for f in METRIC_FIELDS):
+            rec_day = str((posted or {}).get("metrics_on") or updated.get("metrics_on") or time.strftime("%Y-%m-%d", time.localtime(now)))
+            rec_url = str((posted or {}).get("note_url") or updated.get("note_url") or "")
+            self.record_metric_snapshot(
+                sample_id,
+                views=updated.get("views"),
+                likes=updated.get("likes"),
+                collects=updated.get("collects"),
+                comments=updated.get("comments"),
+                recorded_on=rec_day,
+                note_url=rec_url,
+            )
+        return updated
 
     def replace_sample_text(self, sample_id: str, *, text: str, kind: str, needs_review: bool,
                             timing: Optional[Dict[str, Any]] = None, source_name: str = "",
@@ -1157,6 +1232,9 @@ class Store:
         """Remove a library item. Being pinned to a script never keeps an item: its pins go with it."""
         with self._db() as db:
             db.execute("DELETE FROM script_pins WHERE sample_id = ?", (sample_id,))
+            db.execute("DELETE FROM metric_snapshots WHERE sample_id = ?", (sample_id,))
+            db.execute("DELETE FROM sample_comments WHERE sample_id = ?", (sample_id,))
+            db.execute("DELETE FROM sample_sentiments WHERE sample_id = ?", (sample_id,))
             return db.execute("DELETE FROM samples WHERE id = ?", (sample_id,)).rowcount > 0
 
     def list_sample_heads(self, text_chars: int, title_chars: int) -> List[Dict[str, Any]]:
@@ -1513,6 +1591,7 @@ class Store:
             db.execute("DELETE FROM ai_suggestions WHERE script_id = ?", (script_id,))
             db.execute("DELETE FROM script_pins WHERE script_id = ?", (script_id,))      # its pins are about this script only
             db.execute("UPDATE samples SET script_id = NULL WHERE script_id = ?", (script_id,))
+            db.execute("UPDATE video_plans SET script_id = NULL WHERE script_id = ?", (script_id,))
             return db.execute("DELETE FROM scripts WHERE id = ?", (script_id,)).rowcount > 0
 
     # ---- library items pinned to a script -------------------------------
@@ -1648,3 +1727,275 @@ class Store:
                 row = db.execute("SELECT * FROM briefs WHERE kind = ? ORDER BY rowid DESC LIMIT 1", (kind,)).fetchone()
         payload = _json_object(row["payload_json"]) if row else None
         return {"id": row["id"], "payload": payload, "created_at": row["created_at"]} if payload is not None else None
+
+    # ---- RedNote metric snapshots, viewer comments & sentiment ----------
+    def record_metric_snapshot(self, sample_id: str, *, views: Any = None, likes: Any = None,
+                               collects: Any = None, comments: Any = None,
+                               recorded_on: str = "", note_url: str = "") -> Optional[Dict[str, Any]]:
+        """Record or refresh a daily metric snapshot for ``sample_id`` (capped at 365 points per item)."""
+        v_val, l_val = _metric(views), _metric(likes)
+        c_val, m_val = _metric(collects), _metric(comments)
+        if all(x is None for x in (v_val, l_val, c_val, m_val)):
+            return None
+        now = time.time()
+        day = (recorded_on or "").strip()[:10]
+        if not re.fullmatch(r"[0-9]{4}-[0-9]{2}-[0-9]{2}", day):
+            day = time.strftime("%Y-%m-%d", time.localtime(now))
+        clean_url = str(note_url or "").strip()[:1000]
+        with self._db() as db:
+            db.execute("BEGIN IMMEDIATE")
+            if db.execute("SELECT 1 FROM samples WHERE id = ?", (sample_id,)).fetchone() is None:
+                return None
+            existing = db.execute(
+                "SELECT id, note_url FROM metric_snapshots WHERE sample_id = ? AND recorded_on = ? ORDER BY rowid DESC LIMIT 1",
+                (sample_id, day),
+            ).fetchone()
+            if existing is not None:
+                snap_id = existing["id"]
+                db.execute(
+                    "UPDATE metric_snapshots SET views = ?, likes = ?, collects = ?, comments = ?, note_url = ?, created_at = ? WHERE id = ?",
+                    (v_val, l_val, c_val, m_val, clean_url or existing["note_url"] or "", now, snap_id),
+                )
+            else:
+                snap_id = uuid.uuid4().hex[:12]
+                db.execute(
+                    "INSERT INTO metric_snapshots (id, sample_id, recorded_on, views, likes, collects, comments, note_url, created_at)"
+                    " VALUES (?,?,?,?,?,?,?,?,?)",
+                    (snap_id, sample_id, day, v_val, l_val, c_val, m_val, clean_url, now),
+                )
+                db.execute(
+                    "DELETE FROM metric_snapshots WHERE sample_id = ? AND rowid NOT IN"
+                    " (SELECT rowid FROM metric_snapshots WHERE sample_id = ? ORDER BY recorded_on DESC, rowid DESC LIMIT 365)",
+                    (sample_id, sample_id),
+                )
+            row = db.execute("SELECT * FROM metric_snapshots WHERE id = ?", (snap_id,)).fetchone()
+        return dict(row) if row else None
+
+    def list_metric_snapshots(self, sample_id: Optional[str] = None) -> List[Dict[str, Any]]:
+        """Time-series metric snapshots ordered chronologically (oldest to newest)."""
+        with self._db() as db:
+            if sample_id is None:
+                rows = db.execute("SELECT * FROM metric_snapshots ORDER BY recorded_on ASC, created_at ASC, rowid ASC").fetchall()
+            else:
+                rows = db.execute(
+                    "SELECT * FROM metric_snapshots WHERE sample_id = ? ORDER BY recorded_on ASC, created_at ASC, rowid ASC",
+                    (sample_id,),
+                ).fetchall()
+        return [dict(r) for r in rows]
+
+    def add_sample_comments(self, sample_id: str, items: List[Dict[str, Any]], *, replace: bool = False) -> int:
+        """Store viewer comments for ``sample_id`` (capped at 500 newest/highest-liked comments)."""
+        now = time.time()
+        cleaned: List[Tuple[Any, ...]] = []
+        for raw in items[:500]:
+            if not isinstance(raw, dict):
+                continue
+            txt = str(raw.get("text") or "").strip()[:2000]
+            if not txt:
+                continue
+            author = str(raw.get("author") or "").strip()[:120]
+            likes = _metric(raw.get("likes"))
+            sentiment = str(raw.get("sentiment") or "neutral").strip().lower()
+            if sentiment not in ("positive", "neutral", "negative", "mixed"):
+                sentiment = "neutral"
+            is_q = 1 if bool(raw.get("is_question")) else 0
+            cleaned.append((uuid.uuid4().hex[:12], sample_id, author, txt, likes, sentiment, is_q, now))
+        with self._db() as db:
+            db.execute("BEGIN IMMEDIATE")
+            if db.execute("SELECT 1 FROM samples WHERE id = ?", (sample_id,)).fetchone() is None:
+                return 0
+            if replace:
+                db.execute("DELETE FROM sample_comments WHERE sample_id = ?", (sample_id,))
+            if cleaned:
+                db.executemany(
+                    "INSERT INTO sample_comments (id, sample_id, author, text, likes, sentiment, is_question, created_at)"
+                    " VALUES (?,?,?,?,?,?,?,?)",
+                    cleaned,
+                )
+                db.execute(
+                    "DELETE FROM sample_comments WHERE sample_id = ? AND rowid NOT IN"
+                    " (SELECT rowid FROM sample_comments WHERE sample_id = ? ORDER BY COALESCE(likes, 0) DESC, rowid DESC LIMIT 500)",
+                    (sample_id, sample_id),
+                )
+        return len(cleaned)
+
+    def list_sample_comments(self, sample_id: str) -> List[Dict[str, Any]]:
+        with self._db() as db:
+            rows = db.execute(
+                "SELECT * FROM sample_comments WHERE sample_id = ? ORDER BY COALESCE(likes, 0) DESC, created_at DESC, rowid DESC",
+                (sample_id,),
+            ).fetchall()
+        return [{
+            "id": r["id"], "sample_id": r["sample_id"], "author": r["author"] or "",
+            "text": r["text"], "likes": r["likes"], "sentiment": r["sentiment"] or "neutral",
+            "is_question": bool(r["is_question"]), "created_at": r["created_at"],
+        } for r in rows]
+
+    def clear_sample_comments(self, sample_id: str) -> int:
+        with self._db() as db:
+            db.execute("DELETE FROM sample_sentiments WHERE sample_id = ?", (sample_id,))
+            return db.execute("DELETE FROM sample_comments WHERE sample_id = ?", (sample_id,)).rowcount
+
+    def save_sample_sentiment(self, sample_id: str, summary: Dict[str, Any], source: str = "local") -> Optional[Dict[str, Any]]:
+        src = source if source in ("local", "ai", "manual") else "local"
+        now = time.time()
+        encoded = _dumps(summary if isinstance(summary, dict) else {})
+        with self._db() as db:
+            if db.execute("SELECT 1 FROM samples WHERE id = ?", (sample_id,)).fetchone() is None:
+                return None
+            db.execute(
+                "INSERT OR REPLACE INTO sample_sentiments (sample_id, summary_json, source, updated_at) VALUES (?,?,?,?)",
+                (sample_id, encoded, src, now),
+            )
+        return self.get_sample_sentiment(sample_id)
+
+    def get_sample_sentiment(self, sample_id: str) -> Optional[Dict[str, Any]]:
+        with self._db() as db:
+            row = db.execute("SELECT * FROM sample_sentiments WHERE sample_id = ?", (sample_id,)).fetchone()
+        if not row:
+            return None
+        return {
+            "sample_id": row["sample_id"],
+            "summary": _json_object(row["summary_json"]) or {},
+            "source": row["source"] or "local",
+            "updated_at": row["updated_at"],
+        }
+
+    def list_sample_sentiments(self) -> Dict[str, Dict[str, Any]]:
+        with self._db() as db:
+            rows = db.execute("SELECT * FROM sample_sentiments ORDER BY updated_at DESC").fetchall()
+        return {
+            r["sample_id"]: {
+                "sample_id": r["sample_id"],
+                "summary": _json_object(r["summary_json"]) or {},
+                "source": r["source"] or "local",
+                "updated_at": r["updated_at"],
+            }
+            for r in rows
+        }
+
+    # ---- upcoming video content planner ---------------------------------
+    @staticmethod
+    def _plan_row(row: sqlite3.Row) -> Dict[str, Any]:
+        kws = loads_stored(row["keywords_json"] or "[]")
+        qs = loads_stored(row["questions_json"] or "[]")
+        return {
+            "id": row["id"],
+            "title": row["title"],
+            "video_format": row["video_format"] or "VLOG_VOICEOVER",
+            "target_sec": int(row["target_sec"] or 60),
+            "scheduled_for": row["scheduled_for"] or "",
+            "status": row["status"] or "PLANNED",
+            "priority": int(row["priority"] if row["priority"] is not None else 2),
+            "source_kind": row["source_kind"] or "manual",
+            "notes": row["notes"] or "",
+            "rationale_zh": row["rationale_zh"] or "",
+            "rationale_en": row["rationale_en"] or "",
+            "keywords": [str(k) for k in kws if isinstance(k, str)] if isinstance(kws, list) else [],
+            "questions": [str(q) for q in qs if isinstance(q, str)] if isinstance(qs, list) else [],
+            "script_id": row["script_id"],
+            "created_at": row["created_at"],
+            "updated_at": row["updated_at"],
+        }
+
+    def list_video_plans(self) -> List[Dict[str, Any]]:
+        with self._db() as db:
+            rows = db.execute(
+                "SELECT * FROM video_plans ORDER BY"
+                " CASE WHEN scheduled_for != '' THEN 0 ELSE 1 END ASC,"
+                " scheduled_for ASC, priority ASC, updated_at DESC, rowid DESC"
+            ).fetchall()
+        return [self._plan_row(r) for r in rows]
+
+    def plans_count(self) -> int:
+        with self._db() as db:
+            return int(db.execute("SELECT COUNT(*) FROM video_plans WHERE status != 'POSTED'").fetchone()[0])
+
+    def get_video_plan(self, plan_id: str) -> Optional[Dict[str, Any]]:
+        with self._db() as db:
+            row = db.execute("SELECT * FROM video_plans WHERE id = ?", (plan_id,)).fetchone()
+        return self._plan_row(row) if row else None
+
+    def create_video_plan(self, *, title: str, video_format: str = "VLOG_VOICEOVER",
+                          target_sec: int = 60, scheduled_for: str = "", status: str = "PLANNED",
+                          priority: int = 2, source_kind: str = "manual", notes: str = "",
+                          rationale_zh: str = "", rationale_en: str = "",
+                          keywords: Any = None, questions: Any = None,
+                          script_id: Optional[str] = None) -> Dict[str, Any]:
+        clean_title = (title or "").strip()[:MAX_SCRIPT_TITLE_CHARS] or "未命名选题"
+        clean_fmt = (video_format or "VLOG_VOICEOVER").strip()[:MAX_META_FIELD_CHARS] or "VLOG_VOICEOVER"
+        clean_sec = max(15, min(int(target_sec or 60), 900))
+        clean_day = (scheduled_for or "").strip()[:10]
+        if clean_day and not re.fullmatch(r"[0-9]{4}-[0-9]{2}-[0-9]{2}", clean_day):
+            clean_day = ""
+        clean_status = (status or "PLANNED").strip().upper()[:24]
+        if clean_status not in ("IDEA", "PLANNED", "SCRIPTING", "READY", "POSTED"):
+            clean_status = "PLANNED"
+        clean_pri = max(1, min(int(priority if priority is not None else 2), 3))
+        clean_src = (source_kind or "manual").strip()[:32]
+        clean_notes = (notes or "").strip()[:MAX_NOTES_CHARS]
+        clean_rzh = (rationale_zh or "").strip()[:2000]
+        clean_ren = (rationale_en or "").strip()[:2000]
+        clean_qs = [str(q).strip()[:300] for q in (questions if isinstance(questions, list) else []) if isinstance(q, str) and str(q).strip()][:12]
+        now = time.time()
+        plan_id = uuid.uuid4().hex[:12]
+        with self._db() as db:
+            db.execute(
+                "INSERT INTO video_plans (id, title, video_format, target_sec, scheduled_for, status, priority,"
+                " source_kind, notes, rationale_zh, rationale_en, keywords_json, questions_json, script_id,"
+                " created_at, updated_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                (plan_id, clean_title, clean_fmt, clean_sec, clean_day, clean_status, clean_pri,
+                 clean_src, clean_notes, clean_rzh, clean_ren, _dumps(normalize_keywords(keywords)),
+                 _dumps(clean_qs), script_id, now, now),
+            )
+            db.execute(
+                "DELETE FROM video_plans WHERE rowid NOT IN (SELECT rowid FROM video_plans ORDER BY updated_at DESC, rowid DESC LIMIT 1000)"
+            )
+        return self.get_video_plan(plan_id)  # type: ignore[return-value]
+
+    def update_video_plan(self, plan_id: str, changes: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+        existing = self.get_video_plan(plan_id)
+        if existing is None:
+            return None
+        sets: List[str] = []
+        vals: List[Any] = []
+        if isinstance(changes.get("title"), str):
+            sets.append("title = ?"); vals.append(changes["title"].strip()[:MAX_SCRIPT_TITLE_CHARS] or "未命名选题")
+        if isinstance(changes.get("video_format"), str):
+            sets.append("video_format = ?"); vals.append(changes["video_format"].strip()[:MAX_META_FIELD_CHARS] or "VLOG_VOICEOVER")
+        if isinstance(changes.get("target_sec"), (int, float)) and not isinstance(changes.get("target_sec"), bool):
+            sets.append("target_sec = ?"); vals.append(max(15, min(int(changes["target_sec"]), 900)))
+        if "scheduled_for" in changes and isinstance(changes.get("scheduled_for"), str):
+            d = changes["scheduled_for"].strip()[:10]
+            sets.append("scheduled_for = ?"); vals.append(d if re.fullmatch(r"[0-9]{4}-[0-9]{2}-[0-9]{2}", d) else "")
+        if isinstance(changes.get("status"), str):
+            st = changes["status"].strip().upper()[:24]
+            if st in ("IDEA", "PLANNED", "SCRIPTING", "READY", "POSTED"):
+                sets.append("status = ?"); vals.append(st)
+        if isinstance(changes.get("priority"), (int, float)) and not isinstance(changes.get("priority"), bool):
+            sets.append("priority = ?"); vals.append(max(1, min(int(changes["priority"]), 3)))
+        if isinstance(changes.get("notes"), str):
+            sets.append("notes = ?"); vals.append(changes["notes"].strip()[:MAX_NOTES_CHARS])
+        if isinstance(changes.get("rationale_zh"), str):
+            sets.append("rationale_zh = ?"); vals.append(changes["rationale_zh"].strip()[:2000])
+        if isinstance(changes.get("rationale_en"), str):
+            sets.append("rationale_en = ?"); vals.append(changes["rationale_en"].strip()[:2000])
+        if "keywords" in changes:
+            sets.append("keywords_json = ?"); vals.append(_dumps(normalize_keywords(changes["keywords"])))
+        if "questions" in changes and isinstance(changes.get("questions"), list):
+            qs = [str(q).strip()[:300] for q in changes["questions"] if isinstance(q, str) and str(q).strip()][:12]
+            sets.append("questions_json = ?"); vals.append(_dumps(qs))
+        if "script_id" in changes:
+            sid = changes["script_id"]
+            sets.append("script_id = ?"); vals.append(str(sid) if isinstance(sid, str) and sid else None)
+        if sets:
+            sets.append("updated_at = ?"); vals.append(time.time())
+            vals.append(plan_id)
+            with self._db() as db:
+                db.execute("UPDATE video_plans SET %s WHERE id = ?" % ", ".join(sets), vals)
+        return self.get_video_plan(plan_id)
+
+    def delete_video_plan(self, plan_id: str) -> bool:
+        with self._db() as db:
+            return db.execute("DELETE FROM video_plans WHERE id = ?", (plan_id,)).rowcount > 0
+

@@ -358,7 +358,7 @@ function renderSettings() {
   const p = settingsForm.provider;
   const isLocal = p === 'local';
   const isManual = p === 'manual';
-  const names = { manual: t('manual_name'), gemini: 'Google Gemini', openai: 'OpenAI', local: t('local_models') };
+  const names = { manual: t('manual_name'), gemini: 'Google Gemini', openai: 'OpenAI', anthropic: 'Anthropic Claude', local: t('local_models') };
   const status = (k) => (k === 'manual' ? t('no_key_needed') : t(st.keys[k] ? 'connected' : 'not_connected'));
   const models = settingsForm.models.length ? settingsForm.models : (st.provider === p && st.model ? [st.model] : []);
   let access;
@@ -415,10 +415,12 @@ function renderSettings() {
     ${lookCard}
     <div id="wl-box"></div>
     <div id="bk-box"></div>
+    <div id="up-box"></div>
     ${mcpCard}
     <p class="hint" id="build-line" style="margin-top:28px">${esc(buildLine())}</p></div>`;
   wlPaintSettings(document.getElementById('wl-box'));     // wordlist.js: the word list behind the wording findings
   bkPaintSettings(document.getElementById('bk-box'));     // backup.js: back up everything, and restore a backup
+  if (typeof upPaintSettings === 'function') upPaintSettings(document.getElementById('up-box'));
   document.querySelectorAll('#look-card [data-pick]').forEach((button) => {
     button.onclick = () => {
       const name = button.dataset.pick.split(':')[0];
@@ -564,9 +566,11 @@ async function renderLibrary() {
       <div class="row" style="margin-top:10px"><button class="btn" id="paste-add">${esc(t('add_to_lib'))}</button></div>
     </details>
     ${libraryVoiceBarHtml(st, lib)}
+    <div id="rn-lib-box"></div>
     <p class="meta">${samples.length ? esc(tf('lib_stats', { n: samples.length })) : ''}</p>
     <div id="samples">${samples.map(sampleHtml).join('') || (stagedVideos.length ? '' : `<div class="empty">${esc(t('lib_empty'))}</div>`)}</div></div>`;
 
+  if (typeof plPaintLibraryTools === 'function') plPaintLibraryTools(document.getElementById('rn-lib-box'), samples);
   bindMaterialAdders($view, tr, 'lib', renderLibrary, ['#/library']);
   const $paste = document.getElementById('paste');
   $paste.oninput = () => autoGrow($paste);
@@ -723,7 +727,8 @@ function ideaHtml(idea, i) {
       ${label('kind_', idea.kind)}${label('conf_', idea.confidence)}</div>
     ${why ? `<p>${esc(why)}</p>` : ''}
     ${evidence}${trendTags}
-    <div class="row" style="margin-top:12px"><button class="btn primary" data-idea="${i}">${esc(t('use_idea'))}</button>
+    <div class="row" style="margin-top:12px;flex-wrap:wrap;gap:8px"><button class="btn primary" data-idea="${i}">${esc(t('use_idea'))}</button>
+      <button type="button" class="btn" data-plan-idea="${i}">${esc(t('pl_add_btn'))}</button>
       <span class="meta">${esc(formatLabel(idea.video_format))} · ${idea.target_duration_sec}${esc(t('sec'))}</span></div>
   </div>`;
 }

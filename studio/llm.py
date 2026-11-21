@@ -23,6 +23,8 @@ Transport = Callable[[str, str, Dict[str, str], Optional[Dict[str, Any]]], Dict[
 
 OPENAI_BASE = "https://api.openai.com/v1"
 GEMINI_BASE = "https://generativelanguage.googleapis.com/v1beta"
+ANTHROPIC_BASE = "https://api.anthropic.com/v1"
+ANTHROPIC_VERSION = "2023-06-01"
 SEARCH_PROVIDERS = ("gemini", "openai")     # the providers whose API can search the web while answering
 GEMINI_API_REVISION = "2026-05-20"          # the revision of Gemini's Interactions API that ``search_json`` is written for
 DEFAULT_LOCAL_BASE = "http://127.0.0.1:11434/v1"  # Ollama's OpenAI-compatible endpoint
@@ -505,6 +507,13 @@ def list_models(provider: str, api_key: str = "", transport: Optional[Transport]
             if isinstance(name, str) and name and isinstance(methods, list) and "generateContent" in methods:
                 out.append(name.split("/", 1)[-1])
         return sorted(out)
+    if provider == "anthropic":
+        data = call("GET", ANTHROPIC_BASE + "/models?limit=100",
+                    {"x-api-key": api_key, "anthropic-version": ANTHROPIC_VERSION}, None)
+        if not isinstance(data, dict) or not isinstance(data.get("data", []), list):
+            raise LLMError("Unexpected Anthropic model list shape", "bad_response")
+        ids = [m["id"] for m in (data.get("data") or []) if isinstance(m, dict) and isinstance(m.get("id"), str) and m["id"]]
+        return sorted(ids)
     base, headers = _openai_style(provider, api_key, base_url)
     data = call("GET", base + "/models", headers, None)
     if not isinstance(data, dict) or not isinstance(data.get("data", []), list):
@@ -1015,15 +1024,23 @@ def parse_manual_reply(text: str, task: str) -> Dict[str, Any]:
 
 
 def complete_json(provider: str, api_key: str, model: str, system: str, user: str,
-                  transport: Optional[Transport] = None, base_url: Optional[str] = None) -> Dict[str, Any]:
+                  transport: Optional[Transport] = None, base_url: Optional[str] = None,
+                  temperature: Optional[float] = None) -> Dict[str, Any]:
     """Send one system+user exchange and return the reply parsed as a JSON object."""
     call = transport or _http
+    temp_val: Optional[float] = None
+    if temperature is not None and not isinstance(temperature, bool) and isinstance(temperature, (int, float)):
+        if math.isfinite(float(temperature)):
+            temp_val = max(0.0, min(1.0, float(temperature)))
     if provider == "gemini":
         safe_model = _gemini_model_segment(model)
+        gen_cfg: Dict[str, Any] = {"responseMimeType": "application/json"}
+        if temp_val is not None:
+            gen_cfg["temperature"] = temp_val
         data = call("POST", "%s/models/%s:generateContent" % (GEMINI_BASE, safe_model), {"x-goog-api-key": api_key}, {
             "systemInstruction": {"parts": [{"text": system}]},
             "contents": [{"role": "user", "parts": [{"text": user}]}],
-            "generationConfig": {"responseMimeType": "application/json"},
+            "generationConfig": gen_cfg,
         })
         try:
             if not isinstance(data, dict):
@@ -1036,13 +1053,48 @@ def complete_json(provider: str, api_key: str, model: str, system: str, user: st
             raise LLMError("Unexpected Gemini response shape (the reply may have been blocked)", "bad_response")
         return parse_json_text(text)
 
+    if provider == "anthropic":
+        safe_model = validate_model_name(model, "anthropic")
+        req_body: Dict[str, Any] = {
+            "model": safe_model,
+            "max_tokens": 8192,
+            "system": system + "\n\nReturn ONLY a single valid JSON object with no surrounding prose.",
+            "messages": [{"role": "user", "content": user}],
+        }
+        if temp_val is not None:
+            req_body["temperature"] = temp_val
+        data = call(
+            "POST",
+            ANTHROPIC_BASE + "/messages",
+            {"x-api-key": api_key, "anthropic-version": ANTHROPIC_VERSION},
+            req_body,
+        )
+        try:
+            if not isinstance(data, dict):
+                raise TypeError("response is not an object")
+            blocks = data["content"]
+            if not isinstance(blocks, list):
+                raise TypeError("content is not a list")
+            text = "".join(
+                b.get("text", "") for b in blocks
+                if isinstance(b, dict) and b.get("type") == "text" and isinstance(b.get("text", ""), str)
+            )
+            if not text.strip():
+                raise ValueError("empty content")
+        except (KeyError, IndexError, TypeError, ValueError, AttributeError):
+            raise LLMError("Unexpected Anthropic response shape", "bad_response")
+        return parse_json_text(text)
+
     base, headers = _openai_style(provider, api_key, base_url)
     safe_model = validate_model_name(model, provider)
-    data = call("POST", base + "/chat/completions", headers, {
+    oai_body: Dict[str, Any] = {
         "model": safe_model,
         "messages": [{"role": "system", "content": system}, {"role": "user", "content": user}],
         "response_format": {"type": "json_object"},
-    })
+    }
+    if temp_val is not None:
+        oai_body["temperature"] = temp_val
+    data = call("POST", base + "/chat/completions", headers, oai_body)
     try:
         if not isinstance(data, dict):
             raise TypeError("response is not an object")

@@ -99,6 +99,7 @@ const ICONS = {
   start: '<path d="M5.5 21V4"/><path d="M5.5 4.5h12l-2.5 4 2.5 4h-12"/>',
   scripts: '<path d="M6.5 3h7.5l4.5 4.5V21h-12z"/><path d="M14 3v4.5h4.5"/><path d="M9.5 12.5h6M9.5 16.5h6"/>',
   ideas: '<path d="M9.5 18.2h5M10.5 21h3"/><path d="M12 3a6 6 0 0 0-3.8 10.6c.8.7 1.3 1.5 1.3 2.4h5c0-.9.5-1.7 1.3-2.4A6 6 0 0 0 12 3z"/>',
+  plan: '<rect x="4" y="5.5" width="16" height="14.5" rx="2"/><path d="M8 3.5v4M16 3.5v4M4 10h16M8.5 14h3M8.5 17h7"/>',
   trends: '<path d="M3.5 17l5.5-5.5 3.5 3.5L20 7.5"/><path d="M14.5 7.5H20V13"/>',
   library: '<path d="M4 4.5h16v4H4z"/><path d="M5.5 8.5v11h13v-11"/><path d="M10 12.5h4"/>',
   voice: '<path d="M4 10.5v3M8 7v10M12 4v16M16 7v10M20 10.5v3"/>',
@@ -428,6 +429,7 @@ function renderNav(route) {
   $nav.innerHTML = `<div class="brand">${BRAND_MARK}<span>${esc(t('brand'))}</span></div>` +
     item('#/start', 'nav_start', 'start', route === 'start', appState.setup_next && appState.setup_next !== 'done') +
     item('#/', 'nav_scripts', 'scripts', route === 'home' || route === 'new' || route === 'script') +
+    item('#/plan', 'nav_plan', 'plan', route === 'plan', (appState.plan_count || 0) > 0) +
     item('#/ideas', 'nav_ideas', 'ideas', route === 'ideas') +
     item('#/trends', 'nav_trends', 'trends', route === 'trends') +
     item('#/library', 'nav_library', 'library', route === 'library') +
@@ -468,12 +470,14 @@ async function router() {
     if (m) { renderNav('script'); await loadTrendSuggestions(); await renderScript(m[1]); }
     else if (hash === '#/start') { renderNav('start'); await renderSetup(); }
     else if (hash === '#/new') { renderNav('new'); await loadTrendSuggestions(); renderNew(); }
+    else if (hash === '#/plan') { renderNav('plan'); await renderPlan(); }
     else if (hash === '#/ideas') { renderNav('ideas'); await renderIdeas(); }
     else if (hash === '#/trends') { renderNav('trends'); await renderTrends(); }
     else if (hash === '#/library') { renderNav('library'); await renderLibrary(); }
     else if (hash === '#/voice') { renderNav('voice'); await renderVoice(); }
     else if (hash === '#/settings') { renderNav('settings'); renderSettings(); }
     else { renderNav('home'); await renderHome(); }
+    if (typeof upCheckOnStartup === 'function') upCheckOnStartup();
   } catch (e) {
     if (e.code === 'not_found') { location.hash = '#/'; return; }
     showError(e);
@@ -801,6 +805,7 @@ async function renderVoice() {
       ${row('v_connectors', tags(get('lexical_fingerprint.discourse_connectors.high_frequency', [])))}
       ${row('v_praise', tags(praise))}
       ${row('v_never', tags(never, 'no'))}
-    </dl></div><div id="voice-actions"></div></div>`;
+    </dl></div><div id="tone-box"></div><div id="voice-actions"></div></div>`;
+  if (typeof plPaintToneCard === 'function') plPaintToneCard(document.getElementById('tone-box'));
   paintVoiceActions(dna, is_example);
 }

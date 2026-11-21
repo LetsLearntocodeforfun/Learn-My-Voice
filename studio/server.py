@@ -56,6 +56,7 @@ from typing import Any, Dict, List, Optional, Tuple
 
 from . import checks, corpus, creator, exports, keyword_import, llm, pipeline, textstats, timing, transcribe, trends
 from . import buildinfo, hooks, outside, posted, refs, suggest, video_ingest, wordlist
+from . import planner, rednote_analytics, tone_analyzer, updater
 from . import setup as setup_status
 from . import backup
 from .jobs import JobError, Jobs, Progress
@@ -82,9 +83,11 @@ MAX_REMEMBERED_FILES = 200   # exported files of this run that can still be show
 MAX_WINDOW_REPORT = 200_000  # characters of what the window check may report
 # Set to 1 by the script that tries an installer of the desktop app: see ``App.start_window_check``.
 WINDOW_CHECK_ENV = "LEARN_MY_VOICE_WINDOW_CHECK"
+# Set to 1 by anything that starts the app without a person in front of it: no question is put to GitHub then.
+NO_UPDATE_CHECK_ENV = "LEARN_MY_VOICE_NO_UPDATE_CHECK"
 DEFAULT_PORT = 8765
 UNTITLED = {"zh": "未命名脚本", "en": "Untitled script"}
-MANUAL_TASKS = ("draft", "voice", "ideas", "trends", "suggest", "video_ingest")
+MANUAL_TASKS = ("draft", "voice", "ideas", "trends", "suggest", "video_ingest", "sentiment")
 IDLE_TIMEOUT_SEC = 30                   # a connection that sends nothing for this long while it is being read is closed
 
 # Sent with every answer. The pages load their scripts and their style sheet from this server, style some
@@ -366,6 +369,10 @@ class App:
                  outside_world: Any = None, require_token: bool = False) -> None:
         self.store = store
         self.transport = transport
+        self.update_transport: Optional[updater.UpdateTransport] = None
+        # Whether this run may ask GitHub which releases there are (studio/updater.py). Off unless ``main`` turns
+        # it on: a server made for a test, or for a trial of a package, never reaches out by itself.
+        self.update_checks = False
         self.transcriber = transcriber if transcriber is not None else transcribe
         self.outside = outside_world if outside_world is not None else outside
         self.require_token = bool(require_token)
@@ -978,6 +985,12 @@ class Handler(BaseHTTPRequestHandler):
                 caption=str(body.get("caption") or "")[:2000],
                 duration_sec=dur,
             )
+        elif task == "sentiment":
+            try:
+                system, user, brief_id = rednote_analytics.build_sentiment_prompt(store, str(body.get("sample_id") or ""))
+            except rednote_analytics.AnalyticsError as exc:
+                raise ApiError(exc.status, exc.code, exc.message, exc.message_zh)
+            return {"prompt": pipeline.single_prompt(system, user), "brief_id": brief_id}
         else:
             system, user = pipeline.ideas_prompt(store, focus=_focus(body))
         return {"prompt": pipeline.single_prompt(system, user)}
@@ -1026,6 +1039,12 @@ class Handler(BaseHTTPRequestHandler):
             except TextTooLong as exc:
                 raise ApiError(413, exc.code, exc.message, exc.message_zh, extra={"limit": exc.limit})
             return self._json({"sample": posted.shown(store, sample)}, 201)
+        if task == "sentiment":
+            try:
+                saved = rednote_analytics.apply_sentiment_reply(store, str(body.get("sample_id") or ""), result, source="manual")
+            except rednote_analytics.AnalyticsError as exc:
+                raise ApiError(exc.status, exc.code, exc.message, exc.message_zh)
+            return self._json(saved)
         ideas = pipeline.apply_ideas(store, result, focus=focus, lookup=lookup)
         return self._json({"performance": corpus.performance(store.list_samples()), "result": ideas})
 
@@ -1175,7 +1194,7 @@ class Handler(BaseHTTPRequestHandler):
                 "settings": store.public_settings(), "dna_is_example": is_example,
                 "creator": creator.for_page(store.load_creator()),
                 "video_formats": list(pipeline.VIDEO_FORMATS), "sample_count": store.samples_count(),
-                "trend_count": store.trends_count(),
+                "trend_count": store.trends_count(), "plan_count": store.plans_count(),
                 # Whether the AI service in settings can search the web itself (``llm.can_search``): the one-prompt
                 # flow then looks current keywords up before suggesting ideas.
                 "lookup_available": llm.can_search(store.load_config().get("provider") or ""),
@@ -1684,6 +1703,168 @@ class Handler(BaseHTTPRequestHandler):
             if not export_kind and method == "DELETE":
                 store.delete_script(script_id)
                 return self._json({"ok": True})
+
+        # ---- auto-updater & cross-version settings persistence --------------
+        if route == ("GET", "/api/update"):
+            do_check = app.update_checks and ((self.query.get("check") == ["1"]) or (self.query.get("force") == ["1"]))
+            force = self.query.get("force") == ["1"]
+            try:
+                if do_check:
+                    return self._json(updater.check_for_updates(store, force=force, transport=app.update_transport))
+                return self._json(updater.status_payload(store))
+            except updater.UpdateError as exc:
+                raise ApiError(exc.status, exc.code, exc.message, exc.message_zh)
+        if route == ("POST", "/api/update/settings"):
+            return self._json(updater.save_update_settings(store, self._read_json()))
+        if route == ("POST", "/api/update/download"):
+            if not app.update_checks:
+                raise ApiError(409, "updates_off", "Looking for updates is switched off for this run of the app.",
+                               "这次运行没有开启检查更新。")
+            try:
+                res = updater.download_release_asset(store, app.outside, transport=app.update_transport)
+            except updater.UpdateError as exc:
+                raise ApiError(exc.status, exc.code, exc.message, exc.message_zh)
+            app.remember_saved(Path(res["saved"]["path"]))
+            return self._json(res, 201)
+        if route == ("POST", "/api/update/migrate"):
+            body = self._read_json()
+            wanted = str(body.get("source_path") or "").strip()
+            allowed = {item["path"] for item in updater.discover_previous_installations(store)}
+            if not wanted or wanted not in allowed:
+                raise ApiError(400, "bad_source", "Choose one of the detected previous version folders.",
+                               "请选择检测到的旧版应用文件夹。")
+            try:
+                res = updater.migrate_from_previous_folder(store, Path(wanted))
+            except updater.UpdateError as exc:
+                raise ApiError(exc.status, exc.code, exc.message, exc.message_zh)
+            return self._json(res)
+        if route == ("POST", "/api/update/apply-zip"):
+            wanted_zip = str(self._read_json().get("zip_path") or "").strip()
+            if not wanted_zip or wanted_zip not in app.saved_files:
+                raise ApiError(404, "not_found", "Download the update package first.", "请先通过应用下载新版压缩包。")
+            try:
+                res = updater.unpack_and_migrate_zip(store, Path(wanted_zip))
+            except updater.UpdateError as exc:
+                raise ApiError(exc.status, exc.code, exc.message, exc.message_zh)
+            return self._json(res, 201)
+
+        # ---- RedNote view-count velocity, Creator Center import & sentiment -
+        if route == ("GET", "/api/rednote/overview"):
+            return self._json(rednote_analytics.analytics_overview(store))
+        if route == ("POST", "/api/rednote/extract-link"):
+            return self._json(rednote_analytics.extract_share_link(self._read_json().get("text")))
+        if route == ("POST", "/api/rednote/import"):
+            body = self._read_json()
+            b64 = body.get("data_base64")
+            if not isinstance(b64, str) or not b64.strip():
+                raise ApiError(400, "missing_file", "Choose a CSV, TSV, or XLSX file to import.",
+                               "请选择要导入的 CSV、TSV 或 XLSX 数据表。")
+            try:
+                raw_bytes = base64.b64decode(b64, validate=False)
+            except Exception:
+                raise ApiError(400, "bad_base64", "Invalid file encoding.", "文件编码无效。")
+            try:
+                rows = rednote_analytics.parse_creator_center_rows(raw_bytes, str(body.get("filename") or "analytics.csv"))
+                synced = rednote_analytics.sync_analytics_rows(store, rows, create_missing=bool(body.get("create_missing")))
+            except rednote_analytics.AnalyticsError as exc:
+                raise ApiError(exc.status, exc.code, exc.message, exc.message_zh)
+            return self._json(dict(synced, overview=rednote_analytics.analytics_overview(store)), 201)
+
+        m = re.fullmatch(r"/api/samples/([0-9a-f]{12})/comments", path)
+        if m:
+            sid = m.group(1)
+            sample = store.get_sample(sid)
+            if sample is None:
+                raise ApiError(404, "not_found")
+            if method == "GET":
+                comments = store.list_sample_comments(sid)
+                sent = store.get_sample_sentiment(sid)
+                snaps = store.list_metric_snapshots(sid)
+                return self._json({
+                    "sample_id": sid,
+                    "comments": comments,
+                    "sentiment": sent["summary"] if sent else rednote_analytics.build_local_sentiment_summary(sample, comments),
+                    "sentiment_source": sent["source"] if sent else "local",
+                    "velocity": rednote_analytics.sample_velocity(sample, snaps),
+                })
+            if method == "POST":
+                body = self._read_json()
+                try:
+                    out = rednote_analytics.ingest_comments_for_sample(
+                        store, sid, str(body.get("text") or ""), replace=bool(body.get("replace"))
+                    )
+                except rednote_analytics.AnalyticsError as exc:
+                    raise ApiError(exc.status, exc.code, exc.message, exc.message_zh)
+                return self._json(out, 201)
+            if method == "DELETE":
+                removed = store.clear_sample_comments(sid)
+                return self._json({"ok": True, "removed": removed})
+
+        m = re.fullmatch(r"/api/samples/([0-9a-f]{12})/sentiment/ai", path)
+        if m and method == "POST":
+            sid = m.group(1)
+            self._require_ai()
+            try:
+                out = rednote_analytics.analyze_sample_sentiment_ai(store, sid, transport=app.transport)
+            except rednote_analytics.AnalyticsError as exc:
+                raise ApiError(exc.status, exc.code, exc.message, exc.message_zh)
+            return self._json(out)
+
+        # ---- upcoming video content planner ---------------------------------
+        if route == ("GET", "/api/plans"):
+            return self._json(planner.payload(store))
+        if route == ("POST", "/api/plans"):
+            try:
+                created = planner.create_plan_item(store, self._read_json())
+            except planner.PlannerError as exc:
+                raise ApiError(exc.status, exc.code, exc.message, exc.message_zh)
+            return self._json({"plan": created, "planner": planner.payload(store)}, 201)
+        m = re.fullmatch(r"/api/plans/([0-9a-f]{12})", path)
+        if m:
+            pid = m.group(1)
+            if store.get_video_plan(pid) is None:
+                raise ApiError(404, "not_found")
+            if method == "PUT":
+                updated = store.update_video_plan(pid, self._read_json())
+                return self._json({"plan": updated, "planner": planner.payload(store)})
+            if method == "DELETE":
+                store.delete_video_plan(pid)
+                return self._json({"ok": True, "planner": planner.payload(store)})
+        m = re.fullmatch(r"/api/plans/([0-9a-f]{12})/draft", path)
+        if m and method == "POST":
+            pid = m.group(1)
+            plan = store.get_video_plan(pid)
+            if plan is None:
+                raise ApiError(404, "not_found")
+            body = self._read_json()
+            params = planner.draft_payload_for_plan(plan)
+            if bool(body.get("use_ai")):
+                self._require_ai()
+                script = pipeline.generate_script(
+                    store, notes=params["notes"], target_sec=params["target_sec"],
+                    video_format=params["video_format"], transport=app.transport,
+                    default_title=params["title"] or UNTITLED[self._lang(body)],
+                    keywords=params["keywords"],
+                )
+            else:
+                script = store.create_script(
+                    title=params["title"], notes=params["notes"],
+                    target_sec=params["target_sec"], video_format=params["video_format"],
+                    keywords=params["keywords"],
+                )
+            updated_plan = store.update_video_plan(pid, {"script_id": script["id"], "status": "SCRIPTING"})
+            return self._json({"plan": updated_plan, "script": script}, 201)
+
+        # ---- full-service voice & tone analyzer -----------------------------
+        if route == ("GET", "/api/tone"):
+            return self._json(tone_analyzer.corpus_tone_profile(store))
+        m = re.fullmatch(r"/api/scripts/([0-9a-f]{12})/tone", path)
+        if m and method == "GET":
+            script = store.get_script(m.group(1))
+            if script is None:
+                raise ApiError(404, "not_found")
+            return self._json(tone_analyzer.compare_script_tone(store, script))
+
         raise ApiError(404, "not_found")
 
 
@@ -1830,6 +2011,9 @@ def _transcribe_upload(app: App, upload: Dict[str, Any], title: str, is_sponsore
             raise JobError("no_speech", "No speech was found in this file, so nothing was added to your material.",
                            "这个文件里没有听到说话的声音，所以没有加进你的素材。")
         measured = dict(timing.timing_stats(segments), unclear_dropped=dropped)
+        prosody = tone_analyzer.analyze_wav_prosody(Path(path))
+        if prosody is not None:
+            measured["acoustic_prosody"] = prosody
         try:
             if attach_to is not None:
                 sample = posted.attach_transcript(app.store, attach_to, text=text, kind="video", timing=measured,
@@ -1988,6 +2172,9 @@ def main(argv: Optional[List[str]] = None) -> int:
         return 1
     if os.environ.get(WINDOW_CHECK_ENV) == "1":
         server.app.start_window_check()
+    # Asking GitHub for newer releases is for a run a person started: not for a trial of a package or of an
+    # installer (which sets NO_UPDATE_CHECK_ENV or the window check), and never for a server a test made.
+    server.app.update_checks = os.environ.get(NO_UPDATE_CHECK_ENV) != "1" and server.app.window_check is None
     url = "http://127.0.0.1:%d/" % server.server_address[1]
     launch_url = "%s?token=%s" % (url, server.app.token) if server.app.require_token else url
     # Sent at once also when the output is not a window: whoever started the app is waiting for this address

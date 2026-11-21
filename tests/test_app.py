@@ -178,7 +178,7 @@ class ServerTest(unittest.TestCase):
         self.assertEqual(out["models"], ["gem-pro"])
         _, _, saved = self.call("POST", "/api/settings", {"provider": "gemini", "model": "gem-pro"})
         self.assertEqual(saved["settings"], {"provider": "gemini", "model": "gem-pro", "local_base_url": "",
-                                             "keys": {"gemini": True, "openai": False, "local": False},
+                                             "keys": {"gemini": True, "openai": False, "anthropic": False, "local": False},
                                              "manual": False, "configured": True})
         _, _, raw_state = self.call("GET", "/api/state", raw=True)
         self.assertNotIn(b"SECRET-KEY", raw_state)

@@ -486,10 +486,15 @@ async function renderIdeas() {
   /* A lookup that failed or was left out is said above the ideas; the keywords of one that worked follow them. */
   const looked = result ? dvLookupHtml(result.lookup, byKey) : '';
   const lookedFirst = !!(result && result.lookup && result.lookup.status !== 'done');
+  const patterns = (result && Array.isArray(result.patterns) && result.patterns.length)
+    ? `<div class="card soft" style="margin-bottom:14px"><strong>${esc(t('pl_patterns_title'))}</strong>` +
+      result.patterns.map((p) => `<p class="meta" style="margin:6px 0 0">• ${esc(lang === 'zh' ? p.pattern_zh : (p.pattern_en || p.pattern_zh))}</p>`).join('') +
+      `</div>` : '';
   const saved = result ? `<h2 class="dv-h">${esc(t(latest ? 'dv_earlier_title' : 'dv_ideas_title'))}</h2>
       <p class="meta">${result.focus ? esc(tf('dv_for', { q: result.focus })) + ' · ' : ''}${savedAt ? esc(t('generated_at')) + ' ' + esc(fmtDate(savedAt)) : ''}</p>
       ${lookedFirst ? looked : ''}
       ${note ? `<p class="meta">${esc(note)}</p>` : ''}
+      ${patterns}
       <div id="ideas">${ideas.map(ideaHtml).join('')}</div>
       ${lookedFirst ? '' : looked}` : '';
   const empty = !result && !latest && !waiting && !running && appState.settings.configured
@@ -515,7 +520,28 @@ async function renderIdeas() {
   });
   const $ideas = document.getElementById('ideas');
   if ($ideas) {
-    $ideas.onclick = (e) => {
+    $ideas.onclick = async (e) => {
+      const planBtn = e.target.closest('[data-plan-idea]');
+      if (planBtn) {
+        const idea = ideas[Number(planBtn.dataset.planIdea)];
+        if (!idea) return;
+        try {
+          await api('POST', '/api/plans', {
+            title: idea.title_zh,
+            video_format: idea.video_format,
+            target_sec: idea.target_duration_sec,
+            notes: idea.script_notes_zh || '',
+            rationale_zh: idea.why_zh || '',
+            rationale_en: idea.why_en || '',
+            keywords: (idea.trend_keywords || []).slice(0, MAX_KEYWORDS),
+            source_kind: 'idea',
+          });
+          toast(t('pl_added_toast'));
+          appState.plan_count = (appState.plan_count || 0) + 1;
+          renderNav('ideas');
+        } catch (err) { showError(err); }
+        return;
+      }
       const btn = e.target.closest('[data-idea]');
       if (!btn) return;
       const idea = ideas[Number(btn.dataset.idea)];
