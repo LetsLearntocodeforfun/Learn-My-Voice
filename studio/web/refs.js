@@ -69,6 +69,15 @@ Object.assign(I18N.zh, {
   rf_found_title: '标题里有', rf_found_count: '内容里出现 {n} 次',
   rf_usual: '你平常一条视频的互动：{n}（{v} 条有数据的非商单视频的中间值）。',
   rf_no_usual: '还没有填了数据的非商单视频，所以算不出「平常的几倍」。',
+  rf_beats: '同段落参考',
+  rf_beats_why: '从你已确认的非商单视频里，挑出和这篇段落角色相同的真实片段（最多 {n} 段）：同主题优先，再看互动数和时间。未确认或商单视频不会出现在这里。',
+  rf_beats_none: '素材库里还没有已确认非商单视频的段落拆解。用多模态视频拆解导入并确认文字后，这里会列出对应片段。',
+  rf_beats_more: '另有 {n} 段符合的片段没有列出。',
+  rf_beats_on_topic: '同主题视频',
+  rf_beat_meaning: '大意：', rf_beat_visual: '画面：',
+  rf_bt_hook: '开场抓人', rf_bt_story: '日常叙事', rf_bt_banter: '双人互动', rf_bt_bridge: '自然过渡',
+  rf_bt_product: '使用体验', rf_bt_caveat: '真实提醒', rf_bt_cta: '结尾收束',
+  rf_bm_over: '旁白', rf_bm_head: '对镜口播', rf_bm_live: '现场原声',
 });
 Object.assign(I18N.en, {
   rf_title: 'References', rf_open: 'Open references', rf_close: 'Close',
@@ -127,10 +136,25 @@ Object.assign(I18N.en, {
   rf_usual: '{@Names} usual video gets {n} interactions (the middle value of {v} non-sponsored videos with numbers).',
   rf_usual_one: '{@Names} usual video gets {n} interactions (from the only non-sponsored video with numbers).',
   rf_no_usual: 'No non-sponsored video has numbers yet, so no result can be given as a multiple of the usual.',
+  rf_beats: 'Matching beats',
+  rf_beats_why: 'Confirmed, non-sponsored video beats from {@names} library that match this script\'s beat roles (up to {n}): on-topic videos come first, then higher interactions, then newer items. Unconfirmed transcripts and sponsored items are left out.',
+  rf_beats_none: 'No confirmed, non-sponsored video beats in the library yet. Ingest a video with beat breakdown and confirm its transcript to see matching beats here.',
+  rf_beats_more: '{n} more matching beats are not listed.', rf_beats_more_one: '1 more matching beat is not listed.',
+  rf_beats_on_topic: 'on-topic video',
+  rf_beat_meaning: 'Meaning: ', rf_beat_visual: 'On screen: ',
+  rf_bt_hook: 'Opening hook', rf_bt_story: 'Story beat', rf_bt_banter: 'Two-person banter', rf_bt_bridge: 'Transition',
+  rf_bt_product: 'Product experience', rf_bt_caveat: 'Honest caveat', rf_bt_cta: 'Closing',
+  rf_bm_over: 'Spoken over B-roll', rf_bm_head: 'Direct to camera', rf_bm_live: 'Live scene audio',
 });
 
 const RF_METRICS = ['views', 'likes', 'collects', 'comments'];      // must match METRIC_FIELDS in studio/store.py
 const RF_KINDS = { script: 'rf_kind_script', subtitle: 'rf_kind_subtitle', video: 'rf_kind_video' };   // how an item came in
+const RF_BEAT_TYPES = {
+  HOOK: 'rf_bt_hook', VLOG_STORY: 'rf_bt_story', COUPLE_BANTER: 'rf_bt_banter',
+  TRANSITION_BRIDGE: 'rf_bt_bridge', PRODUCT_EXPERIENCE: 'rf_bt_product',
+  REALISTIC_CAVEAT: 'rf_bt_caveat', CLOSING_CTA: 'rf_bt_cta',
+};
+const RF_BEAT_MODES = { VOICEOVER: 'rf_bm_over', TALKING_HEAD: 'rf_bm_head', LIVE_CLIP: 'rf_bm_live' };
 const RF_WIDE = '(min-width: 1280px)';       // must match the media query of this panel in app.css
 const RF_STORED = 'rf-open';                 // kept between runs (KEPT in app.js): '1' when the panel was opened last, '0' when it was closed
 
@@ -150,7 +174,7 @@ let rfSearchTimer = null;
 const rfSep = () => (lang === 'zh' ? '、' : ', ');
 /* What the server said about a refused request, in the interface language. */
 const rfSay = (e) => (lang === 'zh' ? e.message_zh : e.detail) || e.detail || t('err_default');
-const rfSig = (s) => JSON.stringify([s.title, s.keywords || []]);
+const rfSig = (s) => JSON.stringify([s.title, s.keywords || [], (s.lines || []).map((l) => l.beat_type || '')]);
 const rfWide = () => window.matchMedia(RF_WIDE).matches;
 
 /* Open or closed. What was chosen last holds, also the next time the app is opened (recall, in app.js). Before any choice, the panel is open where it has
@@ -270,6 +294,49 @@ function rfPartHtml(part, title, count, why, body) {
     <p class="hint">${esc(why)}</p>${body}</section>`;
 }
 
+function rfBeatItemHtml(b) {
+  const btKey = RF_BEAT_TYPES[b.beat_type];
+  const bmKey = RF_BEAT_MODES[b.audio_mode];
+  const btLabel = btKey ? t(btKey) : String(b.beat_type || '');
+  const bmLabel = bmKey ? t(bmKey) : String(b.audio_mode || '');
+  const span = (typeof b.start_sec === 'number' && typeof b.end_sec === 'number')
+    ? ' <span class="meta">' + esc(b.start_sec.toFixed(1) + 's–' + b.end_sec.toFixed(1) + 's') + '</span>' : '';
+  const delivery = b.delivery ? '<span class="tag">' + esc(b.delivery) + '</span>' : '';
+  const topic = b.on_topic ? '<span class="tag ok">' + esc(t('rf_beats_on_topic')) + '</span>' : '';
+  const meaning = b.english_meaning
+    ? '<div class="meta">' + esc(t('rf_beat_meaning') + b.english_meaning) + '</div>' : '';
+  const visual = b.visual_summary
+    ? '<div class="meta">' + esc(t('rf_beat_visual') + b.visual_summary) + '</div>' : '';
+  const nums = [];
+  if (b.interactions !== null && b.interactions !== undefined) {
+    nums.push(tf(countKey('rf_interactions', b.interactions), { n: num(b.interactions) }));
+  }
+  if (b.times_usual !== null && b.times_usual !== undefined) {
+    nums.push(tf('rf_times', { x: b.times_usual }));
+  }
+  const numsRow = nums.length ? '<div class="meta rf-nums">' + esc(nums.join(' · ')) + '</div>' : '';
+  return '<div class="rf-item" data-rf-beat="' + esc(b.id) + '" data-rf-beat-type="' + esc(b.beat_type) + '">'
+    + '<div class="rf-name">' + esc(b.sample_title + (b.title_cut ? '…' : '')) + '</div>'
+    + '<div><span class="tag ok">' + esc(btLabel) + '</span><span class="tag">' + esc(bmLabel) + '</span>'
+    + delivery + topic + span + '</div>'
+    + numsRow
+    + '<div class="rf-text">' + esc(b.spoken_text) + '</div>'
+    + meaning + visual
+    + '<div class="rf-actions"><a href="#/library" data-rf="library" data-rf-item="' + esc(b.sample_id) + '">'
+    + esc(t('rf_to_library')) + '</a></div></div>';
+}
+
+function rfBeatsBodyHtml(d) {
+  const b = d.beats;
+  if (!b || !Array.isArray(b.items) || !b.items.length) {
+    return '<p class="hint" id="rf-beats-none">' + esc(t('rf_beats_none')) + '</p>';
+  }
+  const hidden = Math.max(0, (b.found || 0) - b.items.length);
+  const more = hidden > 0
+    ? '<p class="hint" id="rf-beats-more">' + esc(tf(countKey('rf_beats_more', hidden), { n: hidden })) + '</p>' : '';
+  return b.items.map(rfBeatItemHtml).join('') + more;
+}
+
 function rfListsHtml() {
   const d = rfUi.data;
   if (!d) return `<p class="hint" id="${rfUi.failed ? 'rf-failed' : 'rf-loading'}">${esc(t(rfUi.failed ? 'rf_failed' : 'rf_loading'))}</p>`;
@@ -305,6 +372,10 @@ function rfListsHtml() {
   }
   parts.push(rfPartHtml('related', t('rf_related'), '',
     tf('rf_related_why', { pct: Math.round(d.limits.relevant_at * 100) }) + (lang === 'zh' ? '' : ' ') + t('rf_related_order'), body));
+  if (d.beats) {
+    parts.push(rfPartHtml('beats', t('rf_beats'), '',
+      tf('rf_beats_why', { n: d.limits.beats }), rfBeatsBodyHtml(d)));
+  }
   return parts.join('');
 }
 

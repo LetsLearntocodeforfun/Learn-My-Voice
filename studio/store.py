@@ -20,6 +20,7 @@ import stat
 import tempfile
 import threading
 import time
+import unicodedata
 import uuid
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional, Tuple
@@ -38,6 +39,16 @@ MAX_KEYWORD_CHARS = 40
 MAX_KEYWORDS_PER_SCRIPT = 8
 MAX_TRENDS = 2000           # tracked trend keywords kept in SQLite; oldest unverified entries go first when full
 SAMPLE_KINDS = ("script", "subtitle", "video")   # typed or pasted text; a subtitle file; a video transcribed here
+BEAT_TYPES = (
+    "HOOK", "VLOG_STORY", "COUPLE_BANTER", "TRANSITION_BRIDGE",
+    "PRODUCT_EXPERIENCE", "REALISTIC_CAVEAT", "CLOSING_CTA",
+)
+BEAT_AUDIO_MODES = ("VOICEOVER", "TALKING_HEAD", "LIVE_CLIP")
+MAX_BEATS_PER_SAMPLE = 80
+MAX_BEAT_SPOKEN_CHARS = 600
+MAX_BEAT_DELIVERY_CHARS = 160
+MAX_BEAT_MEANING_CHARS = 400
+MAX_BEAT_VISUAL_CHARS = 400
 MAX_SOURCE_NAME_CHARS = 200
 MAX_BRIEFS = 200            # records of what a prompt contained; the oldest are dropped
 MAX_AI_SUGGESTIONS = 300    # texts an AI suggested for the lines of one script that are remembered; the oldest are dropped
@@ -304,6 +315,21 @@ CREATE TABLE IF NOT EXISTS sample_sentiments (
     source TEXT NOT NULL DEFAULT 'local',
     updated_at REAL NOT NULL
 );
+CREATE TABLE IF NOT EXISTS sample_beats (
+    id TEXT PRIMARY KEY,
+    sample_id TEXT NOT NULL,
+    beat_index INTEGER NOT NULL DEFAULT 1,
+    beat_type TEXT NOT NULL,
+    audio_mode TEXT NOT NULL DEFAULT 'VOICEOVER',
+    delivery TEXT NOT NULL DEFAULT '',
+    start_sec REAL,
+    end_sec REAL,
+    spoken_text TEXT NOT NULL,
+    english_meaning TEXT NOT NULL DEFAULT '',
+    visual_summary TEXT NOT NULL DEFAULT '',
+    created_at REAL NOT NULL
+);
+CREATE INDEX IF NOT EXISTS sample_beats_by_sample ON sample_beats (sample_id);
 CREATE TABLE IF NOT EXISTS video_plans (
     id TEXT PRIMARY KEY,
     title TEXT NOT NULL,
@@ -400,6 +426,20 @@ def _script_summary(lines: List[Dict[str, Any]]) -> Tuple[int, str]:
 def _today(now: Optional[float] = None) -> str:
     """Today by this computer's clock, as a day is stored (``YYYY-MM-DD``)."""
     return time.strftime("%Y-%m-%d", time.localtime(now))
+
+
+def _spoken_words_key(text: Any) -> str:
+    """Spoken words of ``text`` without bracketed cues, spacing or punctuation, for matching beats to a sample's text."""
+    without_cues = re.sub(r"\[[^\]]*\]", "", str(text or ""))
+    normalized = unicodedata.normalize("NFKC", without_cues).lower()
+    return "".join(ch for ch in normalized if ch.isalnum())
+
+
+def _beat_sec(value: Any) -> Optional[float]:
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        return None
+    fval = float(value)
+    return round(fval, 2) if (math.isfinite(fval) and 0.0 <= fval <= 86400.0) else None
 
 
 def _metric(value: Any) -> Optional[int]:
@@ -1231,6 +1271,7 @@ class Store:
         for column in POSTED_COLUMNS:
             if isinstance(posted, dict) and column in posted:
                 sets.append("%s = ?" % column); values.append(posted[column])
+        text_changed = isinstance(changes.get("text"), str)
         if sets:
             sets.append("updated_at = ?"); values.append(now)
             values.append(sample_id)
@@ -1245,6 +1286,18 @@ class Store:
                     if day_was:
                         db.execute("DELETE FROM metric_snapshots WHERE sample_id = ? AND read_on = ?", (sample_id, day_was))
                     self._keep_reading(db, sample_id, day_is, {field: existing.get(field) for field in METRIC_FIELDS}, now)
+                if text_changed:
+                    new_key = _spoken_words_key(changes["text"])
+                    stale_ids = [
+                        r["id"]
+                        for r in db.execute(
+                            "SELECT id, spoken_text FROM sample_beats WHERE sample_id = ?", (sample_id,)
+                        ).fetchall()
+                        if not _spoken_words_key(r["spoken_text"]) or _spoken_words_key(r["spoken_text"]) not in new_key
+                    ]
+                    if stale_ids:
+                        marks = ",".join("?" for _ in stale_ids)
+                        db.execute("DELETE FROM sample_beats WHERE id IN (%s)" % marks, stale_ids)
         return self.get_sample(sample_id)
 
     def replace_sample_text(self, sample_id: str, *, text: str, kind: str, needs_review: bool,
@@ -1286,15 +1339,17 @@ class Store:
         values.append(sample_id)
         with self._db() as db:
             db.execute("UPDATE samples SET %s WHERE id = ?" % ", ".join(sets), values)
+            db.execute("DELETE FROM sample_beats WHERE sample_id = ?", (sample_id,))
         return self.get_sample(sample_id)
 
     def delete_sample(self, sample_id: str) -> bool:
-        """Remove a library item. Being pinned to a script never keeps an item: its pins go with it."""
+        """Remove a library item. Being pinned to a script never keeps an item: its pins and beats go with it."""
         with self._db() as db:
             db.execute("DELETE FROM script_pins WHERE sample_id = ?", (sample_id,))
             db.execute("DELETE FROM metric_snapshots WHERE sample_id = ?", (sample_id,))
             db.execute("DELETE FROM sample_comments WHERE sample_id = ?", (sample_id,))
             db.execute("DELETE FROM sample_sentiments WHERE sample_id = ?", (sample_id,))
+            db.execute("DELETE FROM sample_beats WHERE sample_id = ?", (sample_id,))
             return db.execute("DELETE FROM samples WHERE id = ?", (sample_id,)).rowcount > 0
 
     def list_sample_heads(self, text_chars: int, title_chars: int) -> List[Dict[str, Any]]:
@@ -1989,6 +2044,158 @@ class Store:
             }
             for r in rows
         }
+
+    # ---- beat bank (structured Stage 1B beats per video sample) ---------
+    @staticmethod
+    def _beat_row(row: sqlite3.Row) -> Dict[str, Any]:
+        return {
+            "id": row["id"],
+            "sample_id": row["sample_id"],
+            "beat_index": int(row["beat_index"] or 1),
+            "beat_type": row["beat_type"],
+            "audio_mode": row["audio_mode"] if row["audio_mode"] in BEAT_AUDIO_MODES else "VOICEOVER",
+            "delivery": row["delivery"] or "",
+            "start_sec": row["start_sec"],
+            "end_sec": row["end_sec"],
+            "spoken_text": row["spoken_text"],
+            "english_meaning": row["english_meaning"] or "",
+            "visual_summary": row["visual_summary"] or "",
+            "created_at": row["created_at"],
+        }
+
+    def save_sample_beats(self, sample_id: str, beats: Any) -> List[Dict[str, Any]]:
+        """Replace the stored beats of ``sample_id`` with validated, bounded beats whose spoken words match the item's text."""
+        sample = self.get_sample(sample_id)
+        if sample is None:
+            return []
+        sample_key = _spoken_words_key(sample.get("text") or "")
+        now = time.time()
+        rows_to_insert: List[Tuple[Any, ...]] = []
+        raw_list = beats if isinstance(beats, (list, tuple)) else []
+        for raw in raw_list:
+            if len(rows_to_insert) >= MAX_BEATS_PER_SAMPLE:
+                break
+            if not isinstance(raw, dict):
+                continue
+            btype = str(raw.get("beat_type") or "").strip().upper()
+            if btype not in BEAT_TYPES:
+                continue
+            mode = str(raw.get("audio_mode") or "").strip().upper()
+            if mode not in BEAT_AUDIO_MODES:
+                mode = "VOICEOVER"
+            spoken = " ".join(str(raw.get("spoken_text") or "").replace("\r\n", "\n").splitlines()).strip()[:MAX_BEAT_SPOKEN_CHARS]
+            spoken_key = _spoken_words_key(spoken)
+            if not spoken_key or spoken_key not in sample_key:
+                continue
+            delivery = " ".join(str(raw.get("delivery") or "").split())[:MAX_BEAT_DELIVERY_CHARS]
+            meaning = " ".join(str(raw.get("english_meaning") or "").split())[:MAX_BEAT_MEANING_CHARS]
+            visual = " ".join(str(raw.get("visual_summary") or "").split())[:MAX_BEAT_VISUAL_CHARS]
+            start_sec = _beat_sec(raw.get("start_sec"))
+            end_sec = _beat_sec(raw.get("end_sec"))
+            if start_sec is not None and end_sec is not None and end_sec <= start_sec:
+                start_sec, end_sec = None, None
+            beat_idx = len(rows_to_insert) + 1
+            rows_to_insert.append((
+                uuid.uuid4().hex[:12], sample_id, beat_idx, btype, mode, delivery,
+                start_sec, end_sec, spoken, meaning, visual, now,
+            ))
+        with self._db() as db:
+            db.execute("BEGIN IMMEDIATE")
+            if db.execute("SELECT 1 FROM samples WHERE id = ?", (sample_id,)).fetchone() is None:
+                return []
+            db.execute("DELETE FROM sample_beats WHERE sample_id = ?", (sample_id,))
+            if rows_to_insert:
+                db.executemany(
+                    "INSERT INTO sample_beats (id, sample_id, beat_index, beat_type, audio_mode, delivery,"
+                    " start_sec, end_sec, spoken_text, english_meaning, visual_summary, created_at)"
+                    " VALUES (?,?,?,?,?,?,?,?,?,?,?,?)",
+                    rows_to_insert,
+                )
+        return self.list_sample_beats(sample_id)
+
+    def list_sample_beats(self, sample_id: Optional[str] = None) -> List[Dict[str, Any]]:
+        """Stored beats for ``sample_id`` (in video order), or across every sample when ``sample_id`` is None."""
+        with self._db() as db:
+            if sample_id is None:
+                rows = db.execute(
+                    "SELECT * FROM sample_beats ORDER BY sample_id ASC, beat_index ASC, created_at ASC, rowid ASC"
+                ).fetchall()
+            else:
+                rows = db.execute(
+                    "SELECT * FROM sample_beats WHERE sample_id = ? ORDER BY beat_index ASC, created_at ASC, rowid ASC",
+                    (sample_id,),
+                ).fetchall()
+        return [self._beat_row(r) for r in rows]
+
+    def attach_beats(self, samples: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+        """Return ``samples`` with ``beats`` attached on items that have stored beats (leaving other items unchanged)."""
+        if not samples:
+            return []
+        by_sample: Dict[str, List[Dict[str, Any]]] = {}
+        for beat in self.list_sample_beats():
+            by_sample.setdefault(beat["sample_id"], []).append(beat)
+        return [dict(s, beats=by_sample[s["id"]]) if s["id"] in by_sample else s for s in samples]
+
+    def attach_beats_one(self, sample: Optional[Dict[str, Any]]) -> Optional[Dict[str, Any]]:
+        if sample is None:
+            return None
+        beats = self.list_sample_beats(sample["id"])
+        return dict(sample, beats=beats) if beats else sample
+
+    def list_confirmed_organic_beats(self, beat_types: Optional[Tuple[str, ...]] = None) -> List[Dict[str, Any]]:
+        """Beats that pass the wording safety gate: ONLY from confirmed (``needs_review=0``), non-sponsored
+        (``is_sponsored=0``) items whose current ``text`` still contains the beat's spoken words and was not
+        left unchanged from an AI draft.
+        """
+        wanted = tuple(bt for bt in (beat_types or BEAT_TYPES) if bt in BEAT_TYPES)
+        if not wanted:
+            return []
+        marks = ",".join("?" for _ in wanted)
+        with self._db() as db:
+            rows = db.execute(
+                "SELECT b.*, s.title AS sample_title, s.text AS sample_text, s.origin AS sample_origin,"
+                " s.script_id AS sample_script_id, s.ai_json AS sample_ai_json, s.views AS sample_views,"
+                " s.likes AS sample_likes, s.collects AS sample_collects, s.comments AS sample_comments,"
+                " s.created_at AS sample_created_at"
+                " FROM sample_beats b"
+                " JOIN samples s ON s.id = b.sample_id"
+                " WHERE s.needs_review = 0 AND s.is_sponsored = 0 AND b.beat_type IN (%s)"
+                " ORDER BY s.created_at DESC, b.beat_index ASC, b.rowid ASC" % marks,
+                wanted,
+            ).fetchall()
+        text_keys: Dict[str, str] = {}
+        ai_keys_by_sample: Dict[str, set] = {}
+        out: List[Dict[str, Any]] = []
+        for r in rows:
+            sid = r["sample_id"]
+            if sid not in text_keys:
+                text_keys[sid] = _spoken_words_key(r["sample_text"] or "")
+                ai_set: set = set()
+                if r["sample_origin"] == ORIGIN_SCRIPT and r["sample_ai_json"]:
+                    ai_obj = _json_object(r["sample_ai_json"]) or {}
+                    for raw_line in (ai_obj.get("lines") or []) + (ai_obj.get("proposed") or []):
+                        if isinstance(raw_line, str):
+                            k = _spoken_words_key(raw_line)
+                            if k:
+                                ai_set.add(k)
+                ai_keys_by_sample[sid] = ai_set
+            bkey = _spoken_words_key(r["spoken_text"])
+            if not bkey or bkey not in text_keys[sid]:
+                continue
+            if bkey in ai_keys_by_sample[sid]:
+                continue
+            entry = self._beat_row(r)
+            entry.update({
+                "sample_title": r["sample_title"] or "",
+                "sample_script_id": r["sample_script_id"],
+                "sample_views": r["sample_views"],
+                "sample_likes": r["sample_likes"],
+                "sample_collects": r["sample_collects"],
+                "sample_comments": r["sample_comments"],
+                "sample_created_at": r["sample_created_at"],
+            })
+            out.append(entry)
+        return out
 
     # ---- the plan: videos the creator means to make (studio/planner.py) ----
     # One row is one planned video. This part only stores: what a plan is, what may be put into one and what its

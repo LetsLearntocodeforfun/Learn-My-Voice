@@ -49,7 +49,15 @@ STAGE3 = "03_sponsored_brief_translator.md"       # a brand's brief in plain wor
 STAGE4 = "04_script_generator_normal_and_sponsored.md"
 STAGE6 = "06_content_recommender.md"
 STAGE7 = "07_trend_researcher.md"
+STAGE_TEMPERATURES = llm.STAGE_TEMPERATURES
 VIDEO_FORMATS = ("VLOG_VOICEOVER", "COUPLE_VLOG", "FAVORITES_ROUNDUP", "SINGLE_PRODUCT_SHARE")
+DRAFT_BEAT_EXAMPLES_MAX = 8
+_DRAFT_FORMAT_BEAT_ROLES: Dict[str, Tuple[str, ...]] = {
+    "VLOG_VOICEOVER": ("HOOK", "VLOG_STORY", "TRANSITION_BRIDGE", "REALISTIC_CAVEAT", "CLOSING_CTA"),
+    "COUPLE_VLOG": ("HOOK", "COUPLE_BANTER", "VLOG_STORY", "TRANSITION_BRIDGE", "CLOSING_CTA"),
+    "FAVORITES_ROUNDUP": ("HOOK", "PRODUCT_EXPERIENCE", "REALISTIC_CAVEAT", "TRANSITION_BRIDGE", "CLOSING_CTA"),
+    "SINGLE_PRODUCT_SHARE": ("HOOK", "PRODUCT_EXPERIENCE", "REALISTIC_CAVEAT", "TRANSITION_BRIDGE", "CLOSING_CTA"),
+}
 
 DEFAULT_SPEAKING_RATE = 240       # used until her real rate is typed in or measured from timed material
 MIN_CLAUSES_FOR_MEASURED_CADENCE = 30
@@ -164,7 +172,8 @@ def single_prompt(system: str, user: str) -> str:
     return "%s\n\n%s\n\n%s\n" % (system.strip(), user.strip(), MANUAL_REPLY_RULE)
 
 
-def complete(store: Store, system: str, user: str, transport: Optional[llm.Transport] = None) -> Dict[str, Any]:
+def complete(store: Store, system: str, user: str, transport: Optional[llm.Transport] = None,
+             *, temperature: Optional[float] = None) -> Dict[str, Any]:
     """Call the provider chosen in settings."""
     config = store.load_config()
     provider, model = config.get("provider") or "", config.get("model") or ""
@@ -174,7 +183,8 @@ def complete(store: Store, system: str, user: str, transport: Optional[llm.Trans
     base_url = config.get("local_base_url") or None
     if not model or (provider == "local" and not base_url) or (provider != "local" and not api_key):
         raise llm.LLMError("AI is not set up yet", "not_configured")
-    return llm.complete_json(provider, api_key, model, system, user, transport=transport, base_url=base_url)
+    return llm.complete_json(provider, api_key, model, system, user, transport=transport, base_url=base_url,
+                             temperature=temperature)
 
 
 # ---- drafting ---------------------------------------------------------------
@@ -183,6 +193,88 @@ def _draft_fingerprint(notes: Any, target_sec: Any, video_format: Any, keywords:
     raw = json.dumps([" ".join(str(notes or "").split()), int(target_sec), str(video_format), normalize_keywords(keywords)],
                      ensure_ascii=False)
     return hashlib.sha256(raw.encode("utf-8")).hexdigest()
+
+
+def _select_draft_beats(
+    store: Store,
+    *,
+    confirmed: List[Dict[str, Any]],
+    video_format: str,
+    words: List[str],
+    has_partner: bool,
+) -> List[Dict[str, Any]]:
+    """Select up to ``DRAFT_BEAT_EXAMPLES_MAX`` confirmed, non-sponsored beats from ``store`` for a draft prompt."""
+    raw = store.list_confirmed_organic_beats()
+    if not raw:
+        return []
+    if not has_partner and video_format != "COUPLE_VLOG":
+        raw = [b for b in raw if b["beat_type"] != "COUPLE_BANTER"]
+    if not raw:
+        return []
+    by_sample = {s["id"]: s for s in confirmed}
+    on_topic_ids = (
+        {s["id"] for s in confirmed if not s.get("is_sponsored") and trends.is_on_topic(s, words)}
+        if words else set()
+    )
+    preferred = _DRAFT_FORMAT_BEAT_ROLES.get(video_format, _DRAFT_FORMAT_BEAT_ROLES["VLOG_VOICEOVER"])
+    role_rank = {bt: idx for idx, bt in enumerate(preferred)}
+
+    def rank_key(b: Dict[str, Any]) -> Tuple[Any, ...]:
+        sample = by_sample.get(b["sample_id"]) or {
+            "views": b.get("sample_views"),
+            "likes": b.get("sample_likes"),
+            "collects": b.get("sample_collects"),
+            "comments": b.get("sample_comments"),
+        }
+        total = corpus.interactions(sample)
+        return (
+            0 if b["sample_id"] in on_topic_ids else 1,
+            0 if b["beat_type"] in role_rank else 1,
+            -(total if total is not None else -1),
+            -(b.get("sample_created_at") or 0.0),
+            role_rank.get(b["beat_type"], 99),
+            b["beat_index"],
+            b["id"],
+        )
+
+    ordered = sorted(raw, key=rank_key)
+    chosen: List[Dict[str, Any]] = []
+    chosen_ids: Set[str] = set()
+    per_role_counts: Dict[str, int] = {}
+    for role in preferred:
+        if len(chosen) >= DRAFT_BEAT_EXAMPLES_MAX:
+            break
+        match = next((b for b in ordered if b["beat_type"] == role and b["id"] not in chosen_ids), None)
+        if match is not None:
+            chosen.append(match)
+            chosen_ids.add(match["id"])
+            per_role_counts[role] = 1
+    for b in ordered:
+        if len(chosen) >= DRAFT_BEAT_EXAMPLES_MAX:
+            break
+        if b["id"] in chosen_ids or per_role_counts.get(b["beat_type"], 0) >= 2:
+            continue
+        chosen.append(b)
+        chosen_ids.add(b["id"])
+        per_role_counts[b["beat_type"]] = per_role_counts.get(b["beat_type"], 0) + 1
+    return chosen
+
+
+def _format_beat_for_prompt(b: Dict[str, Any]) -> Dict[str, Any]:
+    out: Dict[str, Any] = {
+        "beat_type": b["beat_type"],
+        "audio_mode": b["audio_mode"],
+        "spoken_text": b["spoken_text"],
+    }
+    if b.get("delivery"):
+        out["delivery"] = b["delivery"]
+    if b.get("english_meaning"):
+        out["english_meaning"] = b["english_meaning"]
+    if b.get("visual_summary"):
+        out["visual_summary"] = b["visual_summary"]
+    if b.get("sample_title"):
+        out["video_title"] = b["sample_title"]
+    return out
 
 
 def _build_draft(store: Store, *, notes: str, target_sec: int, video_format: str,
@@ -204,15 +296,26 @@ def _build_draft(store: Store, *, notes: str, target_sec: int, video_format: str
     """
     dna, is_example = store.load_dna()
     who = store.load_creator()
+    who_block = creator.prompt_block(who)
     words = normalize_keywords(keywords)
+    fmt = video_format if video_format in VIDEO_FORMATS else VIDEO_FORMATS[0]
+    all_samples = store.list_samples()
+    confirmed = confirmed_samples(all_samples)
     on_topic = (lambda sample: trends.is_on_topic(sample, words)) if words else None
     anchors = [{"title": a["title"], "creator_own_script": a["her_own_script"]}
-               for a in corpus.exemplars(confirmed_samples(store.list_samples()), on_topic=on_topic)]
+               for a in corpus.exemplars(confirmed, on_topic=on_topic)]
     exemplars_text = _dump(anchors) if anchors else "[]  (no past scripts have been imported yet; rely on the Voice DNA)"
     rules = learning.prompt_rules(store.list_lessons())      # newest first; the prompt takes the first ten
-    openings = hooks.best(store.list_samples())
+    openings = hooks.best(all_samples)
+    beat_examples = _select_draft_beats(
+        store,
+        confirmed=confirmed,
+        video_format=fmt,
+        words=words,
+        has_partner=bool(who_block.get("on_camera_partner")),
+    )
     system, user = _blueprint(STAGE4, {
-        "creator_profile_json": _dump(creator.prompt_block(who)),
+        "creator_profile_json": _dump(who_block),
         "voice_dna_json": _dump(creator.apply_never(dna, who)),
         "retrieved_beat_exemplars_json": exemplars_text,
         "own_best_openings_json": _dump(openings),
@@ -220,7 +323,7 @@ def _build_draft(store: Store, *, notes: str, target_sec: int, video_format: str
         # One of two fixed words, never text from a request: this value is not encoded.
         "mode": MODE_ORGANIC if sponsor is None else MODE_SPONSORED,
         # One of the known names, never text from a request: this value is not encoded.
-        "video_format": video_format if video_format in VIDEO_FORMATS else VIDEO_FORMATS[0],
+        "video_format": fmt,
         "target_duration_sec": str(int(target_sec)),
         # Typed by the creator, or taken from an idea a model wrote: encoded like every other value, as one JSON string.
         "user_topic_and_story_notes": _inline(notes.strip()),
@@ -228,14 +331,28 @@ def _build_draft(store: Store, *, notes: str, target_sec: int, video_format: str
         "sponsored_plan_json": "null" if sponsor is None else _inline(sponsor),
         "target_keywords_json": _inline(words),
     })
+    if beat_examples:
+        fenced_beats = (
+            "<creator_beat_examples>\n"
+            "<!-- Real confirmed, non-sponsored beats from the creator's past videos, by beat role -->\n"
+            + _dump([_format_beat_for_prompt(b) for b in beat_examples])
+            + "\n</creator_beat_examples>\n\n"
+        )
+        if "<script_request>" in user:
+            user = user.replace("<script_request>", fenced_beats + "<script_request>", 1)
+        else:
+            user = user + "\n\n" + fenced_beats.strip()
     learned_at = profile_summary(dna).get("learned_at")
-    basis = {
+    basis: Dict[str, Any] = {
         "exemplar_titles": [a["title"] for a in anchors],
         "opening_titles": [o["title"] for o in openings],
         "lessons_used": len(rules),
         "profile": "example" if is_example else "learned",
         "learned_at": learned_at if (not is_example and isinstance(learned_at, str)) else None,
     }
+    if beat_examples:
+        basis["beat_ids"] = [b["id"] for b in beat_examples]
+        basis["beat_sample_ids"] = list(dict.fromkeys(b["sample_id"] for b in beat_examples))
     return system, user, basis
 
 
@@ -388,7 +505,7 @@ def generate_script(store: Store, *, notes: str, target_sec: int, video_format: 
                     keywords: Any = None) -> Dict[str, Any]:
     system, user, basis = _build_draft(store, notes=notes, target_sec=target_sec, video_format=video_format,
                                        keywords=keywords)
-    result = complete(store, system, user, transport)
+    result = complete(store, system, user, transport, temperature=STAGE_TEMPERATURES["draft"])
     return apply_draft(store, result, notes=notes, target_sec=target_sec, video_format=video_format,
                        default_title=default_title, keywords=keywords, basis=basis)
 
@@ -850,7 +967,7 @@ def discard_voice(store: Store) -> bool:
 def learn_voice(store: Store, transport: Optional[llm.Transport] = None) -> Dict[str, Any]:
     """Ask the configured model for a profile and store it as a proposal (see ``propose_voice``)."""
     system, user, info = _build_voice(store)
-    return propose_voice(store, complete(store, system, user, transport), brief=info)
+    return propose_voice(store, complete(store, system, user, transport, temperature=STAGE_TEMPERATURES["voice"]), brief=info)
 
 
 def set_speaking_rate(store: Store, cpm: int) -> Dict[str, Any]:
@@ -1187,7 +1304,7 @@ def apply_ideas(store: Store, result: Dict[str, Any], focus: Any = "", lookup: A
 def recommend_topics(store: Store, idea_count: int = 6, transport: Optional[llm.Transport] = None,
                      focus: Any = "") -> Dict[str, Any]:
     system, user = ideas_prompt(store, idea_count, focus)
-    return apply_ideas(store, complete(store, system, user, transport), focus=focus)
+    return apply_ideas(store, complete(store, system, user, transport, temperature=STAGE_TEMPERATURES["ideas"]), focus=focus)
 
 
 # ---- trend research ---------------------------------------------------------
@@ -1343,7 +1460,8 @@ def discover(store: Store, focus: Any = "", transport: Optional[llm.Transport] =
     say("thinking", None)
     try:
         system, user = ideas_prompt(store, focus=focus)
-        saved = apply_ideas(store, complete(store, system, user, transport), focus=focus, lookup=record)
+        saved = apply_ideas(store, complete(store, system, user, transport, temperature=STAGE_TEMPERATURES["ideas"]),
+                            focus=focus, lookup=record)
         ideas: Dict[str, Any] = {"status": "done", "count": len(saved["ideas"])}
     except llm.LLMError as exc:
         ideas = {"status": "failed", "reason": exc.code, "message": _cut(str(exc), MAX_IDEA_TEXT_CHARS),

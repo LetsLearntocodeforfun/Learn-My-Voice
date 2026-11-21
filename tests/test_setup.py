@@ -930,7 +930,8 @@ class ProposalTest(SetupCase):
                                 ("update_script", {"script_id": script_id, "script_lines": lines("好啦好啦")}),
                                 ("save_topic_ideas", {"ideas": {"ideas": [{"title_zh": "选题"}]}}),
                                 ("export_jianying_kit", {"script_id": script_id}),
-                                ("add_trend_keywords", {"keywords": [{"keyword": "露营", "source_url": "https://example.com/a"}]})):
+                                ("add_trend_keywords", {"keywords": [{"keyword": "露营", "source_url": "https://example.com/a"}]}),
+                                ("add_video_plan", {"title": "下周选题"})):
             mcp_server.call_tool(self.store, name, arguments)
             self.assertEqual(self.store.load_dna(), (EXAMPLE_DNA, True), name)
         _, profile = self.mcp("get_voice_profile")

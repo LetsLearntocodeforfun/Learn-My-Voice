@@ -24,7 +24,17 @@ from typing import Any, Dict, List, Optional, Tuple
 
 from . import llm, pipeline, posted, textstats, timing
 from .jobs import JobError, Progress
-from .store import Store, TextTooLong, clean_file_name
+from .store import (
+    BEAT_AUDIO_MODES,
+    BEAT_TYPES,
+    MAX_BEAT_DELIVERY_CHARS,
+    MAX_BEAT_MEANING_CHARS,
+    MAX_BEAT_SPOKEN_CHARS,
+    MAX_BEAT_VISUAL_CHARS,
+    Store,
+    TextTooLong,
+    clean_file_name,
+)
 
 STAGE1 = "01_verbatim_transcription_and_visual_ingest.md"
 AI_VIDEO_PROVIDERS = ("gemini", "openai")
@@ -64,6 +74,8 @@ MEDIA_MIME_TYPES: Dict[str, str] = {
 
 _TEMPLATE_ENERGY_HINT = "string describing warmth, pitch variation"
 _TEMPLATE_FLOWER_HINT = "exact on-screen aside"
+_TEMPLATE_MEANING_HINT = "natural english translation for bilingual partner"
+_TEMPLATE_VISUAL_HINT = "what is shown on screen during this beat"
 
 
 def _unlink_quietly(path: Path) -> None:
@@ -108,6 +120,30 @@ def ai_video_info(store: Store) -> Dict[str, Any]:
         "ai_video_capable": capable,
         "ai_video_provider": provider if capable else "",
     }
+
+
+def ai_video_refusal_messages(store: Store) -> Tuple[str, str]:
+    """Explain in English and Chinese why direct AI video/audio upload is unavailable for the current provider."""
+    config = store.load_config()
+    provider = str(config.get("provider") or "")
+    if provider == "anthropic":
+        return (
+            "Anthropic Claude does not take video or audio files directly here. Transcribe offline on this computer, "
+            "export .srt subtitles from CapCut/Jianying, use copy-and-paste, or switch to Gemini or OpenAI in Settings.",
+            "Anthropic Claude 在这里不直接接收音视频文件。请使用本机离线转写、从剪映导出 .srt 字幕、"
+            "使用复制粘贴方式，或到「设置」切换到 Gemini 或 OpenAI。",
+        )
+    if provider == "local":
+        return (
+            "The local text model does not take video or audio files directly. Transcribe offline on this computer, "
+            "export .srt subtitles from CapCut/Jianying, use copy-and-paste, or connect Gemini or OpenAI in Settings.",
+            "本地文本模型不直接接收音视频文件。请使用本机离线转写、从剪映导出 .srt 字幕、"
+            "使用复制粘贴方式，或到「设置」连接 Gemini 或 OpenAI。",
+        )
+    return (
+        "Connect a Gemini or OpenAI API key in Settings first, or use the copy-and-paste button.",
+        "请先到「设置」连接 Gemini 或 OpenAI 密钥，或使用复制粘贴方式。",
+    )
 
 
 def video_ingest_prompt(
@@ -206,6 +242,7 @@ def parse_stage1_reply(
 
     lines: List[str] = []
     segments: List[Dict[str, Any]] = []
+    parsed_beats: List[Dict[str, Any]] = []
 
     raw_beats = result.get("beats")
     raw_segments = result.get("segments")
@@ -229,8 +266,47 @@ def parse_stage1_reply(
             lines.append(line)
             start = _finite_number(beat.get("start_sec", beat.get("start")))
             end = _finite_number(beat.get("end_sec", beat.get("end")))
-            if start is not None and end is not None and start >= 0 and end > start:
+            valid_span = start is not None and end is not None and start >= 0 and end > start
+            if valid_span:
                 segments.append({"start": start, "end": end, "text": line})
+            btype = str(beat.get("beat_type") or "").strip().upper()
+            if btype in BEAT_TYPES:
+                raw_delivery = (
+                    beat.get("delivery_cue")
+                    if beat.get("delivery_cue") is not None
+                    else (beat.get("delivery") if beat.get("delivery") is not None else beat.get("vocal_delivery"))
+                )
+                delivery = _clean_one_line(raw_delivery, MAX_BEAT_DELIVERY_CHARS)
+                raw_meaning = (
+                    beat.get("english_meaning")
+                    if beat.get("english_meaning") is not None
+                    else beat.get("english_partner_translation")
+                )
+                meaning = _clean_one_line(raw_meaning, MAX_BEAT_MEANING_CHARS)
+                if _TEMPLATE_MEANING_HINT in meaning.lower():
+                    meaning = ""
+                raw_visual = (
+                    beat.get("visual_broll_summary")
+                    if beat.get("visual_broll_summary") is not None
+                    else (
+                        beat.get("visual_summary")
+                        if beat.get("visual_summary") is not None
+                        else beat.get("visual_broll_en_zh")
+                    )
+                )
+                visual = _clean_one_line(raw_visual, MAX_BEAT_VISUAL_CHARS)
+                if _TEMPLATE_VISUAL_HINT in visual.lower():
+                    visual = ""
+                parsed_beats.append({
+                    "beat_type": btype,
+                    "audio_mode": mode if mode in BEAT_AUDIO_MODES else "VOICEOVER",
+                    "delivery": delivery,
+                    "start_sec": start if valid_span else None,
+                    "end_sec": end if valid_span else None,
+                    "spoken_text": line[:MAX_BEAT_SPOKEN_CHARS],
+                    "english_meaning": meaning,
+                    "visual_summary": visual,
+                })
     elif isinstance(raw_segments, list) and raw_segments:
         for seg in raw_segments:
             if not isinstance(seg, dict):
@@ -280,17 +356,21 @@ def parse_stage1_reply(
     clean_title = (title or "").strip() or (clean_file_name(source_name).rsplit(".", 1)[0] if source_name else "")
     timing_arg = measured if measured else None
     if attach_to is not None:
-        return posted.attach_transcript(
+        saved = posted.attach_transcript(
             store, attach_to, text=text, kind="video", timing=timing_arg, source_name=source_name
         )
-    return store.create_sample(
-        title=clean_title,
-        text=text,
-        is_sponsored=sponsored,
-        kind="video",
-        timing=timing_arg,
-        source_name=source_name,
-    )
+    else:
+        saved = store.create_sample(
+            title=clean_title,
+            text=text,
+            is_sponsored=sponsored,
+            kind="video",
+            timing=timing_arg,
+            source_name=source_name,
+        )
+    if parsed_beats:
+        store.save_sample_beats(saved["id"], parsed_beats)
+    return saved
 
 
 def transcribe_via_ai(
@@ -315,11 +395,8 @@ def transcribe_via_ai(
         provider = str(config.get("provider") or "")
         api_key = str(config["keys"].get(provider) or "")
         if provider not in AI_VIDEO_PROVIDERS or not api_key:
-            raise JobError(
-                "not_configured",
-                "Connect a Gemini or OpenAI API key in Settings first, or use the copy-and-paste button.",
-                "请先到「设置」连接 Gemini 或 OpenAI 密钥，或使用复制粘贴方式。",
-            )
+            msg_en, msg_zh = ai_video_refusal_messages(store)
+            raise JobError("not_configured", msg_en, msg_zh)
 
         try:
             size = path.stat().st_size

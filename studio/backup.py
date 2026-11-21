@@ -647,6 +647,7 @@ def _try_out(store: Store) -> None:
             len(store.list_metric_snapshots()), store.list_sample_sentiments(),
             [store.list_sample_comments(s["id"]) for s in store.list_samples()],
             store.list_sponsor_briefs(),
+            len(store.list_sample_beats()),
         ]
         json.dumps(answers, ensure_ascii=False)
     except Exception as exc:  # noqa: BLE001 - whatever a reader trips over, the file is not used
