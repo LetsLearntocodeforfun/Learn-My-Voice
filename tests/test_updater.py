@@ -1090,9 +1090,12 @@ class ApplyZipTest(ServerCase):
         symlink_info.create_system = 3
         symlink_info.external_attr = (stat.S_IFLNK | 0o777) << 16
 
+        backslash_info = zipfile.ZipInfo("learn-my-voice-0.4.0/evil.txt", date_time=(2026, 11, 21, 0, 0, 0))
+        backslash_info.filename = "learn-my-voice-0.4.0\\evil.txt"
+
         bad_archives = [
             ("traversal", [("learn-my-voice-0.4.0/../../escaped.txt", b"x")]),
-            ("backslash", [("learn-my-voice-0.4.0\\evil.txt", b"x")]),
+            ("backslash", [(backslash_info, b"x")]),
             ("symlink", [(symlink_info, b"/etc/passwd")]),
             ("windows_device", [("learn-my-voice-0.4.0/CON.py", b"x")]),
             ("windows_colon", [("learn-my-voice-0.4.0/a:b.txt", b"x")]),

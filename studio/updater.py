@@ -56,6 +56,7 @@ Standard library only.
 from __future__ import annotations
 
 import contextlib
+import gc
 import hashlib
 import json
 import os
@@ -1429,6 +1430,7 @@ def migrate_from_previous_folder(target_store: Store, source_app_dir: Path, *,
         try:
             existing_cfg = target_store._read_raw_config_dict()
             _staged, copied_files, cfg_bytes = _stage_folder_migration(src_data, work, existing_cfg)
+            del _staged
             if backups is not None:
                 backups.gate.keep_everyone_out()
             _apply_staged_to_empty_store(target_store, work / "new", cfg_bytes)
@@ -1438,6 +1440,13 @@ def migrate_from_previous_folder(target_store: Store, source_app_dir: Path, *,
             backup._remove_folder(work)
 
         upgraded = Store(dst_data)
+        with contextlib.closing(upgraded._db()) as db:
+            script_count = int(db.execute("SELECT COUNT(*) FROM scripts").fetchone()[0])
+            sample_count = int(db.execute("SELECT COUNT(*) FROM samples").fetchone()[0])
+        settings = upgraded.public_settings()
+        del upgraded
+        if os.name == "nt":
+            gc.collect()
         whisper_venv = src_root / "local_tools" / "whisper" / "venv"
         had_whisper = whisper_venv.is_dir() and not whisper_venv.is_symlink()
         return {
@@ -1453,9 +1462,9 @@ def migrate_from_previous_folder(target_store: Store, source_app_dir: Path, *,
             "transcription_note_zh": (
                 "本机转写环境（local_tools/whisper）不会在压缩包版本之间复制；如果需要使用本机转写，请在新版本文件夹中重新安装。"
             ),
-            "scripts": len(upgraded.list_scripts()),
-            "samples": upgraded.samples_count(),
-            "settings": upgraded.public_settings(),
+            "scripts": script_count,
+            "samples": sample_count,
+            "settings": settings,
         }
 
     if backups is None:
@@ -1646,7 +1655,21 @@ def unpack_and_migrate_zip(current_store: Store, zip_path: Path, *,
             if os.path.lexists(str(target_dir)):
                 raise _destination_exists_error(top_folder)
 
-            staging_dir = Path(tempfile.mkdtemp(dir=str(parent), prefix=".%s.unpacking-" % top_folder))
+            staging_dir = None
+            for _ in range(32):
+                candidate = parent / (".%s.unpacking-%s" % (top_folder, uuid.uuid4().hex[:8]))
+                try:
+                    if os.name == "nt":
+                        os.mkdir(str(candidate))
+                    else:
+                        os.mkdir(str(candidate), 0o755)
+                    staging_dir = candidate
+                    break
+                except FileExistsError:
+                    continue
+            if staging_dir is None:
+                raise UpdateError("save_failed", "Could not create temporary unpacking folder.",
+                                  "无法创建临时解压目录。", 507)
             placed = False
             try:
                 staging_resolved = staging_dir.resolve()
@@ -1693,19 +1716,35 @@ def unpack_and_migrate_zip(current_store: Store, zip_path: Path, *,
                 # Copy current data/ into the newly unpacked staging folder before moving it into place.
                 staged_new_store = Store(staging_resolved / "data")
                 mig = migrate_from_previous_folder(staged_new_store, current_app_dir, jobs=jobs)
+                del staged_new_store
+                if os.name == "nt":
+                    gc.collect()
 
                 if os.path.lexists(str(target_dir)):
                     raise _destination_exists_error(top_folder)
-                try:
-                    os.rename(str(staging_dir), str(target_dir))
-                except FileExistsError:
-                    raise _destination_exists_error(top_folder)
-                except OSError as exc:
-                    if os.path.lexists(str(target_dir)):
+                rename_tries = 12 if os.name == "nt" else 1
+                wait = 0.01
+                for attempt in range(1, rename_tries + 1):
+                    try:
+                        os.rename(str(staging_dir), str(target_dir))
+                        placed = True
+                        break
+                    except FileExistsError:
                         raise _destination_exists_error(top_folder)
-                    raise UpdateError("save_failed", "Could not place unpacked folder %s: %s" % (top_folder, exc),
-                                      "无法放置解压后的新版本目录 %s：%s" % (top_folder, exc), 507)
-                placed = True
+                    except PermissionError as exc:
+                        if os.path.lexists(str(target_dir)):
+                            raise _destination_exists_error(top_folder)
+                        if attempt == rename_tries:
+                            raise UpdateError("save_failed", "Could not place unpacked folder %s: %s" % (top_folder, exc),
+                                              "无法放置解压后的新版本目录 %s：%s" % (top_folder, exc), 507)
+                        gc.collect()
+                        time.sleep(wait)
+                        wait = min(wait * 2, 0.15)
+                    except OSError as exc:
+                        if os.path.lexists(str(target_dir)):
+                            raise _destination_exists_error(top_folder)
+                        raise UpdateError("save_failed", "Could not place unpacked folder %s: %s" % (top_folder, exc),
+                                          "无法放置解压后的新版本目录 %s：%s" % (top_folder, exc), 507)
             finally:
                 if not placed:
                     backup._remove_folder(staging_dir)
