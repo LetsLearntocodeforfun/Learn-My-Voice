@@ -8,10 +8,13 @@
      to Google.
    - "Find ideas": two separate exchanges with the AI service chosen in settings. A web lookup that carries only
      the request, the niches, up to 20 titles and the tracked keywords; then the ideas prompt, without web search.
+     The ideas prompt also carries, for a library item whose comments were pasted in, the summary of what viewers
+     wrote and their questions, and the videos that are planned and not posted (pipeline.ideas_prompt lists all of it).
      The hint under the box (dvSentKey) says which of these will happen with the current settings. */
 
 /* The numbers in dv_sent_* and mb_intro_ideas must match studio/pipeline.py: 20 titles (trends_prompt),
-   RECOMMEND_MAX_VIDEOS 60, RECOMMEND_EXCERPT_CHARS 400, IDEAS_MAX_TRENDS 12. tests/test_discover.py checks them. */
+   RECOMMEND_MAX_VIDEOS 60, RECOMMEND_EXCERPT_CHARS 400, IDEAS_MAX_TRENDS 12, IDEAS_MAX_QUESTIONS 4, and
+   PROMPT_MAX_PLANS 20 in studio/planner.py. tests/test_discover.py and tests/test_planner.py check them. */
 Object.assign(I18N.zh, {
   dv_label: '这次想拍什么？', dv_ph: '写一句或说一句就行，例如：秋冬护肤、周末带娃去哪儿。不填也可以。',
   dv_go: '✨ 找选题', dv_mic: '🎙 说一句', dv_mic_stop: '■ 说完了',
@@ -27,14 +30,17 @@ Object.assign(I18N.zh, {
   dv_mic_unsupported: '这台电脑不能在本机把语音转成文字，请直接打字。',
   dv_mic_not_installed: '说话输入要先装好本机转写。', dv_mic_install_go: '去安装',
   dv_mic_failed: '没能写下来：', dv_mic_too_short: '没有录到声音，请再说一次。',
-  dv_sent_search: '点「找选题」后分两步发给你在设置里选的 AI 服务。第一步联网查热词，只带：这句话、你的内容方向、最多 20 个非商单素材的标题、已经在跟踪的热词。第二步想选题，不联网，会带：你的个人资料、声音档案里的人设和段落写法、最多 60 篇素材的标题、数据和开头 400 个字、最多 12 个在跟踪的热词，还有这句话。',
-  dv_sent_plain: '点「找选题」后发给你在设置里选的 AI 服务，不联网。会带：这句话、你的个人资料、声音档案里的人设和段落写法、最多 60 篇素材的标题、数据和开头 400 个字、最多 12 个在跟踪的热词。',
+  dv_sent_search: '点「找选题」后分两步发给你在设置里选的 AI 服务。第一步联网查热词，只带：这句话、你的内容方向、最多 20 个非商单素材的标题、已经在跟踪的热词。第二步想选题，不联网，会带：你的个人资料、声音档案里的人设和段落写法、最多 60 篇素材的标题、数据和开头 400 个字、你贴过的观众评论的摘要（是按词表数出来的还是 AI 读的、概括、每篇最多 4 个观众提问的原话）、按数据算出的名次、中位数和收藏率、最多 12 个在跟踪的热词、最多 20 条还没发布的拍摄计划，还有这句话。',
+  dv_sent_plain: '点「找选题」后发给你在设置里选的 AI 服务，不联网。会带：这句话、你的个人资料、声音档案里的人设和段落写法、最多 60 篇素材的标题、数据和开头 400 个字、你贴过的观众评论的摘要（是按词表数出来的还是 AI 读的、概括、每篇最多 4 个观众提问的原话）、按数据算出的名次、中位数和收藏率、最多 12 个在跟踪的热词、最多 20 条还没发布的拍摄计划。',
   dv_sent_local: '只发给这台电脑上的本地模型，内容不会离开这台电脑。本地模型不能联网，所以选题只参考已经在跟踪的热词。',
   dv_sent_manual: '现在是复制粘贴模式：点「找选题」后分两步，每一步都会先让你看到要发出去的提示词。第一步请能联网的 AI 查热词（可以跳过），第二步想选题。',
   dv_byhand: '用复制粘贴查热词', dv_found_waiting: '已经查到 {n} 个热词，下次点「找选题」会用上。',
   dv_stage_queued: '正在开始…', dv_stage_starting: '正在开始…',
   dv_stage_looking_up: '正在联网查最近的热词，查完接着想选题…', dv_stage_thinking: '正在结合你自己的数据想选题…',
   dv_running_hint: '可能要一两分钟。可以先去别的页面，回来还在。', dv_elapsed: '已经 {s} 秒',
+  dv_patterns_title: '从你的数据里看出的规律',
+  dv_patterns_hint: '这是 AI 从你自己的视频里总结的，每条下面标着它依据的是哪几条视频。没有标的，是它没有指出出处的说法。',
+  dv_planned: '已加入计划',
   dv_for: '这次问的是：「{q}」', dv_ideas_title: '选题', dv_earlier_title: '之前的选题', dv_found_title: '这次查到的热词',
   dv_lookup_done: '联网查到 {n} 个热词', dv_lookup_gone: '这次联网查到的热词，现在都不在跟踪列表里了。',
   dv_lookup_unverified: '这些词是 AI 查到的，没有核实过：请点「来源」看一眼再用。',
@@ -47,7 +53,7 @@ Object.assign(I18N.zh, {
   dv_empty: '写一句想拍的方向，点「找选题」。不写也可以，会按你自己的数据来想。',
   dv_step1_title: '第 1 步，共 2 步：请能联网的 AI 查热词', dv_step1_skip: '跳过，直接想选题', dv_step2_title: '第 2 步，共 2 步：想选题',
   mb_skip: '跳过',
-  mb_intro_ideas: '提示词里有：你在设置里填的个人资料（名字、账号名、内容方向、自我介绍、一起出镜的人、不说的话）、声音档案里的人设和段落写法、最多 60 篇素材的标题、是否商单、数据和开头 400 个字（还没确认的视频转写不带文字）、按数据排的名次、最多 12 个在跟踪的热词，以及你这次填的这句话。这些会随提示词一起发给 AI。',
+  mb_intro_ideas: '提示词里有：你在设置里填的个人资料（名字、账号名、内容方向、自我介绍、一起出镜的人、不说的话）、声音档案里的人设和段落写法、最多 60 篇素材的标题、是否商单、数据和开头 400 个字（还没确认的视频转写不带文字）、你贴过的观众评论的摘要（是按词表数出来的还是 AI 读的、评论条数、概括、每篇最多 4 个观众提问的原话）、按数据算出的名次、中位数和收藏率、最多 12 个在跟踪的热词、最多 20 条还没发布的拍摄计划（标题、状态、日期、关键词、要回答的观众提问），以及你这次填的这句话。这些会随提示词一起发给 AI。',
   err_bad_focus: '这句话没法识别，请重新写一下。', err_upload_not_found: '录音没有传上来，请再说一次。',
   err_too_large: '太长了，一两句话就够。',
 });
@@ -66,8 +72,8 @@ Object.assign(I18N.en, {
   dv_mic_unsupported: 'This computer cannot turn speech into text on its own. Type instead.',
   dv_mic_not_installed: 'Speaking needs the on-device transcriber, which is not installed yet.', dv_mic_install_go: 'Install it',
   dv_mic_failed: 'Could not write that down: ', dv_mic_too_short: 'No sound was recorded. Please try again.',
-  dv_sent_search: '"Find ideas" sends two things to the AI service chosen in Settings. Step 1 searches the web and carries only: this line, the niches from setup, the titles of up to 20 non-sponsored library items and the keywords already tracked. Step 2 suggests ideas without web search and carries: the creator profile, the persona summary and beat playbooks from the voice profile, for up to 60 library items the title, numbers and first 400 characters, up to 12 tracked keywords, and this line.',
-  dv_sent_plain: '"Find ideas" sends this to the AI service chosen in Settings, without web search: this line, the creator profile, the persona summary and beat playbooks from the voice profile, for up to 60 library items the title, numbers and first 400 characters, and up to 12 tracked keywords.',
+  dv_sent_search: '"Find ideas" sends two things to the AI service chosen in Settings. Step 1 searches the web and carries only: this line, the niches from setup, the titles of up to 20 non-sponsored library items and the keywords already tracked. Step 2 suggests ideas without web search and carries: the creator profile, the persona summary and beat playbooks from the voice profile, for up to 60 library items the title, numbers and first 400 characters, the summary of the comments pasted for an item (whether it was counted by word lists or read by an AI, the summary, up to 4 questions in the words of the viewers), the ranking, medians and save rates worked out from the numbers, up to 12 tracked keywords, up to 20 planned videos that are not posted yet, and this line.',
+  dv_sent_plain: '"Find ideas" sends this to the AI service chosen in Settings, without web search: this line, the creator profile, the persona summary and beat playbooks from the voice profile, for up to 60 library items the title, numbers and first 400 characters, the summary of the comments pasted for an item (whether it was counted by word lists or read by an AI, the summary, up to 4 questions in the words of the viewers), the ranking, medians and save rates worked out from the numbers, up to 12 tracked keywords, and up to 20 planned videos that are not posted yet.',
   dv_sent_local: 'Sent only to the local model on this computer; nothing leaves it. A local model cannot search the web, so the ideas use only the keywords already tracked.',
   dv_sent_manual: 'Copy-and-paste mode is on: "Find ideas" takes two steps, and each shows the prompt before anything is sent. Step 1 asks a web-searching AI for current keywords (it can be skipped); step 2 suggests ideas.',
   dv_byhand: 'Look up keywords by copy and paste', dv_found_waiting: '{n} keywords were found and will be used the next time you click "Find ideas".',
@@ -75,6 +81,9 @@ Object.assign(I18N.en, {
   dv_stage_queued: 'Starting…', dv_stage_starting: 'Starting…',
   dv_stage_looking_up: 'Looking up current keywords on the web; ideas come next…', dv_stage_thinking: 'Working out ideas from {@names} own numbers…',
   dv_running_hint: 'This can take a minute or two. You can open another page and come back.', dv_elapsed: '{s} s so far',
+  dv_patterns_title: 'Patterns in {@names} numbers',
+  dv_patterns_hint: 'An AI drew these from {@names} own videos. The videos each one rests on are named under it; one with none named is a claim it gave no source for.',
+  dv_planned: 'In the plan',
   dv_for: 'Asked for: "{q}"', dv_ideas_title: 'Ideas', dv_earlier_title: 'Earlier ideas', dv_found_title: 'Keywords found this time',
   dv_lookup_done: 'The web lookup found {n} keywords', dv_lookup_done_one: 'The web lookup found 1 keyword',
   dv_lookup_gone: 'None of the keywords this lookup found is tracked any more.',
@@ -88,7 +97,7 @@ Object.assign(I18N.en, {
   dv_empty: 'Type what the video should be about and click "Find ideas". Leaving it empty works too: the ideas then follow {@names} own numbers.',
   dv_step1_title: 'Step 1 of 2: ask a web-searching AI for current keywords', dv_step1_skip: 'Skip, go straight to ideas', dv_step2_title: 'Step 2 of 2: suggest ideas',
   mb_skip: 'Skip',
-  mb_intro_ideas: 'The prompt contains: the creator profile from setup (name, account name, niches, self-description, on-camera partner, refused phrases), the persona summary and beat playbooks from the voice profile, for up to 60 library items the title, the sponsored mark, the numbers and the first 400 characters (a video transcript not confirmed yet goes without its text), the ranking by those numbers, up to 12 tracked keywords, and the line typed here. All of it is sent to the AI with the prompt.',
+  mb_intro_ideas: 'The prompt contains: the creator profile from setup (name, account name, niches, self-description, on-camera partner, refused phrases), the persona summary and beat playbooks from the voice profile, for up to 60 library items the title, the sponsored mark, the numbers and the first 400 characters (a video transcript not confirmed yet goes without its text), the summary of the comments pasted for an item (whether it was counted by word lists or read by an AI, how many comments, the summary, up to 4 questions in the words of the viewers), the ranking, medians and save rates worked out from the numbers, up to 12 tracked keywords, up to 20 planned videos that are not posted yet (title, state, day, keywords, the questions of viewers each answers), and the line typed here. All of it is sent to the AI with the prompt.',
   err_bad_focus: 'That line could not be read. Please type it again.', err_upload_not_found: 'The recording did not arrive. Please say it again.',
   err_too_large: 'That is too long. A sentence or two is enough.',
 });
@@ -486,9 +495,13 @@ async function renderIdeas() {
   /* A lookup that failed or was left out is said above the ideas; the keywords of one that worked follow them. */
   const looked = result ? dvLookupHtml(result.lookup, byKey) : '';
   const lookedFirst = !!(result && result.lookup && result.lookup.status !== 'done');
-  const patterns = (result && Array.isArray(result.patterns) && result.patterns.length)
-    ? `<div class="card soft" style="margin-bottom:14px"><strong>${esc(t('pl_patterns_title'))}</strong>` +
-      result.patterns.map((p) => `<p class="meta" style="margin:6px 0 0">• ${esc(lang === 'zh' ? p.pattern_zh : (p.pattern_en || p.pattern_zh))}</p>`).join('') +
+  /* What the model says it sees in the numbers (pipeline._checked_patterns): each with the creator's videos it cited. */
+  const seen = (result && Array.isArray(result.patterns) ? result.patterns : []).filter((p) => p && p.pattern_zh);
+  const patterns = seen.length
+    ? `<div class="card" id="dv-patterns"><h3>${esc(t('dv_patterns_title'))}</h3><p class="hint">${esc(t('dv_patterns_hint'))}</p>` +
+      seen.map((p) => `<p>${esc(lang === 'zh' ? p.pattern_zh : (p.pattern_en || p.pattern_zh))}</p>` +
+        ((p.evidence_titles || []).length ? `<div class="meta">${esc(t('evidence'))}：${
+          p.evidence_titles.map((x) => `<span class="tag">${esc(x)}</span>`).join('')}</div>` : '')).join('') +
       `</div>` : '';
   const saved = result ? `<h2 class="dv-h">${esc(t(latest ? 'dv_earlier_title' : 'dv_ideas_title'))}</h2>
       <p class="meta">${result.focus ? esc(tf('dv_for', { q: result.focus })) + ' · ' : ''}${savedAt ? esc(t('generated_at')) + ' ' + esc(fmtDate(savedAt)) : ''}</p>
@@ -525,21 +538,14 @@ async function renderIdeas() {
       if (planBtn) {
         const idea = ideas[Number(planBtn.dataset.planIdea)];
         if (!idea) return;
+        planBtn.disabled = true;
         try {
-          await api('POST', '/api/plans', {
-            title: idea.title_zh,
-            video_format: idea.video_format,
-            target_sec: idea.target_duration_sec,
-            notes: idea.script_notes_zh || '',
-            rationale_zh: idea.why_zh || '',
-            rationale_en: idea.why_en || '',
-            keywords: (idea.trend_keywords || []).slice(0, MAX_KEYWORDS),
-            source_kind: 'idea',
-          });
+          await api('POST', '/api/plans', plFromIdea(idea));      // planner.js: an idea as a plan
+          planBtn.textContent = t('dv_planned');                   // it stays off: the same idea is not planned twice from here
           toast(t('pl_added_toast'));
           appState.plan_count = (appState.plan_count || 0) + 1;
           renderNav('ideas');
-        } catch (err) { showError(err); }
+        } catch (err) { planBtn.disabled = false; showError(err); }
         return;
       }
       const btn = e.target.closest('[data-idea]');

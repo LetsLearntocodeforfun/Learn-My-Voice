@@ -63,6 +63,15 @@ Object.assign(I18N.en, {
   pl_patterns_title: 'Winning Content Patterns',
 });
 
+/* A saved idea as the body of a new plan (planner._new_plan reads the idea's own names too). */
+function plFromIdea(idea) {
+  return {
+    title: idea.title_zh, video_format: idea.video_format, target_sec: idea.target_duration_sec,
+    notes: idea.script_notes_zh || '', rationale_zh: idea.why_zh || '', rationale_en: idea.why_en || '',
+    keywords: (idea.trend_keywords || []).slice(0, MAX_KEYWORDS), source_kind: 'idea',
+  };
+}
+
 const plUi = {
   filter: 'ALL',
 };
