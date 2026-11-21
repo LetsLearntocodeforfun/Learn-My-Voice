@@ -42,6 +42,12 @@ MAX_SOURCE_NAME_CHARS = 200
 MAX_BRIEFS = 200            # records of what a prompt contained; the oldest are dropped
 MAX_AI_SUGGESTIONS = 300    # texts an AI suggested for the lines of one script that are remembered; the oldest are dropped
 MAX_SNAPSHOTS_PER_SAMPLE = 365      # days on which the numbers of one library item were read that are kept; the oldest are dropped
+# ``mode`` of a script. SPONSORED is set once, when a script is drafted from a brand's brief (studio/sponsored.py),
+# and stays when that brief is deleted: the script still holds wording a brand asked for.
+MODE_ORGANIC, MODE_SPONSORED = "NORMAL_ORGANIC", "SPONSORED"
+# Brand briefs kept at once (``sponsor_briefs``). A brief is somebody else's text with the creator's decisions about
+# it, so none is ever dropped to make room: a new one is refused until the creator deletes one.
+MAX_SPONSOR_BRIEFS = 30
 # The text of one library item, in characters. No real script or transcript comes near it: at a fast 300
 # characters a minute this is more than 27 hours of speech in Chinese, and about 9 hours in English. It is
 # there so that one file somebody handed the creator cannot make every page slow or fill the database.
@@ -312,6 +318,18 @@ CREATE TABLE IF NOT EXISTS video_plans (
     rationale_en TEXT NOT NULL DEFAULT '',
     keywords_json TEXT NOT NULL DEFAULT '[]',
     questions_json TEXT NOT NULL DEFAULT '[]',
+    script_id TEXT,
+    created_at REAL NOT NULL,
+    updated_at REAL NOT NULL
+);
+CREATE TABLE IF NOT EXISTS sponsor_briefs (
+    id TEXT PRIMARY KEY,
+    title TEXT NOT NULL DEFAULT '',
+    source_name TEXT NOT NULL DEFAULT '',
+    brief TEXT NOT NULL,
+    reading_json TEXT,
+    choice_json TEXT,
+    ticks_json TEXT NOT NULL DEFAULT '{}',
     script_id TEXT,
     created_at REAL NOT NULL,
     updated_at REAL NOT NULL
@@ -1481,9 +1499,12 @@ class Store:
                       video_format: str = "VLOG_VOICEOVER", lines: Any = None,
                       post: Optional[Dict[str, Any]] = None, from_ai: bool = False,
                       default_title: str = "未命名脚本", keywords: Any = None,
-                      basis: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+                      basis: Optional[Dict[str, Any]] = None, mode: str = MODE_ORGANIC) -> Dict[str, Any]:
         """Save a new script. ``from_ai`` keeps the lines as the AI's draft, for later comparison with the
-        creator's version; ``basis`` (what that draft's prompt contained) is only kept for an AI draft."""
+        creator's version; ``basis`` (what that draft's prompt contained) is only kept for an AI draft.
+
+        ``mode`` is MODE_SPONSORED for a script drafted from a brand's brief (``studio.sponsored``) and
+        MODE_ORGANIC for every other; anything else is stored as MODE_ORGANIC. Nothing changes it afterwards."""
         raw_title = (title or "").strip()
         if len(raw_title) > MAX_SCRIPT_TITLE_CHARS:
             raise TextTooLong(len(raw_title), MAX_SCRIPT_TITLE_CHARS, field="script_title")
@@ -1507,10 +1528,11 @@ class Store:
         basis_json = _dumps(basis) if (from_ai and isinstance(basis, dict)) else None
         with self._db() as db:
             db.execute(
-                "INSERT INTO scripts (id, title, video_format, target_sec, notes, lines_json, line_count, preview,"
+                "INSERT INTO scripts (id, title, mode, video_format, target_sec, notes, lines_json, line_count, preview,"
                 " post_json, ai_lines_json, keywords_json, basis_json, created_at, updated_at)"
-                " VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
-                (script_id, title, video_format, int(target_sec), notes, lines_json, line_count, preview,
+                " VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                (script_id, title, MODE_SPONSORED if mode == MODE_SPONSORED else MODE_ORGANIC,
+                 video_format, int(target_sec), notes, lines_json, line_count, preview,
                  post_json, lines_json if from_ai else None,
                  _dumps(normalize_keywords(keywords)), basis_json, now, now),
             )
@@ -1628,10 +1650,13 @@ class Store:
     def delete_script(self, script_id: str) -> bool:
         """Delete a script. The library item of a script that was posted is the creator's video: it stays, with
         its numbers and with where it came from, and only stops pointing at a script that is no longer there.
-        The pins of the script are removed with it; the items they named stay in the library."""
+        The pins of the script are removed with it; the items they named stay in the library. A brand's brief
+        it was drafted from stays too, until the creator deletes it; it stops pointing here, and the ticks set
+        on this script's list go with the script."""
         with self._db() as db:
             db.execute("DELETE FROM ai_suggestions WHERE script_id = ?", (script_id,))
             db.execute("DELETE FROM script_pins WHERE script_id = ?", (script_id,))      # its pins are about this script only
+            db.execute("UPDATE sponsor_briefs SET script_id = NULL, ticks_json = '{}' WHERE script_id = ?", (script_id,))
             db.execute("UPDATE samples SET script_id = NULL WHERE script_id = ?", (script_id,))
             db.execute("UPDATE video_plans SET script_id = NULL WHERE script_id = ?", (script_id,))
             return db.execute("DELETE FROM scripts WHERE id = ?", (script_id,)).rowcount > 0
@@ -2118,3 +2143,129 @@ class Store:
         """Remove a plan. A script made from it is the creator's work and stays."""
         with self._db() as db:
             return db.execute("DELETE FROM video_plans WHERE id = ?", (plan_id,)).rowcount > 0
+    # ---- brand briefs for sponsored scripts (studio/sponsored.py) --------
+    # A brief has a table of its own (``sponsor_briefs``) and nothing below reads or writes a script's row. So
+    # nothing that hands out a script hands out a brief, and none of this moves a script's ``updated_at``.
+    # Only ``studio.sponsored`` gives the stored values a meaning and checks them; this only keeps them.
+    @staticmethod
+    def _sponsor_row(row: sqlite3.Row) -> Dict[str, Any]:
+        """A brief as it is handed out. A stored value that cannot be read, or is of another kind than this app
+        writes there, comes back empty (no reading, no choice, no ticks): it never stops the brief being shown."""
+        def stored(text: Any) -> Dict[str, Any]:
+            return _json_object(text) or {}
+
+        return {"id": row["id"], "title": row["title"] or "", "source_name": row["source_name"] or "",
+                "brief": row["brief"] if isinstance(row["brief"], str) else "",
+                "reading": stored(row["reading_json"]) or None, "choice": stored(row["choice_json"]) or None,
+                "ticks": stored(row["ticks_json"]), "script_id": row["script_id"] if isinstance(row["script_id"], str) else None,
+                "created_at": row["created_at"], "updated_at": row["updated_at"]}
+
+    def _sponsor_db(self) -> sqlite3.Connection:
+        """A connection for changing ``sponsor_briefs``: what a change removes there is overwritten, not only unlisted.
+
+        SQLite leaves the bytes of a deleted or replaced row in the file until the space is used again, and a
+        backup copies the file page by page. A brief is a brand's confidential text: once the creator deletes
+        it, it is not to be readable in the data folder any more, nor to travel in a backup made afterwards.
+        ``secure_delete`` makes SQLite write zeros over what it frees.
+        """
+        db = self._db()
+        db.execute("PRAGMA secure_delete = ON").fetchall()
+        return db
+
+    def list_sponsor_briefs(self) -> List[Dict[str, Any]]:
+        """The briefs that are kept, newest first, each without its text: ``{"id", "title", "source_name",
+        "chars", "has_reading", "has_choice", "script_id", "created_at", "updated_at"}``.
+
+        ``chars`` is how long the brief is. At most four times MAX_SPONSOR_BRIEFS are listed: no more than
+        MAX_SPONSOR_BRIEFS can be added here, and a database from elsewhere must not make the list endless.
+        """
+        with self._db() as db:
+            rows = db.execute(
+                "SELECT id, title, source_name, LENGTH(brief) AS chars, reading_json IS NOT NULL AS has_reading,"
+                " choice_json IS NOT NULL AS has_choice, script_id, created_at, updated_at FROM sponsor_briefs"
+                " ORDER BY created_at DESC, rowid DESC LIMIT ?", (MAX_SPONSOR_BRIEFS * 4,)).fetchall()
+        return [{"id": row["id"], "title": row["title"] or "", "source_name": row["source_name"] or "",
+                 "chars": int(row["chars"] or 0), "has_reading": bool(row["has_reading"]), "has_choice": bool(row["has_choice"]),
+                 "script_id": row["script_id"] if isinstance(row["script_id"], str) else None,
+                 "created_at": row["created_at"], "updated_at": row["updated_at"]} for row in rows]
+
+    def count_sponsor_briefs(self) -> int:
+        with self._db() as db:
+            return int(db.execute("SELECT COUNT(*) FROM sponsor_briefs").fetchone()[0])
+
+    def get_sponsor_brief(self, brief_id: Any) -> Optional[Dict[str, Any]]:
+        """One brief with what was made of it, or None when there is none with this id.
+
+        ``{"id", "title", "source_name", "brief", "reading", "choice", "ticks", "script_id", "created_at",
+        "updated_at"}``. ``brief`` is the brand's text as it was added. ``reading`` is what a model made of it
+        (None until one did), ``choice`` what the creator decided (None until they did), ``ticks`` the creator's
+        own ticks on the list of the script drafted from it, and ``script_id`` that script (None when none was
+        drafted, or when it was deleted).
+        """
+        if not isinstance(brief_id, str):
+            return None
+        with self._db() as db:
+            row = db.execute("SELECT * FROM sponsor_briefs WHERE id = ?", (brief_id,)).fetchone()
+        return self._sponsor_row(row) if row else None
+
+    def sponsor_brief_of_script(self, script_id: Any) -> Optional[Dict[str, Any]]:
+        """The brief this script was drafted from, or None: it was not drafted from one, or that brief was deleted."""
+        if not isinstance(script_id, str) or not script_id:
+            return None
+        with self._db() as db:
+            row = db.execute("SELECT * FROM sponsor_briefs WHERE script_id = ? ORDER BY updated_at DESC, rowid DESC LIMIT 1",
+                             (script_id,)).fetchone()
+        return self._sponsor_row(row) if row else None
+
+    def create_sponsor_brief(self, *, title: str, brief: str, source_name: str = "",
+                             limit: int = MAX_SPONSOR_BRIEFS) -> Optional[Dict[str, Any]]:
+        """Keep a brand's brief. Returns it, or None when ``limit`` briefs are kept already: none is dropped to make room.
+
+        Counting and adding are one step, so two windows that add at the same moment cannot get past the
+        limit between them. ``studio.sponsored`` checks the text and its length before it comes here.
+        """
+        brief_id = uuid.uuid4().hex[:12]
+        now = time.time()
+        with self._db() as db:
+            db.execute("BEGIN IMMEDIATE")
+            if db.execute("SELECT COUNT(*) FROM sponsor_briefs").fetchone()[0] >= limit:
+                return None
+            db.execute("INSERT INTO sponsor_briefs (id, title, source_name, brief, created_at, updated_at) VALUES (?,?,?,?,?,?)",
+                       (brief_id, str(title or ""), clean_file_name(source_name), str(brief or ""), now, now))
+        return self.get_sponsor_brief(brief_id)
+
+    def save_sponsor_brief(self, brief_id: str, *, reading: Any = _KEEP, choice: Any = _KEEP, ticks: Any = _KEEP,
+                           script_id: Any = _KEEP) -> Optional[Dict[str, Any]]:
+        """Change what is kept with a brief. Returns it, or None when there is no brief with this id.
+
+        Only what is given is written; everything else stays as stored. ``reading`` and ``choice`` take an
+        object, or None to remove what was there; ``ticks`` an object; ``script_id`` the id of the script drafted
+        from the brief, or None. The brief's own text is never changed: to change it, the creator deletes the
+        brief and adds it again, so a reading always belongs to the text it is shown beside.
+        """
+        sets: List[str] = []
+        values: List[Any] = []
+        if reading is not _KEEP:
+            sets.append("reading_json = ?"); values.append(_dumps(reading) if isinstance(reading, dict) else None)
+        if choice is not _KEEP:
+            sets.append("choice_json = ?"); values.append(_dumps(choice) if isinstance(choice, dict) else None)
+        if ticks is not _KEEP:
+            sets.append("ticks_json = ?"); values.append(_dumps(ticks if isinstance(ticks, dict) else {}))
+        if script_id is not _KEEP:
+            sets.append("script_id = ?"); values.append(script_id if isinstance(script_id, str) and script_id else None)
+        if sets:
+            sets.append("updated_at = ?"); values.append(time.time())
+            with self._sponsor_db() as db:        # a reading or a choice that is replaced quotes the brief: it is overwritten
+                db.execute("UPDATE sponsor_briefs SET %s WHERE id = ?" % ", ".join(sets), values + [brief_id])
+        return self.get_sponsor_brief(brief_id)
+
+    def delete_sponsor_brief(self, brief_id: str) -> bool:
+        """Delete a brief with everything made of it: the reading, the choice and the ticks. True when there was one.
+
+        A script drafted from it stays, with its lines, and stays a sponsored script (``mode``): only the list
+        that stood beside it is gone. The row's bytes are overwritten in the file (``_sponsor_db``), so the text
+        is not in a backup made afterwards either. A backup made while the brief was kept still holds it.
+        """
+        with self._sponsor_db() as db:
+            db.execute("DELETE FROM briefs WHERE kind = 'sponsor_draft' AND fingerprint = ?", (brief_id,))
+            return db.execute("DELETE FROM sponsor_briefs WHERE id = ?", (brief_id,)).rowcount > 0

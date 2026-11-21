@@ -58,7 +58,7 @@ OWN = [
 MARKUP = "<img src=x onerror=alert(1)>"
 ASSUMES = re.compile(r"\b(she|her|hers|herself|husband|wife|couple)\b", re.I)
 # The layout of the database this version of the data stands for (backup.layout_fingerprint()).
-LAYOUT_OF_DATA_VERSION = {1: "dc489db00a5395ce", 2: "b0612eef1d02873d", 3: "9b1b7bdbda5dc7bb"}
+LAYOUT_OF_DATA_VERSION = {1: "dc489db00a5395ce", 2: "b0612eef1d02873d", 3: "97184f022117d08e"}
 
 # The tables as the code at 3fdd3a6 creates them: the commit this feature was built on.
 SCHEMA_AT_3FDD3A6 = """
@@ -212,6 +212,10 @@ def fill(store, tag="甲"):
     store.add_sample_comments(first_sample["id"], [{"text": tag + "求链接？", "likes": 3, "sentiment": "positive", "is_question": True}])
     store.save_sample_sentiment(first_sample["id"], {"overall_sentiment": "not_judged", "summary_zh": tag + "按词表统计"})
     store.create_video_plan(title=tag + "下期计划", scheduled_for="2026-11-28", script_id=drafted["id"])
+    brief = store.create_sponsor_brief(title=tag + "面霜 Brief", brief=tag + "品牌方要求：必须提到「24 小时保湿」。", source_name="brief.docx")
+    store.save_sponsor_brief(brief["id"], script_id=drafted["id"], ticks={"r1": {"at": 3.0}},
+                             reading={"created_at": 1.0, "requirements": [{"id": "r1", "kind": "must_say", "text": "提到保湿"}]},
+                             choice={"at": 2.0, "way": {"source": "own", "idea": tag + "换季那几天"}, "requirements": []})
     store.create_sample(title=tag + "字幕", text=OWN[1], kind="subtitle", source_name="a.srt",
                         timing={"units": 40, "spoken_sec": 12.5, "speaking_rate_cpm": 192})
     store.create_sample(title=tag + "视频", text=OWN[2], kind="video", source_name="b.mp4", is_sponsored=True,
@@ -419,7 +423,7 @@ class ContentsTest(Case):
         self.assertEqual(rows(inside), rows(self.store.db_path))
         self.assertEqual(sorted(rows(inside)), ["ai_suggestions", "briefs", "lessons", "metric_snapshots",
                                                 "sample_comments", "sample_sentiments", "samples", "script_pins",
-                                                "scripts", "trends", "video_plans"])
+                                                "scripts", "sponsor_briefs", "trends", "video_plans"])
         for table, found in rows(inside).items():
             self.assertTrue(found, table)                                    # the made-up folder has something in every table
         self.assertEqual(json.loads(held["settings.json"].decode("utf-8")),
@@ -610,7 +614,7 @@ class RoundTripTest(Case):
         layout = backup.reference_layout()
         self.assertEqual(sorted(layout["tables"]), ["ai_suggestions", "briefs", "lessons", "metric_snapshots",
                                                     "sample_comments", "sample_sentiments", "samples", "script_pins",
-                                                    "scripts", "trends", "video_plans"])
+                                                    "scripts", "sponsor_briefs", "trends", "video_plans"])
         self.assertEqual(sorted(layout["indexes"]), ["ai_suggestions_by_script", "metric_snapshots_by_sample",
                                                      "sample_comments_by_sample", "samples_by_script"])
         columns = {name: [column for column, _kind, _written in found if column] for name, found in layout["tables"].items()}

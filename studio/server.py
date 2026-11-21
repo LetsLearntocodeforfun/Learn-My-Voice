@@ -56,7 +56,7 @@ from typing import Any, Dict, List, Optional, Tuple
 
 from . import checks, corpus, creator, exports, keyword_import, llm, pipeline, textstats, timing, transcribe, trends
 from . import buildinfo, hooks, outside, posted, refs, suggest, video_ingest, wordlist
-from . import planner, rednote_analytics, soundstats, tone_analyzer, updater
+from . import planner, rednote_analytics, soundstats, sponsored, tone_analyzer, updater
 from . import setup as setup_status
 from . import backup
 from .jobs import JobError, Jobs, Progress
@@ -88,6 +88,9 @@ NO_UPDATE_CHECK_ENV = "LEARN_MY_VOICE_NO_UPDATE_CHECK"
 DEFAULT_PORT = 8765
 UNTITLED = {"zh": "未命名脚本", "en": "Untitled script"}
 MANUAL_TASKS = ("draft", "voice", "ideas", "trends", "suggest", "video_ingest", "sentiment", "comment_ocr")
+# "sponsor": a brand's brief read into plain words, requirements and ways in; "sponsor_draft": a draft from what the
+# creator chose of that (studio/sponsored.py).
+MANUAL_TASKS += ("sponsor", "sponsor_draft")
 IDLE_TIMEOUT_SEC = 30                   # a connection that sends nothing for this long while it is being read is closed
 
 # Sent with every answer. The pages load their scripts and their style sheet from this server, style some
@@ -962,6 +965,17 @@ class Handler(BaseHTTPRequestHandler):
     def _manual_prompt(self, body: Dict[str, Any]) -> Dict[str, Any]:
         """``{"prompt"}``, plus ``brief_id`` for a draft: the record of what that prompt contains."""
         store, task = self.app.store, _task(body)
+        if task == "sponsor":
+            # The whole brief is in this prompt, with the creator profile and the voice profile. It goes wherever the
+            # creator pastes it.
+            system, user = _sponsoring(lambda: sponsored.read_prompt(store, body.get("sponsor_id")))
+            return {"prompt": pipeline.single_prompt(system, user)}
+        if task == "sponsor_draft":
+            # What the creator chose goes into this prompt; the brief itself does not.
+            built = _sponsoring(lambda: sponsored.draft_brief(
+                store, body.get("sponsor_id"), target_sec=_target_sec(body), video_format=_video_format(body),
+                replace=body.get("replace")))
+            return {"prompt": pipeline.single_prompt(built["system"], built["user"]), "brief_id": built["brief_id"]}
         if task == "draft":
             if body.get("plan_id") is not None:
                 try:
@@ -1018,7 +1032,15 @@ class Handler(BaseHTTPRequestHandler):
                                    planner=planner.payload(store)), 201)
         # For ideas: what was asked, and the lookup that came before. Malformed ones are refused before the reply is read.
         focus, lookup = (_focus(body), _pasted_lookup(body)) if task == "ideas" else ("", None)
-        result = llm.parse_manual_reply(str(body.get("reply") or ""), task)
+        # A draft from a brief is read as leniently as any draft: a bare list of lines counts as its script_lines.
+        result = llm.parse_manual_reply(str(body.get("reply") or ""), "draft" if task == "sponsor_draft" else task)
+        if task == "sponsor":     # a reading, as on the direct route: nothing is chosen and nothing is drafted
+            return self._json(_sponsoring(lambda: sponsored.propose(store, body.get("sponsor_id"), result)))
+        if task == "sponsor_draft":
+            script = _sponsoring(lambda: sponsored.apply_draft(
+                store, body.get("sponsor_id"), result, target_sec=_target_sec(body), video_format=_video_format(body),
+                default_title=UNTITLED[self._lang(body)], record_id=body.get("brief_id"), replace=body.get("replace")))
+            return self._json(posted.with_posted(store, script), 201)
         if task == "draft":
             brief_id = body.get("brief_id")
             try:
@@ -1112,6 +1134,61 @@ class Handler(BaseHTTPRequestHandler):
                 raise ApiError(413, exc.code, exc.message, exc.message_zh, extra={"limit": exc.limit})
             return self._json(dict(made, planner=planner.payload(store)), 201)
         raise ApiError(404, "not_found")
+    # ---- a brand's brief for a sponsored video (studio/sponsored.py) ---------
+    def _sponsored_api(self, method: str, path: str) -> None:
+        """``/api/sponsored`` and what hangs below it, and ``/api/scripts/<id>/sponsor``. Each hands over to ``studio.sponsored``.
+
+        - ``GET /api/sponsored``: the briefs that are kept, without their text. ``POST {"text"}`` or ``{"name",
+          "file_base64"}`` (a .txt, .md or .docx file), with an optional ``title``: keep a brief. Nothing is sent.
+        - ``GET /api/sponsored/<id>``: one brief with what the word list marks in it, what a model made of it and
+          what the creator decided. ``DELETE``: delete it with all of that; answers with the list.
+        - ``POST /api/sponsored/<id>/read {"service": {"provider", "model"}}``: send the brief, the creator profile
+          and the voice profile to the AI service in settings and store the reply as a reading. ``service`` is the
+          one the page named to the creator before sending; when the settings name another by now, nothing is sent.
+        - ``PUT /api/sponsored/<id>/choice {"reading_at", "way", "requirements", "own"}``: the creator's decision.
+          Nothing is sent and nothing is drafted.
+        - ``POST /api/sponsored/<id>/draft {"service", "target_sec", "video_format", "replace", "lang"}``: write a
+          draft from that decision as a new script, in sponsored mode; answers with the script (201).
+        - ``GET /api/scripts/<id>/sponsor``: the list beside a script drafted from a brief, checked by rule.
+          ``PUT /api/scripts/<id>/sponsor/ticks {"id", "ticked"}``: the creator's own tick on what no rule can check.
+
+        Each is the creator's click in the app. There is deliberately no MCP tool for any of them. Every answer is
+        bounded in size by the limits of ``studio.sponsored``, whatever a brief or a reply held.
+        """
+        store = self.app.store
+        route = (method, path)
+        if route == ("GET", "/api/sponsored"):
+            return self._json(sponsored.listing(store))
+        if route == ("POST", "/api/sponsored"):
+            body = self._read_json()
+            return self._json(_sponsoring(lambda: sponsored.add(store, body)), 201)
+        m = re.fullmatch(r"/api/sponsored/([0-9a-f]{12})", path)
+        if m and method == "GET":
+            return self._json(_sponsoring(lambda: sponsored.payload(store, m.group(1))))
+        if m and method == "DELETE":
+            return self._json(_sponsoring(lambda: sponsored.remove(store, m.group(1))))
+        m = re.fullmatch(r"/api/sponsored/([0-9a-f]{12})/(read|choice|draft)", path)
+        if m and (method, m.group(2)) == ("POST", "read"):
+            body = self._read_json()
+            self._require_ai()
+            return self._json(_sponsoring(lambda: sponsored.read(store, m.group(1), body.get("service"), self.app.transport)))
+        if m and (method, m.group(2)) == ("PUT", "choice"):
+            body = self._read_json()
+            return self._json(_sponsoring(lambda: sponsored.choose(store, m.group(1), body)))
+        if m and (method, m.group(2)) == ("POST", "draft"):
+            body = self._read_json()
+            self._require_ai()
+            script = _sponsoring(lambda: sponsored.generate_draft(
+                store, m.group(1), body.get("service"), self.app.transport, target_sec=_target_sec(body),
+                video_format=_video_format(body), default_title=UNTITLED[self._lang(body)], replace=body.get("replace")))
+            return self._json(posted.with_posted(store, script), 201)
+        m = re.fullmatch(r"/api/scripts/([0-9a-f]{12})/sponsor(/ticks)?", path)
+        if m and method == "GET" and not m.group(2):
+            return self._json(_sponsoring(lambda: sponsored.for_script(store, m.group(1))))
+        if m and method == "PUT" and m.group(2):
+            body = self._read_json()
+            return self._json(_sponsoring(lambda: sponsored.tick(store, m.group(1), body)))
+        raise ApiError(405 if m else 404, "method_not_allowed" if m else "not_found")
 
     # ---- backing up everything, and restoring a backup (studio/backup.py) ------
     def _gated_api(self, method: str, path: str) -> None:
@@ -1252,6 +1329,8 @@ class Handler(BaseHTTPRequestHandler):
             self._read_json()       # every POST must be JSON, also one that needs nothing from its body
         if path == "/api/backup" or path.startswith(("/api/backup/", "/api/restore")):
             return self._backup_api(method, path)       # one file that holds everything, and restoring one
+        if path == "/api/sponsored" or path.startswith("/api/sponsored/") or re.fullmatch(r"/api/scripts/[0-9a-f]{12}/sponsor(/ticks)?", path):
+            return self._sponsored_api(method, path)    # a brand's brief, and the list beside a script drafted from it
 
         if route == ("GET", "/api/state"):
             _, is_example = store.load_dna()
@@ -1599,6 +1678,13 @@ class Handler(BaseHTTPRequestHandler):
                 lesson, created = pipeline.remember_lesson(store, script_id=body.get("script_id"), ai=body.get("ai"),
                                                            final=body.get("final"), note=body.get("note"))
             except ValueError as exc:
+                if str(exc) == "sponsored_script":
+                    raise ApiError(409, "sponsored_script",
+                                   "This script was drafted from a brand's brief, so a change made in it is not remembered "
+                                   "as a lesson about how the creator words things: wording a brand asked for would then go "
+                                   "into every later draft.",
+                                   "这篇脚本是照品牌 Brief 写的，所以这里的改法不会记成你自己的用词习惯：不然品牌要求的说法"
+                                   "会被带进以后的每一篇初稿。")
                 raise ApiError(404 if str(exc) == "not_found" else 400, str(exc))
             return self._json(lesson, 201 if created else 200)
         m = re.fullmatch(r"/api/lessons/([0-9a-f]{12})", path)
@@ -1941,6 +2027,17 @@ def _referring(work: Any) -> Any:
         return work()
     except refs.RefsError as exc:
         raise ApiError(exc.status, exc.code, exc.message, exc.message_zh)
+
+
+def _sponsoring(work: Any) -> Any:
+    """Run a step about a brand's brief, turning its refusals (``sponsored.SponsorError``) into answers a page can
+    show, in both languages."""
+    try:
+        return work()
+    except sponsored.SponsorError as exc:
+        raise ApiError(exc.status, exc.code, exc.message, exc.message_zh, extra=exc.extra)
+    except TextTooLong as exc:
+        raise ApiError(413, exc.code, exc.message, exc.message_zh, extra={"limit": exc.limit})
 
 
 _SUGGEST_REFUSALS = {

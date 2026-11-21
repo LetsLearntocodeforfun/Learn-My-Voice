@@ -428,7 +428,7 @@ function renderNav(route) {
     `${icon(glyph)}<span>${esc(t(key))}</span>${mark ? '<i class="dot"></i>' : ''}</a>`;
   $nav.innerHTML = `<div class="brand">${BRAND_MARK}<span>${esc(t('brand'))}</span></div>` +
     item('#/start', 'nav_start', 'start', route === 'start', appState.setup_next && appState.setup_next !== 'done') +
-    item('#/', 'nav_scripts', 'scripts', route === 'home' || route === 'new' || route === 'script') +
+    item('#/', 'nav_scripts', 'scripts', route === 'home' || route === 'new' || route === 'script' || route === 'sponsored') +
     item('#/plan', 'nav_plan', 'plan', route === 'plan', (appState.plan_count || 0) > 0) +
     item('#/ideas', 'nav_ideas', 'ideas', route === 'ideas') +
     item('#/trends', 'nav_trends', 'trends', route === 'trends') +
@@ -449,7 +449,8 @@ function renderNav(route) {
 async function router() {
   await flushSave();
   const hash = location.hash || '#/';
-  const m = hash.match(/^#\/s\/([0-9a-f]{12})$/);
+  const m = hash.match(/^#\/(?:s|script)\/([0-9a-f]{12})$/);
+  const sp = hash.match(/^#\/sponsored(?:\/([0-9a-f]{12}))?$/);
   try {
     appState = await api('GET', '/api/state');
     keepWithCore();       // what was set since the last page was opened (in the teleprompter, say) goes to the core
@@ -470,6 +471,7 @@ async function router() {
     if (m) { renderNav('script'); await loadTrendSuggestions(); await renderScript(m[1]); }
     else if (hash === '#/start') { renderNav('start'); await renderSetup(); }
     else if (hash === '#/new') { renderNav('new'); await loadTrendSuggestions(); renderNew(); }
+    else if (sp) { renderNav('sponsored'); await renderSponsored(sp[1] || null); }
     else if (hash === '#/plan') { renderNav('plan'); await renderPlan(); }
     else if (hash === '#/ideas') { renderNav('ideas'); await renderIdeas(); }
     else if (hash === '#/trends') { renderNav('trends'); await renderTrends(); }
@@ -518,6 +520,7 @@ function renderNew() {
     <h1>${esc(t('new_title'))}</h1><p class="sub">${esc(t('new_sub'))}</p>
     ${configured && appState.dna_is_example ? `<div class="banner">${esc(t('example_voice'))}</div>` : ''}
     ${configured ? '' : `<div class="banner">${esc(t('no_ai'))} <a href="#/settings">${esc(t('go_settings'))}</a></div>`}
+    <div id="sp-entry"></div>
     <label class="field" for="notes">${esc(t('notes'))}</label>
     <textarea id="notes" rows="5" placeholder="${esc(t('notes_ph'))}">${esc(draft.notes)}</textarea>
     <label class="field">${esc(t('duration'))}</label>
@@ -530,6 +533,7 @@ function renderNew() {
       <button class="btn big" id="self-btn">${esc(t('self_write'))}</button>
       <button class="btn big" id="import-script-json">${esc(t('import_script_json'))}</button>
     </div></div>`;
+  spPaintEntry(document.getElementById('sp-entry'));
   const $notes = document.getElementById('notes');
   $notes.oninput = () => { draft.notes = $notes.value; autoGrow($notes); };
   keywordPicker(document.getElementById('kw-box'), draft.keywords, (list) => { draft.keywords = list; });
@@ -603,6 +607,7 @@ async function saveNow(opts) {
     paintChecks();
     poAfterSave(s);     // posted.js: a posted script that was edited says so
     rfAfterSave(s);     // refs.js: a new title or keyword changes which of the creator's material is on the same topic
+    spAfterSave(s);     // sponsored.js: re-check required mentions, forbidden wording and tags on the saved script
     if (!dirty) setSaved('saved');
   } catch (e) {
     dirty = true;
@@ -667,6 +672,7 @@ function paintChecks() {
     <div class="issues" style="margin-top:8px">${whole.map(chip).join('')}</div>`;
   paintVoiceMatch(document.getElementById('vm-box'), cur.voice);   // craft.js
   wlPaintNote(document.getElementById('wl-note'), cur.wordlist);   // wordlist.js: said once for all the findings on this page
+  if (typeof spPaintEditor === 'function' && cur.script && cur.script.mode === 'SPONSORED') spPaintEditor();
   paintCounts();
 }
 
@@ -694,6 +700,7 @@ function paintScript() {
     <div class="summary" id="summary"></div>
     <div id="wl-note"></div>
     <div id="vm-box"></div>
+    <div id="sp-box"></div>
     <div id="craft-bar"></div>
     <div id="rf-box"></div>
     <div id="lines">${s.lines.map(lineHtml).join('')}</div>
@@ -756,6 +763,7 @@ function paintScript() {
   document.getElementById('prompter-btn').onclick = openPrompter;   // in prompter.js
   craftAttach();    // craft.js: the per-line writing tools and whichever of them is open
   rfAttach();       // refs.js: the creator's own material beside the lines, put back as it was before this redraw
+  spAttach();       // sponsored.js: the brand-brief checklist beside a sponsored script
 }
 
 async function renderScript(id) {
