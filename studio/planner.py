@@ -47,6 +47,7 @@ from .store import Store
 IDEA, PLANNED, SCRIPTING, READY, POSTED = "IDEA", "PLANNED", "SCRIPTING", "READY", "POSTED"
 PLAN_STATUSES = (IDEA, PLANNED, SCRIPTING, READY, POSTED)
 MARKS = (IDEA, PLANNED, READY)      # what the creator may say about a plan: the only values the ``status`` column holds
+OPPORTUNITY_BASES = ("word_lists", "numbers", "model")
 
 MAX_TITLE_CHARS = 300       # as long as the title of a saved idea may be (pipeline.MAX_IDEA_TEXT_CHARS), so every idea fits
 MAX_NOTES_CHARS = 4000      # a few paragraphs. They go, whole, into the notes of the script and so into a draft prompt
@@ -174,17 +175,33 @@ def _key(title: Any) -> str:
     return "".join(str(title or "").split()).lower()
 
 
+def opportunity_basis(opportunity: Dict[str, Any]) -> str:
+    """How an opportunity was arrived at: ``word_lists``, ``numbers`` or ``model``.
+
+    When ``rednote_analytics`` did not name one (or named something unknown), it is taken for
+    ``word_lists``, the weakest of the three.
+    """
+    basis = opportunity.get("basis")
+    return basis if basis in OPPORTUNITY_BASES else "word_lists"
+
+
 def opportunity_title(opportunity: Dict[str, Any]) -> str:
-    """The title a plan made from an opportunity gets: its Chinese title, or, when the analytics gave it none,
-    one made from the title of the video it follows. "" when there is neither: nothing to show, nothing to plan."""
-    title = _line(opportunity.get("title_zh"), MAX_TITLE_CHARS)
-    if title:
-        return title
-    source = _line(opportunity.get("source_title"), 60)
-    if not source:
+    """The ready-made plan title of an opportunity, or "" when it has none.
+
+    For ``word_lists`` and ``numbers``, ``title_zh`` and ``title_en`` describe what was counted — they are
+    not video titles, so "" is returned and the creator writes a title before adding a plan. Only a
+    ``model`` reading with a non-empty title carries a suggested video title, and nothing is fabricated when
+    ``title_zh`` and ``title_en`` are empty.
+    """
+    if opportunity_basis(opportunity) != "model":
         return ""
-    made = {"high_resonance_sequel": "《%s》的后续", "sentiment_followup": "回答《%s》评论区的问题"}
-    return made.get(str(opportunity.get("kind") or ""), "接着《%s》再拍一条") % source
+    return _line(opportunity.get("title_zh") or opportunity.get("title_en"), MAX_TITLE_CHARS)
+
+
+def _opportunity_has_substance(opportunity: Dict[str, Any]) -> bool:
+    """Whether an opportunity has anything to show (a count description, a source video or a rationale)."""
+    return any(_line(opportunity.get(field), MAX_WHY_CHARS)
+               for field in ("title_zh", "title_en", "source_title", "rationale_zh", "rationale_en"))
 
 
 def payload(store: Store) -> Dict[str, Any]:
@@ -193,9 +210,11 @@ def payload(store: Store) -> Dict[str, Any]:
     - ``plans``: every plan as it is shown (``plans``). ``counts``: how many are in each state.
     - ``today``: today here, ``YYYY-MM-DD``, for the calendar.
     - ``opportunities`` and ``top_audience_questions``: from ``rednote_analytics.analytics_overview``, with
-      their fields as that module gives them, without those that are planned already (an opportunity whose
-      plan title is some plan's title; a question some plan answers), at most MAX_SHOWN_OPPORTUNITIES and
-      MAX_SHOWN_QUESTIONS. Each opportunity also carries ``plan_title`` (``opportunity_title``).
+      their fields as that module gives them, without those that are planned already (a model opportunity
+      whose ready-made title is some plan's title; a question some plan answers), at most
+      MAX_SHOWN_OPPORTUNITIES and MAX_SHOWN_QUESTIONS. Each opportunity carries ``basis``
+      (``opportunity_basis``: ``word_lists``, ``numbers`` or ``model``) and ``plan_title``
+      (``opportunity_title``, "" for ``word_lists`` and ``numbers``).
     - ``ideas``: the saved ideas (``pipeline.apply_ideas``) that are not planned yet, as they are stored.
     - the three medians of the analytics, as they are.
     - ``limits``: the sizes above that a page has to know.
@@ -208,9 +227,13 @@ def payload(store: Store) -> Dict[str, Any]:
     answered = {_key(question) for plan in shown for question in plan["questions"]}
     opportunities: List[Dict[str, Any]] = []
     for found in analytics.get("opportunities") or []:
-        title = opportunity_title(found) if isinstance(found, dict) else ""
-        if title and _key(title) not in titles:
-            opportunities.append(dict(found, plan_title=title))
+        if not isinstance(found, dict) or not _opportunity_has_substance(found):
+            continue
+        basis = opportunity_basis(found)
+        ready_title = opportunity_title(found)
+        if ready_title and _key(ready_title) in titles:
+            continue
+        opportunities.append(dict(found, basis=basis, plan_title=ready_title))
     questions = [question for question in analytics.get("top_audience_questions") or []
                  if isinstance(question, dict) and _line(question.get("question_zh"), MAX_QUESTION_CHARS)
                  and _key(_line(question.get("question_zh"), MAX_QUESTION_CHARS)) not in answered]

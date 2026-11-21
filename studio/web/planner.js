@@ -8,10 +8,11 @@
 
    What leaves the computer from here: nothing, except when the creator asks for a draft by AI. Then the draft
    prompt goes to the AI service chosen in Settings, with the plan's title, notes, reason and the viewers'
-   questions it answers in it. In copy-and-paste mode the same prompt is shown and nothing is sent.
+   questions it answers in it. In copy-and-paste mode the same prompt is shown through /api/manual/prompt and
+   nothing is sent; pasting the reply into /api/manual/reply creates the script and links it back to the plan.
 
    Everything can be done with the keyboard: a plan in the calendar is a button, a day is a button, and a plan's
-   day is also an ordinary date field on its card.
+   day is also an ordinary date field on its card and inside its edit form.
 
    plFileToBase64 and the words pl_import_btn, pl_import_done, pl_stat_save, pl_add_btn and pl_added_toast are
    also used by rednote.js, pages.js and discover.js. */
@@ -21,13 +22,13 @@ Object.assign(I18N.zh, {
   pl_title: '拍摄计划',
   pl_sub: '接下来要拍的视频：哪天拍哪条，哪些还没定日子。',
   pl_stat_views: '平时的播放量', pl_stat_inter: '平时的互动', pl_stat_save: '平时的收藏率',
-  pl_stat_note: '这三个数是你非商单视频的中位数。数据在素材库里填写和导入。',
+  pl_stat_note: '这三个数是你非商单视频的中位数。数据在素材库里填写，或从创作中心表格导入（会先预览再保存）。',
   pl_import_btn: '导入创作中心的数据表（.csv / .xlsx）',
   pl_import_done: '已更新 {u} 条视频的数据（新建 {c} 条）',
   pl_add_btn: '加入计划', pl_added_toast: '已加入计划', pl_added_n: '已加入 {n} 条计划',
   pl_new_title: '加一条计划',
   pl_title_label: '标题', pl_new_title_ph: '这条视频拍什么，例如：秋冬干皮晚上怎么护肤',
-  pl_day: '日期', pl_no_day: '还没定日子',
+  pl_day: '日期', pl_no_day: '还没定日子', pl_clear_day: '取消日期',
   pl_notes: '备注', pl_notes_ph: '想拍的要点，或者想回答的观众问题（可不填）',
   pl_view: '怎么看', pl_view_list: '列表', pl_view_week: '按周', pl_view_month: '按月',
   pl_prev_week: '← 上一周', pl_next_week: '下一周 →', pl_prev_month: '← 上个月', pl_next_month: '下个月 →', pl_today: '今天',
@@ -52,12 +53,15 @@ Object.assign(I18N.zh, {
   pl_draft_hint: '「AI 帮我写初稿」会把这条计划的标题、备注、为什么拍和要回答的观众提问，连同你的个人资料和声音档案，发给设置里选的 AI 服务。',
   pl_mb_intro: '提示词里有这条计划的标题、备注、为什么拍和要回答的观众提问，还有你在设置里填的个人资料、你的声音档案和相关的脚本内容。这些会随提示词一起发给 ChatGPT。',
   pl_offer_title: '可以排进计划的',
-  pl_offer_sub: '勾选几条，一次加进计划。每条都是单独的一条计划，先不定日子。',
+  pl_offer_sub: '观众提问和存着的选题可以勾选几条一次加入计划，先不定日子。按词表或数据统计出的线索只描述数到了什么，请先写个视频标题再加入。',
   pl_offer_questions: '观众在评论区问的', pl_offer_ideas: '「选题建议」里存着的选题', pl_offer_opps: '从数据和评论里看出来的',
   pl_offer_add: '把勾选的 {n} 条加入计划', pl_offer_none: '先勾选要加的',
   pl_offer_empty: '这里现在是空的。在素材库里给视频贴上评论、填上数据，或者在「选题建议」里找过选题，这里就会列出来。',
+  pl_basis_word_lists: '按词表统计', pl_basis_numbers: '按数据统计', pl_basis_model: 'AI 归纳（未核实）',
+  pl_opp_write_btn: '写标题加入计划', pl_opp_edit_btn: '改标题加入',
+  pl_opp_empty_numbers: '《{t}》的播放或收藏高于平时', pl_opp_empty_comments: '《{t}》评论区有观众反馈',
   pl_under: '《{t}》的评论区', pl_follows: '接着《{t}》',
-  pl_kind_sentiment_followup: '来自评论', pl_kind_high_resonance_sequel: '来自数据', pl_kind_other: '建议',
+  pl_kind_sentiment_followup: '来自评论', pl_kind_high_resonance_sequel: '来自数据', pl_kind_other: '线索',
 });
 
 Object.assign(I18N.en, {
@@ -65,13 +69,13 @@ Object.assign(I18N.en, {
   pl_title: 'Plan',
   pl_sub: 'The videos to make next: which one on which day, and which have no day yet.',
   pl_stat_views: 'Usual views', pl_stat_inter: 'Usual interactions', pl_stat_save: 'Usual save rate',
-  pl_stat_note: 'Each is the middle value over {@names} non-sponsored videos. Numbers are typed in and imported in the Library.',
+  pl_stat_note: 'Each is the middle value over {@names} non-sponsored videos. Numbers are typed in, or imported with a preview, in the Library.',
   pl_import_btn: 'Import a Creator Center table (.csv / .xlsx)',
   pl_import_done: 'Numbers updated for {u} videos ({c} added)',
   pl_add_btn: 'Add to the plan', pl_added_toast: 'Added to the plan', pl_added_n: 'Added {n} plans', pl_added_n_one: 'Added 1 plan',
   pl_new_title: 'Add a plan',
   pl_title_label: 'Title', pl_new_title_ph: 'What the video is about',
-  pl_day: 'Day', pl_no_day: 'No day yet',
+  pl_day: 'Day', pl_no_day: 'No day yet', pl_clear_day: 'Clear day',
   pl_notes: 'Notes', pl_notes_ph: 'Points to cover, or a question to answer (optional)',
   pl_view: 'View', pl_view_list: 'List', pl_view_week: 'Week', pl_view_month: 'Month',
   pl_prev_week: '← Week before', pl_next_week: 'Week after →', pl_prev_month: '← Month before', pl_next_month: 'Month after →', pl_today: 'Today',
@@ -96,20 +100,30 @@ Object.assign(I18N.en, {
   pl_draft_hint: '"Draft with AI" sends the plan\'s title, notes, reason and the questions it answers, together with the creator profile and {@names} voice profile, to the AI service chosen in Settings.',
   pl_mb_intro: 'The prompt contains this plan\'s title, notes, reason and the questions of viewers it answers, the creator profile from setup, {@names} voice profile and the relevant script text. All of it is sent to ChatGPT with the prompt.',
   pl_offer_title: 'What could go into the plan',
-  pl_offer_sub: 'Tick several and add them in one step. Each becomes a plan of its own, without a day at first.',
+  pl_offer_sub: 'Tick viewers\' questions and saved ideas to add several in one step, without a day at first. Items counted by word lists or from numbers describe what was counted rather than a video title: write a title first to add one.',
   pl_offer_questions: 'Questions viewers asked', pl_offer_ideas: 'Saved ideas', pl_offer_opps: 'From the numbers and the comments',
   pl_offer_add: 'Add the {n} ticked to the plan', pl_offer_add_one: 'Add the 1 ticked to the plan', pl_offer_none: 'Tick what to add',
   pl_offer_empty: 'Nothing to offer yet. Paste comments and enter numbers for videos in the Library, or find ideas on the Ideas page, and they are listed here.',
+  pl_basis_word_lists: 'Counted by word lists', pl_basis_numbers: 'Counted from numbers', pl_basis_model: 'Model reading (unverified)',
+  pl_opp_write_btn: 'Write a title to plan', pl_opp_edit_btn: 'Edit title & add',
+  pl_opp_empty_numbers: '"{t}" stood out in views or saves', pl_opp_empty_comments: 'Viewer comments under "{t}"',
   pl_under: 'under "{t}"', pl_follows: 'following "{t}"',
-  pl_kind_sentiment_followup: 'from comments', pl_kind_high_resonance_sequel: 'from the numbers', pl_kind_other: 'suggested',
+  pl_kind_sentiment_followup: 'from comments', pl_kind_high_resonance_sequel: 'from the numbers', pl_kind_other: 'noted',
 });
 
 /* view: list | week | month. cursor: a day in the week or month the calendar shows ('' = today). picked: the plan
-   chosen in the calendar. editing: the plan whose fields are open. ticked: what is ticked under "what could go
-   into the plan". The three new* hold the form for a new plan, so that drawing the page again does not empty it. */
-const plUi = { view: 'list', filter: 'ALL', cursor: '', picked: null, editing: null, ticked: {}, newTitle: '', newDay: '', newNotes: '' };
+   chosen in the calendar. editing + editDraft: the plan whose fields are open and what is typed in them.
+   oppOpen + oppTitle + oppNotes: an opportunity whose title form is open. ticked: what is ticked for batch add.
+   The three new* hold the form for a new plan, so that drawing the page again does not empty it. */
+const plUi = {
+  view: 'list', filter: 'ALL', cursor: '', picked: null,
+  editing: null, editDraft: null,
+  oppOpen: null, oppTitle: '', oppNotes: '',
+  ticked: {}, newTitle: '', newDay: '', newNotes: '',
+};
 let plData = null;        // what the core answered last (planner.payload)
 const PL_STATES = ['IDEA', 'PLANNED', 'SCRIPTING', 'READY', 'POSTED'];
+const PL_BASES = ['word_lists', 'numbers', 'model'];
 const PL_TITLE_SHOWN = 80;      // a viewer's question as the title of a plan: the whole question stays in `questions`
 
 /* Used by rednote.js: a chosen file as base64, for the import in the library. */
@@ -148,12 +162,22 @@ function plFromQuestion(q) {
     source_kind: 'viewer_question',
   };
 }
-/* Something the numbers or the comments suggest (rednote_analytics). `plan_title` is the core's: the title it
-   was given, or one made from the video it follows when it has none. */
-function plFromOpportunity(o) {
+const plBasis = (o) => (o && PL_BASES.includes(o.basis) ? o.basis : 'word_lists');
+/* Only a model reading with a non-empty title has a ready-made plan title. For word-list counts and numbers,
+   title_zh / title_en describe what was counted, so a plan is made only once the creator writes `writtenTitle`. */
+function plFromOpportunity(o, writtenTitle, writtenNotes) {
+  const basis = plBasis(o);
+  const title = writtenTitle !== undefined ? String(writtenTitle).trim() : (basis === 'model' ? String(o.plan_title || '').trim() : '');
+  const whyZh = String(o.rationale_zh || (basis !== 'model' ? o.title_zh : '') || '').trim();
+  const whyEn = String(o.rationale_en || (basis !== 'model' ? o.title_en : '') || '').trim();
   return {
-    title: o.plan_title, video_format: o.video_format, target_sec: o.target_sec, notes: o.notes || '',
-    rationale_zh: o.rationale_zh || '', rationale_en: o.rationale_en || '', source_kind: o.kind,
+    title,
+    video_format: o.video_format,
+    target_sec: o.target_sec,
+    notes: writtenNotes !== undefined ? writtenNotes : (o.notes || ''),
+    rationale_zh: whyZh,
+    rationale_en: whyEn,
+    source_kind: o.kind || 'opportunity',
   };
 }
 
@@ -181,10 +205,33 @@ function plMonthDays(cursor) {
 /* ---------- drawing ---------- */
 const plKey = (kind, item) => kind + '|' + (kind === 'q' ? (item.sample_id || '') + '|' + item.question_zh
   : kind === 'i' ? item.title_zh : item.plan_title);
-const plWhy = (x) => (lang === 'zh' ? x.rationale_zh : (x.rationale_en || x.rationale_zh)) || '';
+const plWhy = (x) => (lang === 'zh' ? (x.rationale_zh || x.rationale_en) : (x.rationale_en || x.rationale_zh)) || '';
 function plDayText(p) {
   if (p.status === 'POSTED') return p.posted_on && plIsDay(p.posted_on) ? tf('pl_posted_on', { d: plShortDay(p.posted_on) }) : t('pl_status_POSTED');
   return plIsDay(p.scheduled_for) ? plShortDay(p.scheduled_for) : t('pl_no_day');
+}
+function plOppHeading(o, basis) {
+  const own = String(lang === 'zh' ? (o.title_zh || o.title_en || '') : (o.title_en || o.title_zh || '')).trim();
+  if (own) return { text: own, usedWhy: false };
+  const src = String(o.source_title || '').trim();
+  if (src) {
+    if (basis === 'numbers' || o.kind === 'high_resonance_sequel') return { text: tf('pl_opp_empty_numbers', { t: src }), usedWhy: false };
+    if (basis === 'word_lists' || o.kind === 'sentiment_followup') return { text: tf('pl_opp_empty_comments', { t: src }), usedWhy: false };
+    return { text: tf('pl_follows', { t: src }), usedWhy: false };
+  }
+  const why = plWhy(o).trim();
+  if (why) return { text: why, usedWhy: true };
+  return { text: t('pl_basis_' + basis), usedWhy: false };
+}
+
+function plOpenEdit(p) {
+  plUi.editing = p.id;
+  plUi.editDraft = {
+    title: p.title, notes: p.notes || '',
+    scheduled_for: plIsDay(p.scheduled_for) ? p.scheduled_for : '',
+    target_sec: String(Number(p.target_sec) || 60),
+    video_format: p.video_format,
+  };
 }
 
 function plCardHtml(p) {
@@ -206,32 +253,42 @@ function plCardHtml(p) {
   }
   const lim = (plData && plData.limits) || {};
   const editing = plUi.editing === p.id;
+  const ed = editing && plUi.editDraft ? plUi.editDraft : {
+    title: p.title, notes: p.notes || '', scheduled_for: plIsDay(p.scheduled_for) ? p.scheduled_for : '',
+    target_sec: String(Number(p.target_sec) || 60), video_format: p.video_format,
+  };
   const form = editing ? `<div class="card soft" style="margin-top:12px">
       <label class="field" style="margin-top:0" for="pl-edit-title">${esc(t('pl_title_label'))}</label>
-      <input type="text" id="pl-edit-title" maxlength="${Number(lim.title) || 300}" value="${esc(p.title)}">
+      <input type="text" id="pl-edit-title" maxlength="${Number(lim.title) || 300}" value="${esc(ed.title)}">
       <label class="field" for="pl-edit-notes">${esc(t('pl_notes'))}</label>
-      <textarea id="pl-edit-notes" rows="3" maxlength="${Number(lim.notes) || 4000}" placeholder="${esc(t('pl_notes_ph'))}">${esc(p.notes)}</textarea>
+      <textarea id="pl-edit-notes" rows="3" maxlength="${Number(lim.notes) || 4000}" placeholder="${esc(t('pl_notes_ph'))}">${esc(ed.notes)}</textarea>
       <div class="row" style="flex-wrap:wrap;gap:14px;margin-top:10px">
+        ${posted ? '' : `<label class="meta" for="pl-edit-date">${esc(t('pl_day'))}</label>
+        <input type="date" id="pl-edit-date" value="${esc(ed.scheduled_for)}" style="width:auto">`}
         <label class="meta" for="pl-edit-sec">${esc(t('pl_length'))}</label>
-        <input type="number" id="pl-edit-sec" min="${Number(lim.min_sec) || 15}" max="${Number(lim.max_sec) || 900}" step="1" value="${Number(p.target_sec) || 60}" style="width:96px">
+        <input type="number" id="pl-edit-sec" min="${Number(lim.min_sec) || 15}" max="${Number(lim.max_sec) || 900}" step="1" value="${esc(ed.target_sec)}" style="width:96px">
         <label class="meta" for="pl-edit-format">${esc(t('format'))}</label>
-        <select id="pl-edit-format" style="width:auto">${formatChoices(p.video_format).map((v) =>
-          `<option value="${esc(v)}" ${v === p.video_format ? 'selected' : ''}>${esc(formatLabel(v))}</option>`).join('')}</select>
+        <select id="pl-edit-format" style="width:auto">${formatChoices(ed.video_format).map((v) =>
+          `<option value="${esc(v)}" ${v === ed.video_format ? 'selected' : ''}>${esc(formatLabel(v))}</option>`).join('')}</select>
       </div>
       <div class="row" style="margin-top:12px;gap:8px">
         <button type="button" class="btn primary" data-pl-save="${esc(p.id)}">${esc(t('save'))}</button>
         <button type="button" class="btn" data-pl-cancel="1">${esc(t('ask_cancel'))}</button>
       </div>
     </div>` : '';
+  const hasDay = plIsDay(p.scheduled_for);
+  const quickDay = posted ? `<span class="meta">${esc(plDayText(p))}</span>`
+    : (editing ? `<span class="meta">${esc(plDayText(p))}</span>`
+      : `<label class="meta" for="pl-date-${esc(p.id)}">${esc(t('pl_day'))}</label>
+         <input type="date" id="pl-date-${esc(p.id)}" data-pl-date="${esc(p.id)}" value="${esc(hasDay ? p.scheduled_for : '')}" style="width:auto">
+         ${hasDay ? `<button type="button" class="btn ghost" data-pl-clear-day="${esc(p.id)}">${esc(t('pl_clear_day'))}</button>` : ''}`);
   return `<div class="card pl-plan" data-plan-card="${esc(p.id)}">
     <div class="row" style="flex-wrap:wrap;gap:8px 10px">
       <h3 style="margin:0">${esc(p.title)}</h3>
       <span class="tag ${posted ? 'ok' : ''}" style="margin:0" data-pl-state="${esc(p.status)}">${esc(t('pl_status_' + p.status))}</span>
       ${(p.keywords || []).map((k) => `<span class="tag" style="margin:0">${esc(k)}</span>`).join('')}
       <span class="spacer"></span>
-      ${posted ? `<span class="meta">${esc(plDayText(p))}</span>`
-        : `<label class="meta" for="pl-date-${esc(p.id)}">${esc(t('pl_day'))}</label>
-           <input type="date" id="pl-date-${esc(p.id)}" data-pl-date="${esc(p.id)}" value="${esc(plIsDay(p.scheduled_for) ? p.scheduled_for : '')}" style="width:auto">`}
+      ${quickDay}
     </div>
     ${why ? `<p class="meta" style="margin:8px 0 0">${esc(t('pl_why'))}${esc(why)}</p>` : ''}
     ${questions}
@@ -298,29 +355,59 @@ function plListHtml(plans, counts) {
 
 /* What could go into the plan: viewers' questions, saved ideas, and what the numbers and comments suggest. */
 function plOfferHtml(data) {
-  const row = (kind, item, title, small) => {
+  const lim = data.limits || {};
+  const row = (kind, item, title, small, extraHtml) => {
     const key = plKey(kind, item);
     return `<label class="pl-pick"><input type="checkbox" data-pl-tick="${esc(key)}" ${plUi.ticked[key] ? 'checked' : ''}>
-      <span><span>${esc(title)}</span>${small ? `<br><span class="meta">${esc(small)}</span>` : ''}</span></label>`;
+      <span><span>${esc(title)}</span>${extraHtml || ''}${small ? `<br><span class="meta">${esc(small)}</span>` : ''}</span></label>`;
   };
   const group = (name, rows) => (rows.length ? `<h3 style="margin-top:14px">${esc(t(name))}</h3>${rows.join('')}` : '');
   const questions = (data.top_audience_questions || []).map((q) => row('q', q,
     `「${(lang === 'zh' ? q.question_zh : (q.question_en || q.question_zh))}」`, q.video_title ? tf('pl_under', { t: q.video_title }) : ''));
   const ideas = (data.ideas || []).map((i) => row('i', i, lang === 'zh' ? i.title_zh : (i.title_en || i.title_zh),
     (lang === 'zh' ? i.why_zh : (i.why_en || i.why_zh)) || ''));
-  const opps = (data.opportunities || []).map((o) => {
-    /* Its own title where it has one in this language; else the title the plan would get, which is always there. */
-    const title = (lang === 'zh' ? o.title_zh : (o.title_en || o.title_zh)) || o.plan_title;
+  const opps = (data.opportunities || []).map((o, idx) => {
+    const basis = plBasis(o);
+    const badge = ` <span class="tag" style="margin:0 0 0 6px" data-pl-basis="${esc(basis)}">${esc(t('pl_basis_' + basis))}</span>`;
+    const head = plOppHeading(o, basis);
     const kind = I18N.zh['pl_kind_' + o.kind] !== undefined ? t('pl_kind_' + o.kind) : t('pl_kind_other');
     const from = o.source_title ? tf('pl_follows', { t: o.source_title }) : '';
-    return row('o', o, title, [kind, from, plWhy(o)].filter(Boolean).join(' · '));
+    const detail = [kind, from, head.usedWhy ? '' : plWhy(o)].filter(Boolean).join(' · ');
+    const readyModel = basis === 'model' && Boolean(String(o.plan_title || '').trim());
+    const open = plUi.oppOpen === idx;
+    const writer = open ? `<div class="card soft" style="margin-top:8px" data-pl-opp-form="${idx}">
+        <label class="field" style="margin-top:0" for="pl-opp-title">${esc(t('pl_title_label'))}</label>
+        <input type="text" id="pl-opp-title" maxlength="${Number(lim.title) || 300}" placeholder="${esc(t('pl_new_title_ph'))}" value="${esc(plUi.oppTitle)}">
+        <label class="field" for="pl-opp-notes">${esc(t('pl_notes'))}</label>
+        <textarea id="pl-opp-notes" rows="2" maxlength="${Number(lim.notes) || 4000}" placeholder="${esc(t('pl_notes_ph'))}">${esc(plUi.oppNotes)}</textarea>
+        <div class="row" style="margin-top:10px;gap:8px">
+          <button type="button" class="btn primary" id="pl-opp-save" data-pl-opp-save="${idx}" ${plUi.oppTitle.trim() ? '' : 'disabled'}>${esc(t('pl_add_btn'))}</button>
+          <button type="button" class="btn" data-pl-opp-cancel="1">${esc(t('ask_cancel'))}</button>
+        </div>
+      </div>` : '';
+    if (readyModel) {
+      const key = plKey('o', o);
+      return `<div data-pl-opp="${idx}" style="padding:4px 0">
+        <div class="row" style="align-items:flex-start;gap:10px">
+          <label class="pl-pick spacer" style="padding:3px 0"><input type="checkbox" data-pl-tick="${esc(key)}" ${plUi.ticked[key] ? 'checked' : ''}>
+            <span><span>${esc(head.text)}</span>${badge}${detail ? `<br><span class="meta">${esc(detail)}</span>` : ''}</span></label>
+          ${open ? '' : `<button type="button" class="btn" data-pl-opp-open="${idx}">${esc(t('pl_opp_edit_btn'))}</button>`}
+        </div>${writer}</div>`;
+    }
+    return `<div data-pl-opp="${idx}" style="padding:7px 0">
+      <div class="row" style="align-items:flex-start;gap:10px">
+        <div class="spacer"><span>${esc(head.text)}</span>${badge}${detail ? `<br><span class="meta">${esc(detail)}</span>` : ''}</div>
+        ${open ? '' : `<button type="button" class="btn" data-pl-opp-open="${idx}">${esc(t('pl_opp_write_btn'))}</button>`}
+      </div>${writer}</div>`;
   });
+  const tickableCount = questions.length + ideas.length
+    + (data.opportunities || []).filter((o) => plBasis(o) === 'model' && String(o.plan_title || '').trim()).length;
   const n = Object.keys(plUi.ticked).length;
   const any = questions.length + ideas.length + opps.length;
   return `<h2 class="sec-h">${esc(t('pl_offer_title'))}</h2>
     ${any ? `<div class="card" id="pl-offer"><p class="hint" style="margin-top:0">${esc(t('pl_offer_sub'))}</p>
       ${group('pl_offer_questions', questions)}${group('pl_offer_ideas', ideas)}${group('pl_offer_opps', opps)}
-      <div class="row" style="margin-top:14px"><button type="button" class="btn primary" id="pl-offer-add" ${n ? '' : 'disabled'}>${esc(plOfferLabel(n))}</button></div>
+      ${tickableCount ? `<div class="row" style="margin-top:14px"><button type="button" class="btn primary" id="pl-offer-add" ${n ? '' : 'disabled'}>${esc(plOfferLabel(n))}</button></div>` : ''}
     </div>` : `<div class="card meta" id="pl-offer-empty">${esc(t('pl_offer_empty'))} <a href="#/library">${esc(t('go_library'))}</a></div>`}`;
 }
 const plOfferLabel = (n) => (n ? tf(countKey('pl_offer_add', n), { n }) : t('pl_offer_none'));
@@ -366,13 +453,25 @@ function plPaint(focus) {
   root.onclick = plClicked;
   root.onchange = plChanged;
   root.oninput = (e) => {
-    if (e.target.id === 'pl-new-title') plUi.newTitle = e.target.value;
-    else if (e.target.id === 'pl-new-notes') plUi.newNotes = e.target.value;
+    const id = e.target.id;
+    if (id === 'pl-new-title') plUi.newTitle = e.target.value;
+    else if (id === 'pl-new-notes') plUi.newNotes = e.target.value;
+    else if (id === 'pl-edit-title' && plUi.editDraft) plUi.editDraft.title = e.target.value;
+    else if (id === 'pl-edit-notes' && plUi.editDraft) plUi.editDraft.notes = e.target.value;
+    else if (id === 'pl-edit-sec' && plUi.editDraft) plUi.editDraft.target_sec = e.target.value;
+    else if (id === 'pl-opp-title') {
+      plUi.oppTitle = e.target.value;
+      const saveBtn = document.getElementById('pl-opp-save');
+      if (saveBtn) saveBtn.disabled = !plUi.oppTitle.trim();
+    } else if (id === 'pl-opp-notes') plUi.oppNotes = e.target.value;
   };
   root.onkeydown = (e) => {      // Enter in the title of a new plan adds it; Enter also confirms Chinese input, which must not
-    if (e.target.id !== 'pl-new-title' || e.key !== 'Enter' || e.isComposing || e.keyCode === 229) return;
-    e.preventDefault();
-    plCreate();
+    if (e.key !== 'Enter' || e.isComposing || e.keyCode === 229) return;
+    if (e.target.id === 'pl-new-title') { e.preventDefault(); plCreate(); }
+    else if (e.target.id === 'pl-opp-title' && plUi.oppTitle.trim() && plUi.oppOpen !== null) {
+      e.preventDefault();
+      plSaveOpportunity(plUi.oppOpen);
+    }
   };
   const el = focus ? root.querySelector(focus) : null;
   if (el) el.focus();
@@ -412,6 +511,21 @@ async function plCreate() {
   } catch (e) { showError(e); }
 }
 
+async function plSaveOpportunity(idx) {
+  const opps = (plData && plData.opportunities) || [];
+  const o = opps[idx];
+  if (!o) return;
+  const body = plFromOpportunity(o, plUi.oppTitle, plUi.oppNotes);
+  try {
+    const answer = await api('POST', '/api/plans', body);
+    plUi.oppOpen = null; plUi.oppTitle = ''; plUi.oppNotes = '';
+    if (plUi.view !== 'list') plUi.picked = answer.plan.id;
+    plTake(answer.planner);
+    toast(t('pl_added_toast'));
+    plPaint('#pl-new-title');
+  } catch (e) { showError(e); }
+}
+
 async function plMove(plan, day, focus) {
   const answer = await plSend('PUT', '/api/plans/' + plan.id, { scheduled_for: day }, focus);
   if (answer) toast(day ? tf('pl_moved', { d: plLongDay(day) }) : t('pl_day_cleared'));
@@ -422,16 +536,19 @@ async function plMakeScript(plan, how, btn) {
   try {
     let made;
     if (how === 'paste') {
-      /* Copy and paste: the plan's own prompt is shown, and the reply goes back to the plan, which links the two. */
-      made = await manualBridge('draft', { lang }, { promptPath: path + '/prompt', replyPath: path + '/draft', intro: t('pl_mb_intro') });
+      /* Copy and paste: /api/manual/prompt builds the plan's draft prompt, and /api/manual/reply creates the script
+         and links it back to this plan. */
+      made = await manualBridge('draft', { plan_id: plan.id, lang }, { intro: t('pl_mb_intro') });
       if (!made) return;                    // the dialog was closed: nothing was made
     } else {
       btn.disabled = true;
       if (how === 'ai') btn.textContent = t('writing');
       made = await api('POST', path + '/draft', { use_ai: how === 'ai', lang });
     }
+    if (made.planner) plTake(made.planner);
     if (made.linked === false) toast(t('pl_not_linked'));
-    location.hash = '#/s/' + made.script.id;
+    const scriptId = (made.script && made.script.id) || made.id;
+    location.hash = '#/s/' + scriptId;
   } catch (e) {
     showError(e);
     if (location.hash === '#/plan') await renderPlan();     // what stands now: another window may have made the script
@@ -440,10 +557,11 @@ async function plMakeScript(plan, how, btn) {
 
 async function plAddTicked() {
   const data = plData;
+  const readyModelOpps = (data.opportunities || []).filter((o) => plBasis(o) === 'model' && String(o.plan_title || '').trim());
   const offered = [].concat(
     (data.top_audience_questions || []).map((q) => [plKey('q', q), plFromQuestion(q)]),
     (data.ideas || []).map((i) => [plKey('i', i), plFromIdea(i)]),
-    (data.opportunities || []).map((o) => [plKey('o', o), plFromOpportunity(o)]));
+    readyModelOpps.map((o) => [plKey('o', o), plFromOpportunity(o)]));
   const plans = offered.filter(([key]) => plUi.ticked[key]).map(([, body]) => body);
   if (!plans.length) { plUi.ticked = {}; plPaint(); return; }
   try {
@@ -458,7 +576,10 @@ async function plAddTicked() {
 async function plClicked(e) {
   const hit = (name) => e.target.closest('[' + name + ']');
   let el;
-  if ((el = hit('data-pl-view'))) { plUi.view = el.dataset.plView; plUi.editing = null; return plPaint(`[data-pl-view="${plUi.view}"]`); }
+  if ((el = hit('data-pl-view'))) {
+    plUi.view = el.dataset.plView; plUi.editing = null; plUi.editDraft = null;
+    return plPaint(`[data-pl-view="${plUi.view}"]`);
+  }
   if ((el = hit('data-pl-filter'))) { plUi.filter = el.dataset.plFilter; return plPaint(`[data-pl-filter="${plUi.filter}"]`); }
   if ((el = hit('data-pl-nav'))) {
     const step = Number(el.dataset.plNav);
@@ -470,7 +591,7 @@ async function plClicked(e) {
   if ((el = hit('data-pl-chip'))) {
     const id = el.dataset.plChip;
     plUi.picked = plUi.picked === id ? null : id;
-    plUi.editing = null;
+    plUi.editing = null; plUi.editDraft = null;
     return plPaint(`[data-pl-chip="${id}"]`);
   }
   if ((el = hit('data-pl-daybtn'))) {
@@ -480,20 +601,59 @@ async function plClicked(e) {
     plUi.newDay = day;                       // nothing to move: the day goes into the form for a new plan
     return plPaint('#pl-new-title');
   }
-  if (hit('id') && e.target.closest('#pl-create-btn')) return plCreate();
+  if (e.target.closest('#pl-create-btn')) return plCreate();
   if (e.target.closest('#pl-offer-add')) return plAddTicked();
-  if ((el = hit('data-pl-edit'))) { plUi.editing = el.dataset.plEdit; return plPaint('#pl-edit-title'); }
-  if (hit('data-pl-cancel')) { const id = plUi.editing; plUi.editing = null; return plPaint(`[data-pl-edit="${id}"]`); }
+  if ((el = hit('data-pl-opp-open'))) {
+    const idx = Number(el.dataset.plOppOpen);
+    const o = ((plData && plData.opportunities) || [])[idx];
+    if (!o) return undefined;
+    plUi.oppOpen = idx;
+    /* Only a model reading has a suggested title to edit; counts and numbers start empty so the creator writes the title. */
+    plUi.oppTitle = plBasis(o) === 'model' ? String(o.plan_title || '').trim() : '';
+    plUi.oppNotes = String(o.notes || '');
+    return plPaint('#pl-opp-title');
+  }
+  if (hit('data-pl-opp-cancel')) {
+    const idx = plUi.oppOpen;
+    plUi.oppOpen = null; plUi.oppTitle = ''; plUi.oppNotes = '';
+    return plPaint(idx !== null ? `[data-pl-opp-open="${idx}"]` : '#pl-new-title');
+  }
+  if ((el = hit('data-pl-opp-save'))) return plSaveOpportunity(Number(el.dataset.plOppSave));
+  if ((el = hit('data-pl-clear-day'))) {
+    const plan = plFind(el.dataset.plClearDay);
+    if (plan) return plMove(plan, '', `#pl-date-${plan.id}`);
+    return undefined;
+  }
+  if ((el = hit('data-pl-edit'))) {
+    const plan = plFind(el.dataset.plEdit);
+    if (plan) { plOpenEdit(plan); return plPaint('#pl-edit-title'); }
+    return undefined;
+  }
+  if (hit('data-pl-cancel')) {
+    const id = plUi.editing;
+    plUi.editing = null; plUi.editDraft = null;
+    return plPaint(`[data-pl-edit="${id}"]`);
+  }
   if ((el = hit('data-pl-save'))) {
     const id = el.dataset.plSave;
+    const plan = plFind(id);
+    const ed = plUi.editDraft || {};
     const seconds = Number(document.getElementById('pl-edit-sec').value);
     const body = {
-      title: document.getElementById('pl-edit-title').value, notes: document.getElementById('pl-edit-notes').value,
-      target_sec: Number.isFinite(seconds) ? seconds : 0, video_format: document.getElementById('pl-edit-format').value,
+      title: document.getElementById('pl-edit-title').value,
+      notes: document.getElementById('pl-edit-notes').value,
+      target_sec: Number.isFinite(seconds) ? seconds : 0,
+      video_format: document.getElementById('pl-edit-format').value,
     };
+    const dateEl = document.getElementById('pl-edit-date');
+    if (dateEl && (!plan || plan.status !== 'POSTED')) {
+      body.scheduled_for = dateEl.value;
+      ed.scheduled_for = dateEl.value;
+    }
     try {
       const answer = await api('PUT', '/api/plans/' + id, body);
-      plUi.editing = null;
+      if (plUi.view !== 'list' && body.scheduled_for) plUi.cursor = body.scheduled_for;
+      plUi.editing = null; plUi.editDraft = null;
       plTake(answer.planner);
       toast(t('saved'));
       plPaint(`[data-pl-edit="${id}"]`);
@@ -507,7 +667,7 @@ async function plClicked(e) {
     const question = tf('pl_confirm_delete', { t: plan.title }) + (plan.script_id ? ' ' + t('pl_confirm_delete_script') : '');
     if (!(await askConfirm(question, { ok: t('delete'), danger: true }))) return undefined;
     if (plUi.picked === plan.id) plUi.picked = null;
-    if (plUi.editing === plan.id) plUi.editing = null;
+    if (plUi.editing === plan.id) { plUi.editing = null; plUi.editDraft = null; }
     if (await plSend('DELETE', '/api/plans/' + plan.id, undefined, '#pl-new-title')) toast(t('pl_deleted'));
     return undefined;
   }
@@ -521,6 +681,8 @@ async function plClicked(e) {
 function plChanged(e) {
   const el = e.target;
   if (el.id === 'pl-new-date') { plUi.newDay = el.value; return; }
+  if (el.id === 'pl-edit-date' && plUi.editDraft) { plUi.editDraft.scheduled_for = el.value; return; }
+  if (el.id === 'pl-edit-format' && plUi.editDraft) { plUi.editDraft.video_format = el.value; return; }
   if (el.dataset.plTick !== undefined) {
     if (el.checked) plUi.ticked[el.dataset.plTick] = true; else delete plUi.ticked[el.dataset.plTick];
     const n = Object.keys(plUi.ticked).length;
@@ -541,7 +703,8 @@ async function renderPlan() {
   plData = await api('GET', '/api/plans');
   /* What is ticked, chosen or open may be gone since the page was last shown. */
   if (!plFind(plUi.picked)) plUi.picked = null;
-  if (!plFind(plUi.editing)) plUi.editing = null;
+  if (!plFind(plUi.editing)) { plUi.editing = null; plUi.editDraft = null; }
+  plUi.oppOpen = null; plUi.oppTitle = ''; plUi.oppNotes = '';
   plUi.ticked = {};
   plPaint();
 }

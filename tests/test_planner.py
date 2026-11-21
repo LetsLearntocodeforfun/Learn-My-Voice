@@ -32,6 +32,7 @@ from unittest import mock
 
 from studio import mcp_server, pipeline, planner, posted, rednote_analytics, server
 from studio.store import MANUAL_PROVIDER, Store
+from tests import browser
 
 SPOKEN = [{"spoken_script_zh": "好多人问暖气房单涂够不够嘛 / 我实测了一整晚哈"}]
 DRAFT_REPLY = {"script_lines": [{"spoken_script_zh": "一入冬吹暖气脸就干嘛 / 所以我试了一整晚哈"},
@@ -495,13 +496,19 @@ class WhatIsOfferedTest(PlanCase):
     OVERVIEW = {
         "median_views": 2000.0, "median_interactions": 105.0, "median_save_rate_pct": 2.5,
         "opportunities": [
-            {"kind": "sentiment_followup", "source_sample_id": "a" * 12, "source_title": "秋冬干皮护肤", "title_zh": "回应评论区｜暖气房过夜实测",
-             "title_en": "Overnight test", "video_format": "VLOG_VOICEOVER", "target_sec": 60, "rationale_zh": "有人问",
-             "rationale_en": "Asked", "notes": "实拍"},
-            {"kind": "high_resonance_sequel", "source_sample_id": "a" * 12, "source_title": "秋冬干皮护肤", "title_zh": "", "title_en": "",
-             "video_format": "VLOG_VOICEOVER", "target_sec": 60, "rationale_zh": "", "rationale_en": "", "notes": ""},
-            {"kind": "something_new", "source_sample_id": "b" * 12, "source_title": "周末超市日常", "title_zh": "  ", "title_en": ""},
-            {"kind": "sentiment_followup", "source_sample_id": "", "source_title": "", "title_zh": "", "title_en": ""},
+            {"kind": "sentiment_followup", "basis": "model", "source_sample_id": "a" * 12, "source_title": "秋冬干皮护肤",
+             "title_zh": "回应评论区｜暖气房过夜实测", "title_en": "Overnight test", "video_format": "VLOG_VOICEOVER",
+             "target_sec": 60, "rationale_zh": "有人问", "rationale_en": "Asked", "notes": "实拍"},
+            {"kind": "sentiment_followup", "source_sample_id": "a" * 12, "source_title": "秋冬干皮护肤",
+             "title_zh": "《秋冬干皮护肤》评论区有 2 条提问", "title_en": "2 questions counted", "video_format": "VLOG_VOICEOVER",
+             "target_sec": 60, "rationale_zh": "词表统计", "rationale_en": "Counted by word lists", "notes": ""},
+            {"kind": "high_resonance_sequel", "basis": "numbers", "source_sample_id": "a" * 12, "source_title": "秋冬干皮护肤",
+             "title_zh": "", "title_en": "", "video_format": "VLOG_VOICEOVER", "target_sec": 60,
+             "rationale_zh": "", "rationale_en": "", "notes": ""},
+            {"kind": "something_new", "basis": "unknown_basis", "source_sample_id": "b" * 12, "source_title": "周末超市日常",
+             "title_zh": "  ", "title_en": ""},
+            {"kind": "sentiment_followup", "source_sample_id": "", "source_title": "", "title_zh": "", "title_en": "",
+             "rationale_zh": "", "rationale_en": ""},
             "not an opportunity",
         ],
         "top_audience_questions": [
@@ -515,13 +522,17 @@ class WhatIsOfferedTest(PlanCase):
         with mock.patch.object(rednote_analytics, "analytics_overview", return_value=self.OVERVIEW):
             return planner.payload(self.store)
 
-    def test_an_opportunity_without_a_title_gets_one_from_the_video_it_follows(self):
+    def test_opportunity_basis_defaults_to_word_lists_and_counts_never_carry_ready_made_plan_titles(self):
         shown = self.shown()["opportunities"]
-        self.assertEqual([o["plan_title"] for o in shown],
-                         ["回应评论区｜暖气房过夜实测", "《秋冬干皮护肤》的后续", "接着《周末超市日常》再拍一条"])
-        # Their own fields are passed on as they came; one with neither a title nor a video is not shown.
-        self.assertEqual(shown[1], dict(self.OVERVIEW["opportunities"][1], plan_title="《秋冬干皮护肤》的后续"))
-        self.assertEqual(planner.opportunity_title({"kind": "sentiment_followup", "source_title": "秋冬干皮护肤"}), "回答《秋冬干皮护肤》评论区的问题")
+        self.assertEqual([o["basis"] for o in shown], ["model", "word_lists", "numbers", "word_lists"])
+        self.assertEqual([o["plan_title"] for o in shown], ["回应评论区｜暖气房过夜实测", "", "", ""])
+        # Word-list and number descriptions are not offered as ready-made plan titles, even when title_zh is non-empty.
+        self.assertEqual(planner.opportunity_title({"basis": "word_lists", "title_zh": "评论区数出 3 条提问"}), "")
+        self.assertEqual(planner.opportunity_title({"basis": "numbers", "title_zh": "收藏率高于平时"}), "")
+        self.assertEqual(planner.opportunity_title({"title_zh": "缺省 basis 按词表处理"}), "")
+        # A model opportunity with empty titles gets no fabricated title either.
+        self.assertEqual(planner.opportunity_title({"basis": "model", "title_zh": "  ", "title_en": "", "source_title": "秋冬干皮护肤"}), "")
+        self.assertEqual(planner.opportunity_title({"basis": "model", "title_zh": "", "title_en": "Model English angle"}), "Model English angle")
 
     def test_the_numbers_are_passed_on_as_the_analytics_give_them(self):
         shown = self.shown()
@@ -534,11 +545,11 @@ class WhatIsOfferedTest(PlanCase):
         self.store.save_recommendations({"generated_at": 1.0, "ideas": [
             {"title_zh": "干皮晨间精简护肤", "evidence_titles": []}, {"title_zh": "周末囤货清单", "evidence_titles": []}, {"title_en": "no title"}]})
         self.assertEqual([i["title_zh"] for i in self.shown()["ideas"]], ["干皮晨间精简护肤", "周末囤货清单"])
-        self.plan(title="《秋冬干皮护肤》的后续")
+        self.plan(title="回应评论区｜暖气房过夜实测")
         self.plan(title="回答观众", questions=[" 大干皮吹暖气晚上单涂一层  够不够润呀？"])
         self.plan(title="干皮晨间 精简护肤")
         shown = self.shown()
-        self.assertEqual([o["plan_title"] for o in shown["opportunities"]], ["回应评论区｜暖气房过夜实测", "接着《周末超市日常》再拍一条"])
+        self.assertEqual([o["basis"] for o in shown["opportunities"]], ["word_lists", "numbers", "word_lists"])
         self.assertEqual([q["question_zh"] for q in shown["top_audience_questions"]], ["敏感肌能用吗？"])
         self.assertEqual([i["title_zh"] for i in shown["ideas"]], ["周末囤货清单"])
         self.assertEqual(shown["counts"]["PLANNED"], 3)
@@ -584,7 +595,8 @@ class RoutesTest(PlanCase):
         self.assertEqual((status, refused["error"]), (400, "title_required"))
         self.assertEqual(len(self.store.list_video_plans()), 2)
 
-    def test_copy_and_paste_over_the_api(self):
+    def test_copy_and_paste_over_the_plan_routes_and_over_manual_prompt_and_reply(self):
+        # 1. Via /api/plans/<id>/prompt and /api/plans/<id>/draft
         plan_id = self.api("POST", "/api/plans", {"title": "暖气房过夜实测"})[1]["plan"]["id"]
         status, asked = self.api("POST", "/api/plans/%s/prompt" % plan_id)
         self.assertEqual(status, 200)
@@ -594,6 +606,22 @@ class RoutesTest(PlanCase):
         self.assertEqual((status, made["plan"]["script_id"], made["script"]["title"]), (201, made["script"]["id"], "暖气房过夜实测"))
         status, refused = self.api("POST", "/api/plans/%s/draft" % plan_id, {"reply": "不是 JSON"})
         self.assertEqual((status, refused["error"]), (409, "has_script"))
+
+        # 2. Via /api/manual/prompt and /api/manual/reply with plan_id: links the resulting script back to the plan too!
+        second_id = self.api("POST", "/api/plans", {"title": "敏感肌晨间护肤", "questions": ["敏感肌能用吗？"]})[1]["plan"]["id"]
+        status, mp = self.api("POST", "/api/manual/prompt", {"task": "draft", "plan_id": second_id})
+        self.assertEqual(status, 200)
+        self.assertIn("敏感肌晨间护肤", mp["prompt"])
+        self.assertIn("敏感肌能用吗？", mp["prompt"])
+        status, mr = self.api("POST", "/api/manual/reply",
+                              {"task": "draft", "plan_id": second_id, "brief_id": mp["brief_id"],
+                               "reply": json.dumps(DRAFT_REPLY, ensure_ascii=False)})
+        self.assertEqual((status, mr["linked"], mr["title"]), (201, True, "敏感肌晨间护肤"))
+        self.assertEqual((mr["plan"]["status"], mr["plan"]["script_id"]), ("SCRIPTING", mr["id"]))
+        self.assertEqual(self.store.get_video_plan(second_id)["script_id"], mr["id"])
+        self.assertEqual(self.api("POST", "/api/manual/prompt", {"task": "draft", "plan_id": second_id})[0], 409)
+        self.assertEqual(self.api("POST", "/api/manual/reply", {"task": "draft", "plan_id": second_id, "reply": "{}"})[0], 409)
+        self.assertEqual(self.api("POST", "/api/manual/prompt", {"task": "draft", "plan_id": "0" * 12})[0], 404)
 
     def test_a_draft_by_ai_needs_an_ai_service_and_without_one_nothing_is_made(self):
         plan_id = self.api("POST", "/api/plans", {"title": "暖气房过夜实测"})[1]["plan"]["id"]
@@ -645,8 +673,8 @@ def block(prompt, tag):
 class IdeasPromptTest(PlanCase):
     """P2 of the review: the ideas prompt got new inputs, and neither the prompt nor the page said what they were."""
 
-    COUNTED = {"overall_sentiment": "mostly_positive", "comment_count": 4,
-               "summary_zh": "共分析 4 条评论：正面 50%、中性 25%、顾虑/负面 25%，识别出 2 条观众提问。",
+    COUNTED = {"overall_sentiment": "not_judged", "comment_count": 4,
+               "summary_zh": "按词表统计了 4 条评论，识别出 2 条观众提问。",
                "audience_questions": [{"question_zh": QUESTION, "demand_count": 43}, {"question_zh": "敏感肌能用吗？", "demand_count": 16}]}
     READ = {"overall_sentiment": "mostly_positive", "comment_count": 12, "summary_zh": "大家喜欢真实的互动，追问暖气房里够不够润。",
             "audience_questions": [{"question_zh": "去超市一般买什么？", "demand_count": 3}]}
@@ -675,6 +703,19 @@ class IdeasPromptTest(PlanCase):
             "summary": self.READ["summary_zh"], "questions": ["去超市一般买什么？"]})
         self.assertNotIn("viewer_comments", history["没有贴评论的"])
         self.assertNotIn("confirmed_by_creator", json.dumps(history))       # nothing stored is passed off as confirmed
+        self.assertNotIn("not_judged", json.dumps(history))
+
+    def test_not_judged_is_never_passed_as_a_mood_for_any_source(self):
+        for source in ("local", "ai", "manual"):
+            entry = pipeline._viewer_comments({"summary": dict(self.READ, overall_sentiment="not_judged"), "source": source})
+            self.assertNotIn("overall", entry, source)
+            self.assertNotIn("not_judged", json.dumps(entry), source)
+        # Nor when source is local even if an old record had a mood word stored in overall_sentiment.
+        local_old = pipeline._viewer_comments({"summary": dict(self.READ, overall_sentiment="mostly_positive"), "source": "local"})
+        self.assertNotIn("overall", local_old)
+        # English summary falls back cleanly if summary_zh is absent.
+        en_only = pipeline._viewer_comments({"summary": {"comment_count": 2, "summary_en": "Counted by word lists."}, "source": "local"})
+        self.assertEqual(en_only["summary"], "Counted by word lists.")
 
     def test_only_a_record_that_says_so_counts_as_confirmed_by_the_creator(self):
         for source in ("local", "ai", "manual"):
@@ -786,7 +827,7 @@ class WordsOfThePageTest(unittest.TestCase):
     def test_the_page_that_offers_the_ideas_prompt_names_the_comments_and_the_plan(self):
         text = (self.WEB / "discover.js").read_text(encoding="utf-8")
         for key in ("dv_sent_search", "dv_sent_plain", "mb_intro_ideas"):
-            versions = re.findall(r"\b%s: '((?:[^'\\\\]|\\\\.)*)'" % key, text)
+            versions = re.findall(r"\b%s: '((?:[^'\\]|\\.)*)'" % key, text)
             self.assertEqual(len(versions), 2, key)                               # Chinese and English
             chinese, english = versions
             for said in ("观众评论的摘要", "按词表数出来的", "观众提问", "中位数和收藏率", "还没发布的拍摄计划"):
@@ -799,6 +840,231 @@ class WordsOfThePageTest(unittest.TestCase):
                               else "up to %d questions" % pipeline.IDEAS_MAX_QUESTIONS, version, key)
                 self.assertIn("最多 %d 条还没发布" % planner.PROMPT_MAX_PLANS if version is chinese
                               else "up to %d planned videos" % planner.PROMPT_MAX_PLANS, version, key)
+
+    def test_planner_js_keeps_both_languages_shared_helpers_and_no_one_step_import(self):
+        script = (self.WEB / "planner.js").read_text(encoding="utf-8")
+        blocks = re.findall(r"Object\.assign\(I18N\.(zh|en), \{(.*?)\n\}\);", script, re.S)
+        self.assertEqual([language for language, _ in blocks], ["zh", "en"])
+        keys = {language: set(re.findall(r"\b([a-z]+_[a-zA-Z0-9_]+): '", body)) for language, body in blocks}
+        self.assertEqual(keys["zh"], {key for key in keys["en"] if not key.endswith("_one")})
+        zh = dict(re.findall(r"\b([a-z]+_[a-zA-Z0-9_]+): '((?:[^'\\]|\\.)*)'", blocks[0][1]))
+        en = dict(re.findall(r"\b([a-z]+_[a-zA-Z0-9_]+): '((?:[^'\\]|\\.)*)'", blocks[1][1]))
+        for text in list(zh.values()) + list(en.values()):
+            self.assertIsNone(re.search(r"爆款|会火|上热门|涨粉|viral|blow up|guarantee", text, re.I), text)
+        # Seam 1: no one-step import input or button on #/plan; plain link to #/library noting preview import.
+        self.assertNotIn('type="file"', script)
+        self.assertNotIn("/api/rednote/import", script)
+        self.assertIn('href="#/library"', script)
+        self.assertIn("会先预览再保存", zh["pl_stat_note"])
+        self.assertIn("imported with a preview", en["pl_stat_note"])
+        # Seam 2: shared helpers and keys kept for rednote.js / pages.js / discover.js.
+        self.assertIn("function plFileToBase64(", script)
+        for shared in ("pl_import_btn", "pl_import_done", "pl_add_btn", "pl_added_toast", "pl_stat_save"):
+            self.assertIn(shared, keys["zh"])
+            self.assertIn(shared, keys["en"])
+        # Seam 3: never displays not_judged; names all three opportunity bases in both languages.
+        self.assertNotIn("not_judged", script)
+        for basis in planner.OPPORTUNITY_BASES:
+            self.assertIn("pl_basis_" + basis, keys["zh"])
+            self.assertIn("pl_basis_" + basis, keys["en"])
+
+
+@unittest.skipUnless(browser.AVAILABLE, browser.WHY_NOT)
+class BrowserPlanTest(PlanCase):
+    """Real headless Chrome E2E over list, week and month views, inline edit, batch planning, basis rules, and drafts."""
+
+    MIXED_OVERVIEW = {
+        "median_views": 4200.0, "median_interactions": 180.0, "median_save_rate_pct": 3.4,
+        "opportunities": [
+            {"kind": "sentiment_followup", "source_sample_id": "a" * 12, "source_title": "秋冬干皮护肤",
+             "title_zh": "评论区数出 2 条提问", "title_en": "2 questions counted in comments",
+             "rationale_zh": "词表统计结果", "rationale_en": "Counted from pasted comments",
+             "video_format": "VLOG_VOICEOVER", "target_sec": 60, "notes": "整理提问"},
+            {"kind": "high_resonance_sequel", "basis": "numbers", "source_sample_id": "a" * 12,
+             "source_title": "秋冬干皮护肤", "title_zh": "", "title_en": "",
+             "rationale_zh": "收藏率高于平时", "rationale_en": "Save rate above usual",
+             "video_format": "SINGLE_PRODUCT_SHARE", "target_sec": 90, "notes": "补充细节"},
+            {"kind": "sentiment_followup", "basis": "model", "source_sample_id": "a" * 12,
+             "source_title": "秋冬干皮护肤", "title_zh": "AI建议：干皮夜间修护问答", "title_en": "AI angle: Night repair Q&A",
+             "rationale_zh": "模型归纳观众追问", "rationale_en": "Model summary of follow-ups",
+             "video_format": "VLOG_VOICEOVER", "target_sec": 60, "notes": "夜间实拍"},
+        ],
+        "top_audience_questions": [
+            {"sample_id": "a" * 12, "video_title": "秋冬干皮护肤", "question_zh": QUESTION, "question_en": QUESTION, "demand_count": 43},
+            {"sample_id": "a" * 12, "video_title": "秋冬干皮护肤", "question_zh": "敏感肌能用吗？", "question_en": "Safe for sensitive skin?", "demand_count": 16},
+        ],
+    }
+
+    def test_list_week_month_edit_delete_batch_and_opportunity_basis_in_zh_and_en_light_and_dark(self):
+        today_iso = planner.today().isoformat()
+        posted_plan = self.plan(title="已发视频计划")
+        self.post(self.script_of(posted_plan), posted_on=today_iso, views=9000, likes=300)
+        unscheduled = self.plan(title="还没定日子的视频", notes="初始备注")
+        self.store.save_recommendations({"generated_at": 1.0, "ideas": [
+            {"title_zh": "干皮晨间精简护肤", "title_en": "Morning dry-skin routine", "why_zh": "收藏高", "why_en": "High saves",
+             "script_notes_zh": "早起实拍", "video_format": "VLOG_VOICEOVER", "target_duration_sec": 60, "evidence_titles": []}]})
+
+        with mock.patch.object(rednote_analytics, "analytics_overview", return_value=self.MIXED_OVERVIEW):
+            # 1. Opening #/plan in Chrome writes nothing to the database (zh + light)
+            with browser.open_app(self.store, lang="zh", theme="light", transport=fake_ai) as page:
+                before = everything_stored(self.store)
+                page.go("#/plan", "Boolean(document.getElementById('pl-list'))")
+                self.assertEqual(everything_stored(self.store), before)
+                self.assertEqual(page.problems, [])
+
+                # Seam 1: no file input on #/plan, plain #/library link present
+                self.assertEqual(page.eval_js("document.querySelectorAll('#pl-root input[type=file]').length"), 0)
+                self.assertTrue(page.eval_js("Boolean(document.querySelector('#pl-stats a[href=\"#/library\"]'))"))
+
+                # Seam 3: opportunity bases shown; word_lists and numbers have no batch checkbox and start with empty title
+                bases = page.eval_js("Array.from(document.querySelectorAll('[data-pl-basis]')).map(e => e.dataset.plBasis)")
+                self.assertEqual(bases, ["word_lists", "numbers", "model"])
+                self.assertEqual(page.eval_js("document.querySelectorAll('[data-pl-opp=\"0\"] input[type=checkbox]').length"), 0)
+                self.assertEqual(page.eval_js("document.querySelectorAll('[data-pl-opp=\"1\"] input[type=checkbox]').length"), 0)
+                self.assertEqual(page.eval_js("document.querySelectorAll('[data-pl-opp=\"2\"] input[type=checkbox]').length"), 1)
+                # Empty title_zh on opp 1 is rendered sensibly using source_title
+                opp1_text = page.eval_js("document.querySelector('[data-pl-opp=\"1\"]').textContent")
+                self.assertIn("秋冬干皮护肤", opp1_text)
+
+                # Open opp 0 (word_lists): title input is empty and save button is disabled until creator writes a title
+                page.eval_js("document.querySelector('[data-pl-opp-open=\"0\"]').click(); true")
+                page.wait_for("Boolean(document.getElementById('pl-opp-title'))")
+                self.assertEqual(page.eval_js("document.getElementById('pl-opp-title').value"), "")
+                self.assertTrue(page.eval_js("document.getElementById('pl-opp-save').disabled"))
+                page.eval_js("(() => { const el = document.getElementById('pl-opp-title'); el.value = '我亲自起的答疑标题';"
+                             " el.dispatchEvent(new Event('input', { bubbles: true })); })()")
+                self.assertFalse(page.eval_js("document.getElementById('pl-opp-save').disabled"))
+                page.eval_js("document.getElementById('pl-opp-save').click(); true")
+                page.wait_for("document.body.textContent.includes('我亲自起的答疑标题') && !document.getElementById('pl-opp-title')")
+
+                # Batch planning: multi-select 2 viewer questions + 1 saved idea -> adds 3 plans in one step
+                page.eval_js("(() => { const boxes = Array.from(document.querySelectorAll('[data-pl-tick]')).slice(0, 3);"
+                             " boxes.forEach(b => { b.checked = true; b.dispatchEvent(new Event('change', { bubbles: true })); });"
+                             " return boxes.length; })()")
+                self.assertFalse(page.eval_js("document.getElementById('pl-offer-add').disabled"))
+                page.eval_js("document.getElementById('pl-offer-add').click(); true")
+                page.wait_for("document.querySelectorAll('[data-plan-card]').length === 6")
+
+                # Inline editing of title, notes, scheduled date, target duration, and video format
+                uid = unscheduled["id"]
+                page.eval_js("document.querySelector('[data-pl-edit=\"%s\"]').click(); true" % uid)
+                page.wait_for("Boolean(document.getElementById('pl-edit-title'))")
+                page.eval_js("""(() => {
+                  const set = (id, val, ev) => {
+                    const el = document.getElementById(id); el.value = val;
+                    el.dispatchEvent(new Event(ev, { bubbles: true }));
+                  };
+                  set('pl-edit-title', '改好后的计划标题', 'input');
+                  set('pl-edit-notes', '改好后的详细备注', 'input');
+                  set('pl-edit-date', %s, 'change');
+                  set('pl-edit-sec', '90', 'input');
+                  set('pl-edit-format', 'SINGLE_PRODUCT_SHARE', 'change');
+                })()""" % json.dumps(today_iso))
+                page.eval_js("document.querySelector('[data-pl-save=\"%s\"]').click(); true" % uid)
+                page.wait_for("!document.getElementById('pl-edit-title') && document.body.textContent.includes('改好后的计划标题')")
+                updated = planner.get(self.store, uid)
+                self.assertEqual((updated["title"], updated["notes"], updated["scheduled_for"], updated["target_sec"], updated["video_format"]),
+                                 ("改好后的计划标题", "改好后的详细备注", today_iso, 90, "SINGLE_PRODUCT_SHARE"))
+
+                # Clear day button puts it back to unscheduled, then reschedule in week view & check month view
+                page.eval_js("document.querySelector('[data-pl-clear-day=\"%s\"]').click(); true" % uid)
+                page.wait_for("!document.querySelector('[data-pl-clear-day=\"%s\"]')" % uid)
+                self.assertEqual(planner.get(self.store, uid)["scheduled_for"], "")
+
+                # Switch to week view: today is marked, unscheduled section lists loose plans, keyboard button click reschedules
+                page.eval_js("document.querySelector('[data-pl-view=\"week\"]').click(); true")
+                page.wait_for("Boolean(document.querySelector('#pl-cal.week'))")
+                self.assertEqual(page.eval_js("document.querySelectorAll('#pl-cal .pl-day').length"), 7)
+                self.assertEqual(page.eval_js("document.querySelector('#pl-cal .pl-day.today').dataset.plDay"), today_iso)
+                self.assertEqual(page.eval_js("document.querySelector('#pl-cal [aria-current=\"date\"]').dataset.plDaybtn"), today_iso)
+                self.assertTrue(page.eval_js("Boolean(document.querySelector('#pl-loose [data-pl-chip=\"%s\"]'))" % uid))
+                # Select unscheduled chip and press today's button to schedule it onto today
+                page.eval_js("document.querySelector('#pl-loose [data-pl-chip=\"%s\"]').click(); true" % uid)
+                page.wait_for("Boolean(document.querySelector('#pl-picked [data-plan-card=\"%s\"]'))" % uid)
+                page.eval_js("document.querySelector('[data-pl-daybtn=\"%s\"]').click(); true" % today_iso)
+                page.wait_for("Boolean(document.querySelector('#pl-cal [data-pl-day=\"%s\"] [data-pl-chip=\"%s\"]'))" % (today_iso, uid))
+                self.assertEqual(page.eval_js("document.activeElement && document.activeElement.dataset.plDaybtn"), today_iso)
+
+                # Switch to month view and navigate prev/today
+                page.eval_js("document.querySelector('[data-pl-view=\"month\"]').click(); true")
+                page.wait_for("Boolean(document.querySelector('#pl-cal.month'))")
+                self.assertGreaterEqual(page.eval_js("document.querySelectorAll('#pl-cal .pl-day').length"), 28)
+                page.eval_js("document.querySelector('[data-pl-nav=\"-1\"]').click(); true")
+                page.eval_js("document.querySelector('[data-pl-nav=\"0\"]').click(); true")
+                self.assertEqual(page.eval_js("document.querySelector('#pl-cal .pl-day.today').dataset.plDay"), today_iso)
+
+                # Delete confirmation (askConfirm): cancel keeps the plan, confirm deletes it while keeping any script
+                page.eval_js("document.querySelector('[data-pl-view=\"list\"]').click(); true")
+                page.wait_for("Boolean(document.getElementById('pl-list'))")
+                page.eval_js("document.querySelector('[data-pl-del=\"%s\"]').click(); true" % uid)
+                page.wait_for("Boolean(document.getElementById('ask-no')) && !document.getElementById('ask').hidden")
+                page.eval_js("document.getElementById('ask-no').click(); true")
+                page.wait_for("document.getElementById('ask').hidden === true")
+                self.assertIsNotNone(self.store.get_video_plan(uid))
+                page.eval_js("document.querySelector('[data-pl-del=\"%s\"]').click(); true" % uid)
+                page.wait_for("Boolean(document.getElementById('ask-yes')) && !document.getElementById('ask').hidden")
+                page.eval_js("document.getElementById('ask-yes').click(); true")
+                page.wait_for("!document.querySelector('[data-plan-card=\"%s\"]')" % uid)
+                self.assertIsNone(self.store.get_video_plan(uid))
+                self.assertEqual(page.problems, [])
+
+            # 2. Check English + dark theme across list, week, and month views with zero browser problems
+            with browser.open_app(self.store, lang="en", theme="dark", transport=fake_ai) as page:
+                page.go("#/plan", "Boolean(document.getElementById('pl-list'))")
+                self.assertEqual(page.eval_js("document.documentElement.dataset.theme"), "dark")
+                self.assertEqual(page.eval_js("document.documentElement.lang"), "en")
+                self.assertIn("stood out in views or saves", page.eval_js("document.getElementById('pl-offer').textContent"))
+                page.eval_js("document.querySelector('[data-pl-view=\"week\"]').click(); true")
+                page.wait_for("Boolean(document.querySelector('#pl-cal.week'))")
+                page.eval_js("document.querySelector('[data-pl-view=\"month\"]').click(); true")
+                page.wait_for("Boolean(document.querySelector('#pl-cal.month'))")
+                self.assertEqual(page.problems, [])
+
+    def test_creating_a_script_from_a_plan_via_ai_manual_copy_paste_and_empty_in_chrome(self):
+        p_ai = self.plan(title="AI写稿计划", questions=[QUESTION])
+        p_manual = self.plan(title="复制粘贴计划", notes="手贴回复要点")
+        p_empty = self.plan(title="空白脚本计划")
+
+        # 1. Settings AI + Empty script
+        self.store.update_config(lambda c: (c.update(provider="openai", model="gpt-test"), c["keys"].update(openai="sk-test")))
+        with browser.open_app(self.store, lang="zh", theme="light", transport=fake_ai) as page:
+            page.go("#/plan", "Boolean(document.getElementById('pl-list'))")
+            self.assertTrue(page.eval_js("Boolean(document.getElementById('pl-draft-hint'))"))
+            page.eval_js("document.querySelector('[data-pl-draft=\"%s\"][data-how=\"ai\"]').click(); true" % p_ai["id"])
+            page.wait_for("location.hash.startsWith('#/s/')")
+            s_ai = planner.get(self.store, p_ai["id"])
+            self.assertEqual(s_ai["status"], "SCRIPTING")
+            self.assertIsNotNone(s_ai["script_id"])
+
+            page.go("#/plan", "Boolean(document.getElementById('pl-list'))")
+            page.eval_js("document.querySelector('[data-pl-draft=\"%s\"][data-how=\"empty\"]').click(); true" % p_empty["id"])
+            page.wait_for("location.hash.startsWith('#/s/')")
+            s_empty = planner.get(self.store, p_empty["id"])
+            self.assertEqual(s_empty["status"], "SCRIPTING")
+            self.assertIsNotNone(s_empty["script_id"])
+            self.assertEqual(page.problems, [])
+
+        # 2. Manual copy-and-paste mode: opens manualBridge -> /api/manual/prompt -> /api/manual/reply -> links back to plan!
+        self.store.update_config(lambda c: c.update(provider=MANUAL_PROVIDER))
+        with browser.open_app(self.store, lang="en", theme="dark") as page:
+            page.go("#/plan", "Boolean(document.getElementById('pl-list'))")
+            page.eval_js("document.querySelector('[data-pl-draft=\"%s\"][data-how=\"paste\"]').click(); true" % p_manual["id"])
+            page.wait_for("Boolean(document.getElementById('mb-prompt')) && document.getElementById('mb-prompt').value.length > 50")
+            self.assertIn("复制粘贴计划", page.eval_js("document.getElementById('mb-prompt').value"))
+            reply_json = json.dumps(DRAFT_REPLY, ensure_ascii=False)
+            page.eval_js("(() => { const r = document.getElementById('mb-reply'); r.value = %s;"
+                         " r.dispatchEvent(new Event('input', { bubbles: true })); })()" % json.dumps(reply_json))
+            page.eval_js("document.getElementById('mb-done').click(); true")
+            page.wait_for("location.hash.startsWith('#/s/')")
+            s_manual = planner.get(self.store, p_manual["id"])
+            self.assertEqual(s_manual["status"], "SCRIPTING")
+            self.assertTrue(page.eval_js("location.hash").endswith(s_manual["script_id"]))
+            # Back on #/plan, mark ready and back to writing
+            page.go("#/plan", "Boolean(document.getElementById('pl-list'))")
+            page.eval_js("document.querySelector('[data-pl-mark=\"%s\"][data-state=\"READY\"]').click(); true" % p_manual["id"])
+            page.wait_for("Boolean(document.querySelector('[data-pl-mark=\"%s\"][data-state=\"SCRIPTING\"]'))" % p_manual["id"])
+            self.assertEqual(planner.get(self.store, p_manual["id"])["status"], "READY")
+            self.assertEqual(page.problems, [])
 
 
 if __name__ == "__main__":

@@ -889,8 +889,8 @@ def _viewer_comments(record: Any) -> Optional[Dict[str, Any]]:
     - ``comments_counted``, ``summary`` (at most IDEAS_COMMENTS_SUMMARY_CHARS characters) and ``questions``
       (at most IDEAS_MAX_QUESTIONS, each at most IDEAS_QUESTION_CHARS characters). From word lists a question
       is a viewer's comment as it was pasted, picked because it looks like a question.
-    - ``overall`` (the mood) only for a model's reading. A mood counted from word lists nobody reviewed
-      would be read as a finding, and it is not one.
+    - ``overall`` (the mood) only for a model's reading, and never when ``overall_sentiment`` is
+      ``"not_judged"``. A mood counted from word lists nobody reviewed would be read as a finding, and it is not one.
 
     All of it is a stranger's or a model's text. Only strings are taken, each as one line cut to its limit,
     and the caller encodes the whole entry (``_dump``): an angle bracket in a comment arrives as its escape,
@@ -912,7 +912,7 @@ def _viewer_comments(record: Any) -> Optional[Dict[str, Any]]:
             questions.append(text)
         if len(questions) == IDEAS_MAX_QUESTIONS:
             break
-    said = line(summary.get("summary_zh"), IDEAS_COMMENTS_SUMMARY_CHARS)
+    said = line(summary.get("summary_zh") or summary.get("summary_en"), IDEAS_COMMENTS_SUMMARY_CHARS)
     if summary.get("comment_count") == 0 or not (said or questions):
         return None
     by_model = record.get("source") in ("ai", "manual")
@@ -921,8 +921,9 @@ def _viewer_comments(record: Any) -> Optional[Dict[str, Any]]:
         out["confirmed_by_creator"] = True
     if count is not None:
         out["comments_counted"] = count
-    if by_model and line(summary.get("overall_sentiment"), 40):
-        out["overall"] = line(summary.get("overall_sentiment"), 40)
+    mood = line(summary.get("overall_sentiment"), 40)
+    if by_model and mood and mood != "not_judged":
+        out["overall"] = mood
     if said:
         out["summary"] = said
     out["questions"] = questions

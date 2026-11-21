@@ -230,14 +230,13 @@ async function copyText(text, fallbackEl) {
 
 /* `options` (all optional): `title` and `intro` replace the dialog's own; `skip` is the label of a third button,
    which resolves with { skipped: true } for a step the creator may leave out; `replyOnly` skips generating a new
-   prompt when the creator already has the .json file or reply from ChatGPT; `promptPath` and `replyPath` name the
-   two requests when they are not the general ones (planner.js: a plan builds its own draft prompt and takes the reply). */
+   prompt when the creator already has the .json file or reply from ChatGPT. */
 async function manualBridge(task, payload, options) {
   const o = options || {};
   let prompt = '';
   let briefId = null;
   if (!o.replyOnly) {
-    const built = await api('POST', o.promptPath || '/api/manual/prompt', Object.assign({ task }, payload));
+    const built = await api('POST', '/api/manual/prompt', Object.assign({ task }, payload));
     prompt = built.prompt;
     briefId = built.brief_id || null;
   }
@@ -329,7 +328,7 @@ async function manualBridge(task, payload, options) {
       btn.disabled = true;
       setErr('');
       try {
-        close(await api('POST', o.replyPath || '/api/manual/reply', Object.assign({ task, reply }, payload, briefId ? { brief_id: briefId } : {})));
+        close(await api('POST', '/api/manual/reply', Object.assign({ task, reply }, payload, briefId ? { brief_id: briefId } : {})));
       } catch (err) {
         setErr(errorMessage(err));
         showError(err);

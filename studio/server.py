@@ -963,6 +963,11 @@ class Handler(BaseHTTPRequestHandler):
         """``{"prompt"}``, plus ``brief_id`` for a draft: the record of what that prompt contains."""
         store, task = self.app.store, _task(body)
         if task == "draft":
+            if body.get("plan_id") is not None:
+                try:
+                    return planner.script_prompt(store, body.get("plan_id"))
+                except planner.PlannerError as exc:
+                    raise ApiError(exc.status, exc.code, exc.message, exc.message_zh)
             notes = str(body.get("notes") or "").strip()
             if not notes:
                 raise ApiError(400, "notes_required")
@@ -997,6 +1002,15 @@ class Handler(BaseHTTPRequestHandler):
 
     def _manual_reply(self, body: Dict[str, Any]) -> None:
         store, task = self.app.store, _task(body)
+        if task == "draft" and body.get("plan_id") is not None:
+            try:
+                made = planner.make_script(store, body.get("plan_id"), body, default_title=UNTITLED[self._lang(body)])
+            except planner.PlannerError as exc:
+                raise ApiError(exc.status, exc.code, exc.message, exc.message_zh)
+            except TextTooLong as exc:
+                raise ApiError(413, exc.code, exc.message, exc.message_zh, extra={"limit": exc.limit})
+            return self._json(dict(made["script"], script=made["script"], plan=made["plan"], linked=made["linked"],
+                                   planner=planner.payload(store)), 201)
         # For ideas: what was asked, and the lookup that came before. Malformed ones are refused before the reply is read.
         focus, lookup = (_focus(body), _pasted_lookup(body)) if task == "ideas" else ("", None)
         result = llm.parse_manual_reply(str(body.get("reply") or ""), task)
@@ -1086,8 +1100,11 @@ class Handler(BaseHTTPRequestHandler):
                 return self._json(planner.script_prompt(store, m.group(1)))
             if body.get("use_ai") is True:
                 self._require_ai()
-            made = planner.make_script(store, m.group(1), body, transport=app.transport,
-                                       default_title=UNTITLED[self._lang(body)])
+            try:
+                made = planner.make_script(store, m.group(1), body, transport=app.transport,
+                                           default_title=UNTITLED[self._lang(body)])
+            except TextTooLong as exc:
+                raise ApiError(413, exc.code, exc.message, exc.message_zh, extra={"limit": exc.limit})
             return self._json(dict(made, planner=planner.payload(store)), 201)
         raise ApiError(404, "not_found")
 
