@@ -1,38 +1,85 @@
-"""Dynamic RedNote (Xiaohongshu) view-count analytics, velocity, Creator Center import, and audience sentiment engine.
+"""Numbers of posted videos by day, a table from the Creator Center, and what viewers wrote under a video.
 
-Capabilities (100% Python stdlib):
-1. Mobile Share Snippet & URL Extractor: extracts clean ``xhslink.com`` / ``xiaohongshu.com`` URLs and title hints
-   from pasted RedNote mobile share text.
-2. Dynamic View Count & Velocity Engine: combines ``views``, ``interactions`` (likes + collects + comments),
-   ``save_rate_pct`` (collects / views), ``comment_rate_pct``, and chronological ``metric_snapshots`` to compute
-   daily view velocity (``views_per_day``), composite reach+resonance lift, and RedNote performance quadrants.
-3. Creator Center Spreadsheet / Paste Batch Importer: reads ``.csv``, ``.tsv``, ``.txt`` or ``.xlsx`` post-analytics
-   exports from Xiaohongshu Creator Center (创作服务平台) to batch-sync view counts and engagement snapshots.
-4. Hybrid Audience Comment & Sentiment Analyzer:
-   - Instant deterministic Chinese/English comment sentiment classifier + viewer-question detector (``求链接``,
-     ``求教程``, ``适合...吗``, ``?``/``？``) that works offline with zero API key.
-   - Optional deep LLM / copy-paste / MCP synthesis via ``prompts/09_sentiment_analyzer.md`` (``T=0.2``).
+Nothing here is fetched from Xiaohongshu, and nothing here asks any other computer for anything. Numbers reach
+the library by the creator's own act: typed on a page, given when a script is marked as posted
+(``studio.posted``), or read from a table the creator saved from the Creator Center (创作服务平台) and chose
+here. Comments are pasted in.
+
+NUMBERS BY DAY. A video's numbers keep changing, and a library item carries only the last reading. Each
+reading is also kept under the day it was read (``Store.record_metric_snapshot``), so two readings say how
+many views came in between (``views_per_day``). The day a reading belongs to is the day the numbers were
+read. It is never the day the video was posted: round 1 dated readings by a "发布时间" column, and every
+"views per day" that followed was wrong. Nothing is adjusted, projected or normalised.
+
+A TABLE FROM THE CREATOR CENTER. It is read by ``keyword_import.read_table``, the one reader of this project
+for a file somebody hands the creator: bounded in size, rows, columns and cell length, an ``.xlsx`` never
+unpacked to disk, no formula worked out. The import has two steps, like the keyword import:
+
+- ``preview`` stores nothing. It says which column was taken for the title, for each number and for the
+  days, how every row reads, and for every row which library item it would change, or why it changes none.
+- ``bring_in`` stores exactly what a preview showed. It is sent the columns and the preview's
+  ``fingerprint``; when the same file would now be read differently (another column, a library that changed
+  in between, another day), it refuses and nothing is stored. What it stores is written in one transaction.
+
+A row belongs to a library item when their titles are the same, whole: compared without regard to spaces, to
+upper and lower case and to full-width and half-width forms, and in no other way. Part of a title is never
+enough (round 1 took the first library item whose title contained the row's, or was contained in it). A title
+that two library items carry, or two rows of the table, matches nothing: which is which cannot be told.
+
+A row that matches nothing creates no library item. A library item is the words of a video, and a row of a
+table has a title and numbers and no words. Round 1 stored such a row with its title as the text, as a
+script of the creator's, so a title became material the voice is learned from. The preview lists these rows;
+the creator adds the video (its file, its subtitles or its script) under that title and imports again.
+
+Nobody on this project has seen a real export of the Creator Center. The column names in HEADERS are this
+project's guesses, and nothing depends on them: the preview shows what was taken for what, and the creator
+picks every column on the page before anything is stored. A column that names a day the numbers were read
+dates them; without one they are dated by the day of the import, and the preview says which it is. A column
+called only "日期" or "date" is not guessed to be either day.
 """
 from __future__ import annotations
 
-import csv
 import datetime
-import io
+import hashlib
 import json
-import math
 import re
-from typing import Any, Dict, List, Optional, Tuple
+import unicodedata
+from typing import Any, Dict, List, Optional, Sequence, Set, Tuple
 
-from . import corpus, creator, keyword_import, llm
-from .store import ROOT, Store, _metric
+from . import corpus, creator, keyword_import, llm, trends
+from .store import METRIC_FIELDS, ROOT, Store, _metric
 
 STAGE9_PATH = ROOT / "prompts" / "09_sentiment_analyzer.md"
 
-_URL_IN_TEXT = re.compile(r"(https?://[^\s<>\"'】\]）)]+)", re.I)
-_SHARE_NOISE = re.compile(
-    r"(复制后打开【小红书】查看笔记！?|打开小红书App查看精彩内容！?|小红书，标记我的生活|^\s*\d{1,3}\s+)"
-)
-_COUNT_TOKEN = re.compile(r"^\s*([0-9]+(?:\.[0-9]+)?)\s*([万亿wkWK]?)\s*$")
+MAX_IMPORT_ROWS = 500           # rows with a title that one import looks at; a creator's table has one row for each video
+HISTORY_SHOWN = 12              # readings of one item that a page is sent, the newest
+TITLE, READ_ON, POSTED_ON = "title", "read_on", "posted_on"
+NUMBER_FIELDS = METRIC_FIELDS   # views, likes, collects, comments: the numbers a library item carries
+DAY_FIELDS = (READ_ON, POSTED_ON)
+FIELDS = (TITLE,) + NUMBER_FIELDS + DAY_FIELDS
+# Guesses at what a table calls its columns, best guess first, written without spaces and in lower case. A name
+# counts when the header cell contains it (``keyword_import._match``). "曝光" (how often a cover was shown) is
+# not among the names for views on purpose: being shown is not being watched.
+HEADERS: Dict[str, Tuple[str, ...]] = {
+    TITLE: ("笔记标题", "作品标题", "视频标题", "笔记名称", "作品名称", "标题", "title"),
+    "views": ("观看量", "观看数", "观看次数", "播放量", "播放数", "阅读量", "浏览量", "观看", "播放", "阅读", "views", "plays", "reads"),
+    "likes": ("点赞量", "点赞数", "点赞", "likes"),
+    "collects": ("收藏量", "收藏数", "收藏", "collects", "saves", "favorites"),
+    "comments": ("评论量", "评论数", "评论", "comments"),
+    READ_ON: ("统计日期", "数据日期", "统计时间", "数据时间", "数据更新时间", "更新时间", "数据截至", "截至", "readon", "asof"),
+    POSTED_ON: ("首次发布时间", "发布时间", "发布日期", "发表时间", "posted", "published", "publishdate"),
+}
+# A header that holds one of these names a rate, a share or a length of time, not one of the four counts:
+# "收藏率" is not the collects and "人均观看时长" is not the views.
+NOT_A_COUNT = ("率", "占比", "时长", "人均", "平均", "%", "％", "rate", "ratio", "avg", "average", "time")
+UPDATE, READING_ONLY, UNMATCHED, SKIPPED = "update", "reading_only", "unmatched", "skipped"
+SKIP_REASONS = ("no_title", "title_cut", "over_limit", "repeated", "no_numbers", "bad_day", "future_day", "ambiguous",
+                "read_before_posted")
+
+_DAY_IN_CELL = re.compile(r"\s*([0-9]{4})\s*[-/.年]\s*([0-9]{1,2})\s*[-/.月]\s*([0-9]{1,2})\s*(?:日|号)?(?:$|[\sT])", re.ASCII)
+_EXCEL_DAY_0 = datetime.date(1899, 12, 30)      # the day a spreadsheet counts its days from
+_EXCEL_DAYS = (36526, 73050)                    # 2000-01-01 to 2099-12-31 as such a count: outside it a number is no day
+
 _COMMENT_META_TAIL = re.compile(
     r"(?:\s+(?:\d+\s*(?:分钟|小时|天|周|个月|年)前|昨天|前天|\d{2}-\d{2}|\d{4}-\d{2}-\d{2})"
     r"(?:\s+[\u4e00-\u9fff]{2,8})?(?:\s*(?:回复|赞\s*\d+|❤️\s*\d+))*\s*)$"
@@ -56,152 +103,467 @@ QUESTION_CUES = (
     "尺码", "色号", "型号", "link", "where did you", "which brand", "how much",
 )
 
-TITLE_HEADERS = ("笔记标题", "标题", "作品名称", "视频标题", "笔记名称", "内容标题", "title", "note title", "post title", "video")
-VIEWS_HEADERS = ("观看量", "播放量", "曝光量", "阅读量", "浏览量", "小眼睛", "views", "impressions", "plays", "reads")
-LIKES_HEADERS = ("点赞量", "点赞数", "点赞", "赞", "likes", "like")
-COLLECTS_HEADERS = ("收藏量", "收藏数", "收藏", "collects", "saves", "bookmarks", "favorites")
-COMMENTS_HEADERS = ("评论量", "评论数", "评论", "comments", "replies")
-DATE_HEADERS = ("发布时间", "发布日期", "日期", "统计日期", "时间", "posted_on", "date", "published")
-LINK_HEADERS = ("笔记链接", "作品链接", "链接", "网址", "url", "link", "note_url")
-
 
 class AnalyticsError(Exception):
-    """A RedNote analytics import or sentiment request could not be completed."""
+    """A request about numbers or comments that cannot be met. Raised before anything is stored.
+
+    ``code`` is what a page can map; ``message`` (English) and ``message_zh`` are written to be shown;
+    ``status`` is the HTTP status for it.
+    """
 
     def __init__(self, code: str, message: str, message_zh: str, status: int = 400) -> None:
         super().__init__(message)
-        self.code = code
-        self.message = message
-        self.message_zh = message_zh
-        self.status = status
+        self.code, self.message, self.message_zh, self.status = code, message, message_zh, status
 
 
-def extract_share_link(raw: Any) -> Dict[str, str]:
-    """Extract an ``http(s)`` URL and optional title hint from a RedNote share snippet or bare link."""
-    if not isinstance(raw, str):
-        return {"url": "", "title_hint": ""}
-    text = raw.strip()
-    if not text:
-        return {"url": "", "title_hint": ""}
-    m = _URL_IN_TEXT.search(text)
-    if not m:
-        return {"url": "", "title_hint": ""}
-    url = m.group(1).rstrip(".,;!?，。；！？")
-    rem = (text[:m.start()] + " " + text[m.end():]).strip()
-    rem = _SHARE_NOISE.sub(" ", rem)
-    rem = re.sub(r"\s+", " ", rem).strip(" -|｜:：，,。")
-    return {"url": url[:1000], "title_hint": rem[:120]}
+def today() -> datetime.date:
+    """Today by this computer's clock: the day an import is made, when the table names no day for its numbers."""
+    return datetime.date.today()
 
 
-def parse_human_count(raw: Any) -> Optional[int]:
-    """Parse Chinese/English shorthand numbers like ``1.2万``, ``3.5w``, ``12,400``, ``8k``."""
-    if raw is None or isinstance(raw, bool):
+# ---- refusals -----------------------------------------------------------------
+def _needs_preview() -> AnalyticsError:
+    return AnalyticsError(
+        "import_needs_preview",
+        "Numbers from a table are imported in two steps: a preview that shows what would change, then the import of "
+        "exactly that. Open the Library and choose the table there.",
+        "从表格导入数据要分两步：先预览会改动什么，再照预览的内容导入。请到「素材库」里选择表格。")
+
+
+def _no_title_column() -> AnalyticsError:
+    return AnalyticsError(
+        "import_no_title_column",
+        "No column of this table was found to hold the titles of the videos. Choose it yourself.",
+        "没有在这张表里找到哪一列是视频的标题，请自己选一下。")
+
+
+def _no_columns_chosen() -> AnalyticsError:
+    return AnalyticsError(
+        "import_no_columns",
+        "Choose the column that holds the titles and at least one column of numbers before importing.",
+        "导入之前，请先选好标题在哪一列，并且至少选一列数据。")
+
+
+def _bad_column() -> AnalyticsError:
+    return AnalyticsError("import_bad_column", "That column is not in this table, or it was chosen twice. Choose the columns again.",
+                          "表格里没有这一列，或者同一列被选了两次。请重新选择。")
+
+
+def _changed() -> AnalyticsError:
+    return AnalyticsError(
+        "import_changed",
+        "What this import would store is no longer what the preview showed: the library or the day changed in "
+        "between, or the columns were chosen again. Nothing was stored. Look at the preview again.",
+        "这次导入要存的内容和预览时看到的已经不一样了：素材库或者日期在这期间变了，或者列被重新选过。"
+        "这次什么都没有存。请重新看一遍预览。", 409)
+
+
+def _nothing_to_change() -> AnalyticsError:
+    return AnalyticsError(
+        "import_nothing_to_change",
+        "No row of this table matches a library item by its whole title, so there is nothing to import.",
+        "这张表里没有哪一行的标题和素材库里的条目完全一样，所以没有可以导入的内容。")
+
+
+def _reworded(refusal: keyword_import.ImportRefused) -> AnalyticsError:
+    """A refusal of the file reader, as this import says it. Two of the reader's sentences speak of "the sheet with the keywords"."""
+    if refusal.code == "import_too_large" and "keywords" in refusal.message:
+        return AnalyticsError(
+            refusal.code,
+            "This workbook holds more than can be read here, or unpacks to far more than a spreadsheet of its size "
+            "does. Open it in Excel, WPS or Numbers and save the sheet with the numbers as .csv.",
+            "这个工作簿里的内容太多，或者解开以后比同样大小的表格大得多，这里读不了。"
+            "请用 Excel、WPS 或 Numbers 打开，把有数据的那张表另存为 .csv。", refusal.status)
+    return AnalyticsError(refusal.code, refusal.message, refusal.message_zh, refusal.status)
+
+
+# ---- numbers by day -------------------------------------------------------------
+def _days_between(earlier: Any, later: Any) -> Optional[int]:
+    first, second = corpus.parse_day(earlier), corpus.parse_day(later)
+    return (second - first).days if (first is not None and second is not None) else None
+
+
+def views_per_day(sample: Dict[str, Any], readings: List[Dict[str, Any]]) -> Dict[str, Any]:
+    """What the readings of one library item say about its views over time. Counted, never projected.
+
+    ``readings`` are the item's, the oldest day first (``Store.list_metric_snapshots``). The answer:
+
+    - ``readings``: how many days have a reading; ``last_read_on``: the newest of those days, or None.
+    - ``since_reading``: from the last two readings that hold views, ``{"from", "to", "days", "views",
+      "per_day"}``: the views that came in between and that number over the days between. None with fewer
+      than two such readings. A number that went down is given as it is.
+    - ``since_posted``: ``{"posted_on", "to", "days", "views", "per_day"}``: the views of the newest reading
+      over the days since the video was posted. None when the day it was posted is not known, and when the
+      reading is of that same day: no whole day has passed.
+    - ``history``: the newest HISTORY_SHOWN readings, oldest first, each ``{"read_on"}`` and the four numbers.
+
+    An average over days says nothing about any single day: views come in fast at first and slowly later.
+    """
+    kept = [reading for reading in readings if isinstance(reading, dict) and corpus.parse_day(reading.get("read_on"))]
+    viewed = [reading for reading in kept if reading.get("views") is not None]
+    since_reading = since_posted = None
+    if len(viewed) >= 2:
+        before, last = viewed[-2], viewed[-1]
+        days = _days_between(before["read_on"], last["read_on"])
+        if days:
+            gained = int(last["views"]) - int(before["views"])
+            since_reading = {"from": before["read_on"], "to": last["read_on"], "days": days, "views": gained,
+                             "per_day": round(gained / days, 1)}
+    if viewed and sample.get("posted_on"):
+        days = _days_between(sample["posted_on"], viewed[-1]["read_on"])
+        if days and days > 0:
+            since_posted = {"posted_on": sample["posted_on"], "to": viewed[-1]["read_on"], "days": days,
+                            "views": int(viewed[-1]["views"]), "per_day": round(int(viewed[-1]["views"]) / days, 1)}
+    return {
+        "readings": len(kept), "last_read_on": kept[-1]["read_on"] if kept else None,
+        "since_reading": since_reading, "since_posted": since_posted,
+        "history": [dict({"read_on": reading["read_on"]}, **{field: reading.get(field) for field in NUMBER_FIELDS})
+                    for reading in kept[-HISTORY_SHOWN:]],
+    }
+
+
+# ---- a table from the Creator Center: cells -------------------------------------
+def read_count(cell: str) -> Optional[int]:
+    """The count in a cell (``1,234``, ``1.2万``, ``3k``, ``0``), in the forms the keyword import reads; None for anything else.
+
+    Unlike a keyword's heat, 0 is a count: a video can have no comments. An empty cell, a dash and a word are no
+    number, and a row's number that is no number is left as the library has it.
+    """
+    parts = keyword_import._number(cell)
+    if not parts:
         return None
-    if isinstance(raw, int):
-        return _metric(raw)
-    if isinstance(raw, float):
-        return _metric(int(round(raw))) if math.isfinite(raw) and raw >= 0 else None
-    s = str(raw).strip().replace(",", "").replace("，", "").replace("+", "")
-    if not s or s in ("-", "--", "N/A", "无"):
-        return None
-    m = _COUNT_TOKEN.match(s)
-    if not m:
-        return None
-    num = float(m.group(1))
-    unit = m.group(2).lower()
-    mult = 1
-    if unit in ("万", "w"):
-        mult = 10_000
-    elif unit == "亿":
-        mult = 100_000_000
-    elif unit == "k":
-        mult = 1_000
-    return _metric(int(round(num * mult)))
+    value = float(parts[0].replace(",", "")) * trends._UNITS.get((parts[1] or "").lower(), 1)
+    return int(round(value)) if value < 1e13 else None
 
 
-def _parse_day(raw: Any) -> str:
-    if not isinstance(raw, str):
-        return ""
-    s = raw.strip()
-    m = re.search(r"([0-9]{4})[-/.年]([0-9]{1,2})[-/.月]([0-9]{1,2})", s)
-    if not m:
-        return ""
+def read_day(cell: str) -> Optional[str]:
+    """The day a cell names, as ``YYYY-MM-DD``; None when it names none.
+
+    Read: a year, a month and a day at the start of the cell, separated by ``-``, ``/``, ``.`` or 年 月 (a time
+    after them is ignored; anything else after them makes the cell no day); eight digits (``20261120``); and a
+    spreadsheet's own count of days, which is what an ``.xlsx`` holds in a cell formatted as a date. A day
+    without a year is not read: the year would be a guess.
+    """
+    text = cell.strip()
+    found = _DAY_IN_CELL.match(text)
+    if found:
+        year, month, day = (int(part) for part in found.groups())
+    elif len(text) == 8 and text.isascii() and text.isdigit():
+        year, month, day = int(text[:4]), int(text[4:6]), int(text[6:])
+    else:
+        whole = text.partition(".")[0]
+        if not (whole.isascii() and whole.isdigit() and len(whole) == 5 and keyword_import._number(text)):
+            return None
+        if not _EXCEL_DAYS[0] <= int(whole) <= _EXCEL_DAYS[1]:
+            return None
+        return (_EXCEL_DAY_0 + datetime.timedelta(days=int(whole))).isoformat()
     try:
-        d = datetime.date(int(m.group(1)), int(m.group(2)), int(m.group(3)))
-        return d.strftime("%Y-%m-%d")
+        return datetime.date(year, month, day).isoformat()
     except ValueError:
-        return ""
+        return None
 
 
+def title_key(title: Any) -> str:
+    """A title as it is compared: the whole of it, without spaces, in one case, full-width forms as half-width ones."""
+    return "".join(unicodedata.normalize("NFKC", str(title or "")).split()).casefold()
+
+
+def _cut(cell: str) -> bool:
+    """Whether the reader cut this cell (``keyword_import._tidy``): the whole of it is then not known."""
+    return len(cell) > keyword_import.MAX_CELL_CHARS
+
+
+# ---- a table from the Creator Center: which row names the columns, which column holds what ----
+def _fit(header: str, field: str) -> Optional[Tuple[int, int]]:
+    """How well a header cell fits a field (``keyword_import._match``); None when it does not, or names a rate where a count is wanted."""
+    if field in NUMBER_FIELDS and any(word in header.replace(" ", "").lower() for word in NOT_A_COUNT):
+        return None
+    return keyword_import._match(header, HEADERS[field])
+
+
+def _header_row(rows: List[List[str]]) -> Optional[int]:
+    """The row that names the columns, or None when no row does.
+
+    An export may start with a title or a date range, so the first rows are looked at, as far down as the keyword
+    import looks. A header row holds no number, names the title and names at least one of the four numbers. Of the
+    rows that qualify, the one that names the most fields is taken.
+    """
+    best, best_named = None, 0
+    for index, row in enumerate(rows[:keyword_import.HEADER_SCAN_ROWS]):
+        if any(keyword_import._number(cell) is not None for cell in row):
+            continue
+        named = {field for field in FIELDS if any(_fit(cell, field) is not None for cell in row)}
+        if TITLE in named and named.intersection(NUMBER_FIELDS) and len(named) > best_named:
+            best, best_named = index, len(named)
+    return best
+
+
+def _title_by_content(rows: List[List[str]], width: int) -> Optional[int]:
+    """The column with the most different texts that are no numbers and no days; the leftmost of equals. For a table without a header."""
+    best, best_found = None, 0
+    for column in range(width):
+        cells = {cell for cell in (keyword_import._cell(row, column) for row in rows)
+                 if cell and keyword_import._number(cell) is None and read_day(cell) is None}
+        if len(cells) > best_found:
+            best, best_found = column, len(cells)
+    return best
+
+
+def guess(rows: List[List[str]]) -> Tuple[Optional[int], Dict[str, Optional[int]]]:
+    """``(header row, {field: column})``: where the header is, and which column looks like which field (FIELDS).
+
+    With a header, each field gets the column whose name fits it best (``keyword_import._named``: the earliest
+    name in the list, then a whole-cell fit, then the shorter header), and no column is given to two fields. The
+    days are settled first, so that "发布时间" is the day a video was posted and nothing else. Without a header
+    only the title is guessed, from the contents; which number is which cannot be told from numbers.
+    """
+    header_row = _header_row(rows)
+    width = max((len(row) for row in rows), default=0)
+    found: Dict[str, Optional[int]] = {field: None for field in FIELDS}
+    if header_row is None:
+        found[TITLE] = _title_by_content(rows[:keyword_import.GUESS_ROWS], width)
+        return header_row, found
+    headers = [keyword_import._cell(rows[header_row], column) for column in range(width)]
+    taken: Set[int] = set()
+    for field in DAY_FIELDS + (TITLE,) + NUMBER_FIELDS:
+        fits = [(fit, len(header), column) for column, header in enumerate(headers)
+                for fit in (_fit(header, field),) if fit is not None and column not in taken]
+        if fits:
+            found[field] = min(fits)[2]
+            taken.add(found[field])
+    return header_row, found
+
+
+def _column(value: Any, width: int) -> int:
+    """A column the request names, checked against the table."""
+    if isinstance(value, bool) or not isinstance(value, int) or not 0 <= value < width:
+        raise _bad_column()
+    return value
+
+
+def _chosen(asked: Any, guessed: Optional[Dict[str, Optional[int]]], width: int) -> Dict[str, Optional[int]]:
+    """The columns a request is read with: what it names (``fields``: a column counted from 0, or null for "none"),
+    and for a field it does not name what was guessed, when a guess is allowed. No column serves two fields: one
+    the creator gave to a field is no longer the guess for another."""
+    asked = asked if isinstance(asked, dict) else {}
+    fields: Dict[str, Optional[int]] = {}
+    for field in FIELDS:
+        if field in asked:
+            fields[field] = None if asked[field] is None else _column(asked[field], width)
+    named = [column for column in fields.values() if column is not None]
+    if len(named) != len(set(named)):
+        raise _bad_column()
+    for field in FIELDS:
+        if field not in fields:
+            column = (guessed or {}).get(field)
+            fields[field] = column if (column is not None and column not in named) else None
+    return fields
+
+
+# ---- a table from the Creator Center: what an import would store -----------------
+def _latest_days(store: Store, samples: List[Dict[str, Any]]) -> Dict[str, str]:
+    """For each library item, the newest day its numbers are known to have been read on."""
+    latest: Dict[str, str] = {}
+    for reading in store.list_metric_snapshots():
+        latest[reading["sample_id"]] = max(latest.get(reading["sample_id"], ""), reading["read_on"])
+    for sample in samples:
+        if sample.get("metrics_on"):
+            latest[sample["id"]] = max(latest.get(sample["id"], ""), sample["metrics_on"])
+    return latest
+
+
+def plan(rows: List[List[str]], header_row: Optional[int], fields: Dict[str, Optional[int]],
+         samples: List[Dict[str, Any]], latest: Dict[str, str], day: str) -> Tuple[List[Dict[str, Any]], Dict[str, int]]:
+    """``(every row below the header as it is read and what it would do, how many rows do what)``.
+
+    ``fields`` says which column holds what; ``samples`` is the library; ``latest`` the newest day each item's
+    numbers were read on; ``day`` is today, which dates the numbers when no column does and which no reading
+    may lie after.
+
+    Each row is ``{"row", "title", "views", "likes", "collects", "comments", "read_on", "posted_on", "effect",
+    "why", "sample_id", "sample_title", "now"}``. ``row`` counts the rows that were read, from 1. A number the
+    row does not hold is None and is left as the library has it. ``effect`` is one of:
+
+    - UPDATE: the row's numbers become the item's numbers and are kept as its reading of ``read_on``;
+    - READING_ONLY: the library already has numbers of this item read on a later day, so the row is kept as
+      the reading of its own day and the item's numbers stay;
+    - UNMATCHED: no library item has this title. Nothing is stored and nothing is created;
+    - SKIPPED, with ``why``: ``no_title``; ``title_cut`` (longer than a cell is read, so the whole title is
+      not known); ``over_limit`` (after the first MAX_IMPORT_ROWS rows with a title); ``repeated`` (the title
+      stands on more than one row); ``no_numbers``; ``bad_day`` (no day could be read where the day of the
+      numbers should stand); ``future_day``; ``ambiguous`` (more than one library item has the title);
+      ``read_before_posted`` (the item says it was posted after that day).
+
+    ``now`` holds the item's numbers as they are, for a row that names an item. The counts have a key for each
+    effect and each reason, and ``header`` for the header row and what stands above it; they add up to the rows.
+    """
+    first = 0 if header_row is None else header_row + 1
+    counts = dict({"header": min(first, len(rows)), UPDATE: 0, READING_ONLY: 0, UNMATCHED: 0}, **{why: 0 for why in SKIP_REASONS})
+    by_title: Dict[str, List[Dict[str, Any]]] = {}
+    for sample in samples:
+        by_title.setdefault(title_key(sample.get("title")), []).append(sample)
+    used = [field for field in NUMBER_FIELDS if fields.get(field) is not None]
+    # Which titles stand on more than one row is known only once every row was seen.
+    on_rows: Dict[str, int] = {}
+    titled = 0
+    for row in rows[first:]:
+        title = keyword_import._cell(row, fields[TITLE])
+        if title and not _cut(title):
+            titled += 1
+            if titled <= MAX_IMPORT_ROWS:
+                on_rows[title_key(title)] = on_rows.get(title_key(title), 0) + 1
+    shown: List[Dict[str, Any]] = []
+    titled = 0
+    for number, row in enumerate(rows[first:], first + 1):
+        title = keyword_import._cell(row, fields[TITLE])
+        values = {field: read_count(keyword_import._cell(row, fields[field])) for field in used}
+        read_on = read_day(keyword_import._cell(row, fields[READ_ON])) if fields.get(READ_ON) is not None else day
+        posted_on = read_day(keyword_import._cell(row, fields[POSTED_ON])) if fields.get(POSTED_ON) is not None else None
+        entry: Dict[str, Any] = dict({"row": number, "title": title}, **{field: values.get(field) for field in NUMBER_FIELDS})
+        entry.update({"read_on": read_on, "posted_on": posted_on, "effect": SKIPPED, "why": None,
+                      "sample_id": None, "sample_title": None, "now": None})
+        shown.append(entry)
+        found = by_title.get(title_key(title), []) if title else []
+        if title and not _cut(title):
+            titled += 1
+        if not title:
+            entry["why"] = "no_title"
+        elif _cut(title):
+            entry["why"] = "title_cut"
+        elif titled > MAX_IMPORT_ROWS:
+            entry["why"] = "over_limit"
+        elif on_rows.get(title_key(title), 0) > 1:
+            entry["why"] = "repeated"
+        elif all(value is None for value in values.values()):
+            entry["why"] = "no_numbers"
+        elif read_on is None:
+            entry["why"] = "bad_day"
+        elif read_on > day:
+            entry["why"] = "future_day"
+        elif not found:
+            entry["effect"] = UNMATCHED
+        elif len(found) > 1:
+            entry["why"] = "ambiguous"
+        else:
+            item = found[0]
+            entry.update({"sample_id": item["id"], "sample_title": item["title"],
+                          "now": {field: item.get(field) for field in NUMBER_FIELDS}})
+            if item.get("posted_on") and read_on < item["posted_on"]:
+                entry["why"] = "read_before_posted"
+            else:
+                entry["effect"] = READING_ONLY if latest.get(item["id"], "") > read_on else UPDATE
+        counts[entry["why"] or entry["effect"]] += 1
+    return shown, counts
+
+
+def _fingerprint(fields: Dict[str, Optional[int]], shown: List[Dict[str, Any]]) -> str:
+    """Identifies what a preview showed: the columns, and for every row what was read and what it would do."""
+    said = [[fields.get(field) for field in FIELDS]]
+    said += [[entry[key] for key in ("row", "title", "read_on", "effect", "why", "sample_id") + NUMBER_FIELDS] for entry in shown]
+    return hashlib.sha256(json.dumps(said, ensure_ascii=True, separators=(",", ":")).encode("ascii")).hexdigest()
+
+
+def _table(body: Dict[str, Any]) -> Tuple[str, Dict[str, Any]]:
+    """The file a request carries, read by the keyword import's reader: ``(its name as a label, its table)``."""
+    try:
+        return keyword_import._request_table(body)
+    except keyword_import.ImportRefused as refusal:
+        raise _reworded(refusal)
+
+
+def _read(store: Store, body: Dict[str, Any], guessing: bool) -> Dict[str, Any]:
+    """Read the file of a request with the columns it names: everything ``preview`` answers with.
+
+    With ``guessing`` a column the request does not name is guessed; without, it is not used.
+    """
+    name, table = _table(body)
+    rows, width = table["rows"], table["width"]
+    header_row, guessed = guess(rows)
+    fields = _chosen(body.get("fields"), guessed if guessing else None, width)
+    if fields[TITLE] is None:
+        raise _no_title_column() if guessing else _no_columns_chosen()
+    if not guessing and all(fields[field] is None for field in NUMBER_FIELDS):
+        raise _no_columns_chosen()
+    samples = store.list_samples()
+    day = today().isoformat()
+    shown, counts = plan(rows, header_row, fields, samples, _latest_days(store, samples), day)
+    data = (rows if header_row is None else rows[header_row + 1:])[:keyword_import.GUESS_ROWS]
+    headers = [keyword_import._cell(rows[header_row], column) for column in range(width)] if header_row is not None else []
+    columns = [{"index": column, "header": headers[column] if headers else "",
+                "samples": [keyword_import._sample(cell) for cell in (keyword_import._cell(row, column) for row in data) if cell][:2]}
+               for column in range(width)]
+    return {
+        "name": name, "kind": table["kind"], "delimiter": table["delimiter"], "sheet": table["sheet"],
+        "other_sheets": table["other_sheets"], "header_row": header_row, "headers": headers, "columns": columns,
+        "fields": fields, "guessed": guessed,
+        "dated_by": "column" if fields[READ_ON] is not None else "import_day", "import_day": day,
+        "rows": shown, "rows_read": len(rows), "counts": counts, "would_change": counts[UPDATE] + counts[READING_ONLY],
+        "more_rows": table["more_rows"], "more_columns": table["more_columns"],
+        "limits": {"rows": keyword_import.MAX_ROWS, "columns": keyword_import.MAX_COLUMNS, "import_rows": MAX_IMPORT_ROWS},
+        "fingerprint": _fingerprint(fields, shown),
+    }
+
+
+def preview(store: Store, body: Dict[str, Any]) -> Dict[str, Any]:
+    """What ``POST /api/rednote/import/preview`` answers. Nothing is stored.
+
+    ``body`` holds the file (``name`` and ``text`` or ``file_base64``) and, once the creator has picked,
+    ``fields``: for any of FIELDS the column it is in, counted from 0, or null for "none". A field the request
+    does not name is guessed (``guess``). The answer says what was found in the file (``header_row``,
+    ``headers``, ``columns`` with two sample cells each, ``guessed``), which columns it was read with
+    (``fields``), how the numbers are dated (``dated_by``: ``column``, or ``import_day`` with the day in
+    ``import_day``), every row as ``plan`` gives it, the counts, and ``fingerprint``, which ``bring_in`` is
+    handed back. ``rows_read`` is the sum of ``counts``.
+
+    Raises ``AnalyticsError``: what the file reader refuses, ``import_bad_column``, ``import_no_title_column``.
+    """
+    return _read(store, body if isinstance(body, dict) else {}, guessing=True)
+
+
+def bring_in(store: Store, body: Dict[str, Any]) -> Dict[str, Any]:
+    """What ``POST /api/rednote/import`` does: store exactly what a preview showed, or nothing.
+
+    ``body`` holds the file again, ``fields`` as the preview answered them, and that preview's
+    ``fingerprint``. Nothing is guessed here except where the header row is: a field ``fields`` does not name
+    is not used. The file is read again, and when what it would store now is not what the fingerprint stands
+    for, the import is refused (``import_changed``). Otherwise every UPDATE and READING_ONLY row is stored in
+    one step (``Store.apply_readings``). No row creates a library item.
+
+    The answer: ``changed`` (items whose numbers were replaced), ``readings_only``, ``unmatched``, ``counts``
+    and ``rows_read`` as in the preview, ``dated_by`` and ``import_day``.
+
+    Raises ``AnalyticsError``: ``import_needs_preview`` for the one-step request of round 1,
+    ``import_no_columns``, ``import_changed``, ``import_nothing_to_change``, and what ``preview`` raises.
+    """
+    body = body if isinstance(body, dict) else {}
+    if any(key in body for key in ("data_base64", "filename", "create_missing")) or not isinstance(body.get("fingerprint"), str):
+        raise _needs_preview()
+    if not isinstance(body.get("fields"), dict):
+        raise _no_columns_chosen()
+    read = _read(store, body, guessing=False)
+    if read["fingerprint"] != body["fingerprint"]:
+        raise _changed()
+    readings = [{"sample_id": entry["sample_id"], "read_on": entry["read_on"], "current": entry["effect"] == UPDATE,
+                 "values": {field: entry[field] for field in NUMBER_FIELDS if entry[field] is not None}}
+                for entry in read["rows"] if entry["effect"] in (UPDATE, READING_ONLY)]
+    if not readings:
+        raise _nothing_to_change()
+    try:
+        store.apply_readings(readings)
+    except KeyError:
+        raise _changed()
+    counts = read["counts"]
+    return {"changed": counts[UPDATE], "readings_only": counts[READING_ONLY], "unmatched": counts[UNMATCHED], "counts": counts,
+            "rows_read": read["rows_read"], "dated_by": read["dated_by"], "import_day": read["import_day"]}
+
+
+# ---- what round 1 left below: the overview and the comments, reviewed in the commits that follow ----
 def _median(nums: List[float]) -> Optional[float]:
     if not nums:
         return None
     s = sorted(nums)
     mid = len(s) // 2
     return float(s[mid]) if len(s) % 2 else (s[mid - 1] + s[mid]) / 2.0
-
-
-def _days_between(d1: Optional[str], d2: Optional[str]) -> Optional[int]:
-    if not d1 or not d2:
-        return None
-    try:
-        a = datetime.date.fromisoformat(d1[:10])
-        b = datetime.date.fromisoformat(d2[:10])
-        return max(0, (b - a).days)
-    except ValueError:
-        return None
-
-
-def sample_velocity(sample: Dict[str, Any], snapshots: List[Dict[str, Any]]) -> Dict[str, Any]:
-    """Compute view & interaction growth velocity from chronological ``metric_snapshots``."""
-    ordered = [s for s in snapshots if isinstance(s, dict)]
-    latest_url = ""
-    for snap in reversed(ordered):
-        if snap.get("note_url"):
-            latest_url = str(snap["note_url"])
-            break
-    if not latest_url and sample.get("note_url"):
-        latest_url = str(sample.get("note_url") or "")
-
-    views_per_day: Optional[float] = None
-    delta_views: Optional[int] = None
-    span_days: Optional[int] = None
-
-    if len(ordered) >= 2:
-        first, last = ordered[0], ordered[-1]
-        v0, v1 = first.get("views"), last.get("views")
-        days = _days_between(first.get("recorded_on"), last.get("recorded_on"))
-        if v0 is not None and v1 is not None:
-            delta_views = int(v1) - int(v0)
-            eff_days = max(1, days) if days is not None else 1
-            span_days = eff_days
-            views_per_day = round(delta_views / float(eff_days), 1)
-    elif sample.get("views") is not None and sample.get("posted_on"):
-        end_day = sample.get("metrics_on") or (ordered[-1].get("recorded_on") if ordered else None)
-        days = _days_between(sample.get("posted_on"), end_day)
-        if days is not None:
-            eff_days = max(1, days)
-            span_days = eff_days
-            views_per_day = round(float(sample["views"]) / float(eff_days), 1)
-
-    return {
-        "snapshot_count": len(ordered),
-        "latest_recorded_on": ordered[-1]["recorded_on"] if ordered else (sample.get("metrics_on") or None),
-        "note_url": latest_url,
-        "delta_views": delta_views,
-        "span_days": span_days,
-        "views_per_day": views_per_day,
-        "history": [
-            {
-                "recorded_on": s.get("recorded_on"),
-                "views": s.get("views"),
-                "likes": s.get("likes"),
-                "collects": s.get("collects"),
-                "comments": s.get("comments"),
-            }
-            for s in ordered[-12:]
-        ],
-    }
 
 
 def _quadrant(view_lift: Optional[float], save_rate: Optional[float], comment_rate: Optional[float],
@@ -275,7 +637,7 @@ def analytics_overview(store: Store) -> Dict[str, Any]:
         else:
             comp_lift = v_lift
 
-        vel = sample_velocity(sample, snaps_by_sample.get(sid, []))
+        vel = views_per_day(sample, snaps_by_sample.get(sid, []))
         quad = _quadrant(v_lift, save_rate, comment_rate, median_save_rate, i_lift)
         sent_rec = sentiments.get(sid)
         sent_summary = sent_rec["summary"] if sent_rec else None
@@ -341,7 +703,7 @@ def analytics_overview(store: Store) -> Dict[str, Any]:
             "interaction_lift": i_lift,
             "composite_lift": comp_lift,
             "quadrant": quad,
-            "velocity": vel,
+            "per_day": vel,
             "sentiment": sent_summary,
             "sentiment_source": sent_rec["source"] if sent_rec else None,
         })
@@ -368,196 +730,6 @@ def analytics_overview(store: Store) -> Dict[str, Any]:
         "videos": videos,
         "top_audience_questions": top_questions[:15],
         "opportunities": opportunities[:12],
-    }
-
-
-# ---- Creator Center batch CSV / TSV / XLSX analytics sync -------------------
-
-def _match_header(header: str, candidates: Tuple[str, ...]) -> bool:
-    norm = re.sub(r"[\s_()（）%％/-]+", "", header.strip().lower())
-    for cand in candidates:
-        c_norm = re.sub(r"[\s_()（）%％/-]+", "", cand.lower())
-        if norm == c_norm or (len(c_norm) >= 2 and c_norm in norm):
-            return True
-    return False
-
-
-def parse_creator_center_rows(raw_bytes: bytes, filename: str = "analytics.csv") -> List[Dict[str, Any]]:
-    """Parse a RedNote Creator Center post-analytics ``.csv``, ``.tsv``, or ``.xlsx`` export into normalized rows."""
-    if len(raw_bytes) > 8 * 1024 * 1024:
-        raise AnalyticsError("file_too_large", "Analytics file exceeds 8 MB limit.", "数据文件超过 8 MB 上限。", 413)
-    lower = (filename or "").lower()
-    grid: List[List[str]] = []
-    if lower.endswith(".xlsx") or raw_bytes[:4] == b"PK\x03\x04":
-        try:
-            sheets = keyword_import._xlsx_rows(raw_bytes)  # type: ignore[attr-defined]
-            grid = [[str(c or "") for c in r] for r in sheets]
-        except Exception:
-            raise AnalyticsError("bad_spreadsheet", "Could not read .xlsx analytics workbook.", "无法读取该 .xlsx 数据表格。", 400)
-    else:
-        text = None
-        for enc in ("utf-8-sig", "utf-16", "gb18030"):
-            try:
-                text = raw_bytes.decode(enc)
-                break
-            except UnicodeDecodeError:
-                continue
-        if text is None:
-            raise AnalyticsError("bad_encoding", "Could not decode analytics text file.", "无法解码该数据文件的字符编码。", 400)
-        lines = [ln for ln in text.splitlines() if ln.strip()][:5000]
-        if not lines:
-            return []
-        delim = "\t" if "\t" in lines[0] else ("," if "," in lines[0] else "｜")
-        if delim == "｜":
-            grid = [[c.strip() for c in ln.split("｜")] for ln in lines]
-        else:
-            reader = csv.reader(io.StringIO("\n".join(lines)), delimiter=delim)
-            grid = [[c.strip() for c in row] for row in reader]
-
-    if len(grid) < 2:
-        return []
-
-    # Locate header row within first 5 rows
-    header_idx = 0
-    col_map: Dict[str, int] = {}
-    for r_idx in range(min(5, len(grid))):
-        row = grid[r_idx]
-        trial: Dict[str, int] = {}
-        for c_idx, cell in enumerate(row[:40]):
-            if "title" not in trial and _match_header(cell, TITLE_HEADERS):
-                trial["title"] = c_idx
-            elif "views" not in trial and _match_header(cell, VIEWS_HEADERS):
-                trial["views"] = c_idx
-            elif "likes" not in trial and _match_header(cell, LIKES_HEADERS):
-                trial["likes"] = c_idx
-            elif "collects" not in trial and _match_header(cell, COLLECTS_HEADERS):
-                trial["collects"] = c_idx
-            elif "comments" not in trial and _match_header(cell, COMMENTS_HEADERS):
-                trial["comments"] = c_idx
-            elif "date" not in trial and _match_header(cell, DATE_HEADERS):
-                trial["date"] = c_idx
-            elif "url" not in trial and _match_header(cell, LINK_HEADERS):
-                trial["url"] = c_idx
-        if "title" in trial and any(k in trial for k in ("views", "likes", "collects", "comments")):
-            header_idx = r_idx
-            col_map = trial
-            break
-
-    if "title" not in col_map:
-        raise AnalyticsError(
-            "missing_columns",
-            "Could not find a note title column and metric columns (views/likes/collects/comments).",
-            "未识别到「笔记标题」列及互动数据列（观看量/点赞/收藏/评论）。",
-            400,
-        )
-
-    parsed_rows: List[Dict[str, Any]] = []
-    for row in grid[header_idx + 1:header_idx + 501]:
-        def cell(key: str) -> str:
-            idx = col_map.get(key)
-            return row[idx].strip() if idx is not None and idx < len(row) else ""
-
-        title = cell("title")
-        if not title:
-            continue
-        views = parse_human_count(cell("views"))
-        likes = parse_human_count(cell("likes"))
-        collects = parse_human_count(cell("collects"))
-        comments = parse_human_count(cell("comments"))
-        if all(x is None for x in (views, likes, collects, comments)):
-            continue
-        link_info = extract_share_link(cell("url"))
-        parsed_rows.append({
-            "title": title[:200],
-            "views": views,
-            "likes": likes,
-            "collects": collects,
-            "comments": comments,
-            "recorded_on": _parse_day(cell("date")),
-            "note_url": link_info["url"],
-        })
-    return parsed_rows
-
-
-def sync_analytics_rows(store: Store, rows: List[Dict[str, Any]], *,
-                        create_missing: bool = False) -> Dict[str, Any]:
-    """Apply parsed RedNote Creator Center rows to matching library items and record time-series snapshots."""
-    samples = store.list_samples()
-    by_norm_title: Dict[str, Dict[str, Any]] = {}
-    for s in samples:
-        norm = re.sub(r"\s+", "", (s.get("title") or "").lower())
-        if norm and norm not in by_norm_title:
-            by_norm_title[norm] = s
-
-    updated_count = 0
-    created_count = 0
-    unmatched: List[str] = []
-
-    for row in rows[:300]:
-        if not isinstance(row, dict):
-            continue
-        title = str(row.get("title") or "").strip()
-        if not title:
-            continue
-        norm = re.sub(r"\s+", "", title.lower())
-        target = by_norm_title.get(norm)
-        if target is None:
-            # Substring fallback if title >= 5 chars
-            for cand_norm, cand_s in by_norm_title.items():
-                if len(norm) >= 5 and (norm in cand_norm or cand_norm in norm):
-                    target = cand_s
-                    break
-
-        metrics = {
-            k: row.get(k)
-            for k in ("views", "likes", "collects", "comments")
-            if _metric(row.get(k)) is not None
-        }
-        if not metrics:
-            continue
-
-        rec_on = _parse_day(str(row.get("recorded_on") or ""))
-        note_url = extract_share_link(str(row.get("note_url") or ""))["url"]
-
-        if target is not None:
-            store.update_sample(target["id"], metrics, record_snapshot=False)
-            store.record_metric_snapshot(
-                target["id"],
-                views=metrics.get("views", target.get("views")),
-                likes=metrics.get("likes", target.get("likes")),
-                collects=metrics.get("collects", target.get("collects")),
-                comments=metrics.get("comments", target.get("comments")),
-                recorded_on=rec_on,
-                note_url=note_url,
-            )
-            updated_count += 1
-        elif create_missing:
-            created = store.create_sample(
-                title=title,
-                text=title,
-                metrics=metrics,
-                kind="script",
-                source_name="RedNote Creator Center",
-            )
-            if rec_on or note_url:
-                store.record_metric_snapshot(
-                    created["id"],
-                    views=created.get("views"),
-                    likes=created.get("likes"),
-                    collects=created.get("collects"),
-                    comments=created.get("comments"),
-                    recorded_on=rec_on,
-                    note_url=note_url,
-                )
-            by_norm_title[norm] = created
-            created_count += 1
-        else:
-            unmatched.append(title)
-
-    return {
-        "updated": updated_count,
-        "created": created_count,
-        "unmatched": unmatched[:30],
     }
 
 
