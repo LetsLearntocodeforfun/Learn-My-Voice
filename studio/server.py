@@ -1048,6 +1048,49 @@ class Handler(BaseHTTPRequestHandler):
         ideas = pipeline.apply_ideas(store, result, focus=focus, lookup=lookup)
         return self._json({"performance": corpus.performance(store.list_samples()), "result": ideas})
 
+    # ---- the plan (studio/planner.py) ------------------------------------------
+    def _plans_api(self, method: str, path: str) -> None:
+        """The plan of videos to make. Each route hands over to ``studio/planner.py``; ``planner.PlannerError`` is
+        turned into the answer by the caller.
+
+        - ``GET /api/plans``: everything the plan page shows (``planner.payload``). It changes nothing.
+        - ``POST /api/plans``: add one plan. ``POST /api/plans/batch`` ``{"plans": [...]}``: add several, all or none.
+        - ``PUT /api/plans/<id>``: change what the request names. ``DELETE /api/plans/<id>``: remove the plan.
+        - ``POST /api/plans/<id>/prompt``: the draft prompt for the plan, for copy and paste. Nothing is sent.
+        - ``POST /api/plans/<id>/draft``: make the plan's script and link the two: ``{"use_ai": true}`` through
+          the AI service in Settings, ``{"reply", "brief_id"}`` from a pasted reply, or empty.
+
+        Every answer that follows a change carries ``planner``: the page's data as it is afterwards.
+        """
+        store, app = self.app.store, self.app
+        route = (method, path)
+        if route == ("GET", "/api/plans"):
+            return self._json(planner.payload(store))
+        if route == ("POST", "/api/plans"):
+            created = planner.create_plan_item(store, self._read_json())
+            return self._json({"plan": created, "planner": planner.payload(store)}, 201)
+        if route == ("POST", "/api/plans/batch"):
+            created = planner.create_many(store, self._read_json())
+            return self._json({"plans": created, "planner": planner.payload(store)}, 201)
+        m = re.fullmatch(r"/api/plans/([0-9a-f]{12})", path)
+        if m and method == "PUT":
+            changed = planner.change(store, m.group(1), self._read_json())
+            return self._json({"plan": changed, "planner": planner.payload(store)})
+        if m and method == "DELETE":
+            planner.delete(store, m.group(1))
+            return self._json({"ok": True, "planner": planner.payload(store)})
+        m = re.fullmatch(r"/api/plans/([0-9a-f]{12})/(prompt|draft)", path)
+        if m and method == "POST":
+            body = self._read_json()
+            if m.group(2) == "prompt":
+                return self._json(planner.script_prompt(store, m.group(1)))
+            if body.get("use_ai") is True:
+                self._require_ai()
+            made = planner.make_script(store, m.group(1), body, transport=app.transport,
+                                       default_title=UNTITLED[self._lang(body)])
+            return self._json(dict(made, planner=planner.payload(store)), 201)
+        raise ApiError(404, "not_found")
+
     # ---- backing up everything, and restoring a backup (studio/backup.py) ------
     def _gated_api(self, method: str, path: str) -> None:
         """Every request to ``/api/`` runs inside ``Backups.passage``.
@@ -1810,50 +1853,13 @@ class Handler(BaseHTTPRequestHandler):
                 raise ApiError(exc.status, exc.code, exc.message, exc.message_zh)
             return self._json(out)
 
-        # ---- upcoming video content planner ---------------------------------
-        if route == ("GET", "/api/plans"):
-            return self._json(planner.payload(store))
-        if route == ("POST", "/api/plans"):
+        # ---- the plan: videos the creator means to make (studio/planner.py) ----
+        # GET /api/plans reads and writes nothing. Every refusal is the planner's, in both languages.
+        if path == "/api/plans" or path.startswith("/api/plans/"):
             try:
-                created = planner.create_plan_item(store, self._read_json())
+                return self._plans_api(method, path)
             except planner.PlannerError as exc:
                 raise ApiError(exc.status, exc.code, exc.message, exc.message_zh)
-            return self._json({"plan": created, "planner": planner.payload(store)}, 201)
-        m = re.fullmatch(r"/api/plans/([0-9a-f]{12})", path)
-        if m:
-            pid = m.group(1)
-            if store.get_video_plan(pid) is None:
-                raise ApiError(404, "not_found")
-            if method == "PUT":
-                updated = store.update_video_plan(pid, self._read_json())
-                return self._json({"plan": updated, "planner": planner.payload(store)})
-            if method == "DELETE":
-                store.delete_video_plan(pid)
-                return self._json({"ok": True, "planner": planner.payload(store)})
-        m = re.fullmatch(r"/api/plans/([0-9a-f]{12})/draft", path)
-        if m and method == "POST":
-            pid = m.group(1)
-            plan = store.get_video_plan(pid)
-            if plan is None:
-                raise ApiError(404, "not_found")
-            body = self._read_json()
-            params = planner.draft_payload_for_plan(plan)
-            if bool(body.get("use_ai")):
-                self._require_ai()
-                script = pipeline.generate_script(
-                    store, notes=params["notes"], target_sec=params["target_sec"],
-                    video_format=params["video_format"], transport=app.transport,
-                    default_title=params["title"] or UNTITLED[self._lang(body)],
-                    keywords=params["keywords"],
-                )
-            else:
-                script = store.create_script(
-                    title=params["title"], notes=params["notes"],
-                    target_sec=params["target_sec"], video_format=params["video_format"],
-                    keywords=params["keywords"],
-                )
-            updated_plan = store.update_video_plan(pid, {"script_id": script["id"], "status": "SCRIPTING"})
-            return self._json({"plan": updated_plan, "script": script}, 201)
 
         # ---- full-service voice & tone analyzer -----------------------------
         if route == ("GET", "/api/tone"):
