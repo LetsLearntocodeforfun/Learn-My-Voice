@@ -881,12 +881,8 @@ class Handler(BaseHTTPRequestHandler):
         sponsored = body.get("is_sponsored") if isinstance(body.get("is_sponsored"), bool) else None
         try:
             if not video_ingest.ai_video_info(app.store)["ai_video_capable"]:
-                raise ApiError(
-                    400,
-                    "ai_video_not_configured",
-                    "Connect a Gemini or OpenAI API key in Settings first, or use copy-and-paste.",
-                    "请先在「设置」连接 Gemini 或 OpenAI 密钥，或使用复制粘贴方式。",
-                )
+                msg_en, msg_zh = video_ingest.ai_video_refusal_messages(app.store)
+                raise ApiError(400, "ai_video_not_configured", msg_en, msg_zh)
             job = app.jobs.start(
                 TRANSCRIBE_JOB,
                 lambda progress: video_ingest.transcribe_via_ai(

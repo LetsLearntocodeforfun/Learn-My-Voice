@@ -23,6 +23,7 @@ Object.assign(I18N.zh, {
   conf_low: '把握：低', conf_medium: '把握：中', conf_high: '把握：高', generated_at: '生成于',
   local_models: '本地模型', local_url: '本地模型地址',
   local_hint: '需要先在这台电脑上打开 Ollama 或 LM Studio，并下载好模型。内容不会离开这台电脑。',
+  anthropic_hint: '可用于写初稿、学习声音档案、选题建议、逐句润色与评论总结；不支持联网查热词，也不直接上传音视频（视频请用本机离线转写、.srt 字幕或复制粘贴）。此接口按文档编写，尚未连接真实 Anthropic 服务实测。',
   err_no_samples: '素材库里还没有已确认的非商单素材（视频转写需要先点确认）。', err_bad_file: '这个文件读不了，请换成 .txt 或 .docx。',
   err_empty_text: '内容是空的。', err_bad_rate: '语速请填 100 到 500 之间的数字。', err_no_profile: '请先学习你的声音。',
 });
@@ -47,6 +48,7 @@ Object.assign(I18N.en, {
   conf_low: 'Confidence: low', conf_medium: 'Confidence: medium', conf_high: 'Confidence: high', generated_at: 'Generated',
   local_models: 'Local model', local_url: 'Local server address',
   local_hint: 'Ollama or LM Studio must be running on this computer with a model downloaded. Nothing leaves the computer.',
+  anthropic_hint: 'Used for drafting, voice learning, topic ideas, line editing and comment summaries; does not include live web search or direct video/audio upload (use offline transcription, .srt subtitles, or copy & paste for videos). Written from documentation and not yet verified against the live Anthropic service.',
   err_no_samples: 'There is no confirmed non-sponsored material yet (confirm video transcripts first).', err_bad_file: 'This file could not be read. Use .txt or .docx.',
   err_empty_text: 'The text is empty.', err_bad_rate: 'Enter a rate between 100 and 500.', err_no_profile: 'Learn {@names} voice first.',
 });
@@ -375,8 +377,9 @@ function renderSettings() {
       ? `<div class="banner" style="margin-top:14px">${esc(t('key_unreadable_warn'))}</div>` : '';
     const plainWarn = st.keystore_unavailable_path
       ? `<div class="banner" style="margin-top:14px">${esc(tf('key_plaintext_warn', { path: st.keystore_unavailable_path }))}</div>` : '';
+    const providerHint = p === 'anthropic' ? `<p class="hint" id="anthropic-hint">${esc(t('anthropic_hint'))}</p>` : '';
     access = `${unreadWarn}${plainWarn}<label class="field" for="key">${esc(t('api_key'))}</label>
-       <input type="password" id="key" autocomplete="off" placeholder="${esc(t(st.keys[p] ? 'key_saved_ph' : 'key_ph'))}">`;
+       <input type="password" id="key" autocomplete="off" placeholder="${esc(t(st.keys[p] ? 'key_saved_ph' : 'key_ph'))}">${providerHint}`;
   }
   const modelPart = isManual ? '' : `
     <div class="row" style="margin-top:14px"><button class="btn" id="connect">${esc(t('connect'))}</button></div>
@@ -448,7 +451,12 @@ function renderSettings() {
     b.onclick = () => { settingsForm.localUrl = LOCAL_PRESETS[b.dataset.preset]; settingsForm.models = []; renderSettings(); };
   });
   $view.querySelectorAll('[data-provider]').forEach((b) => {
-    b.onclick = () => { settingsForm.provider = b.dataset.provider; settingsForm.models = []; settingsForm.model = ''; renderSettings(); };
+    b.onclick = () => {
+      settingsForm.provider = b.dataset.provider;
+      settingsForm.models = [];
+      settingsForm.model = st.provider === b.dataset.provider ? (st.model || '') : '';
+      renderSettings();
+    };
   });
   if (!isManual) {
     const $model = document.getElementById('model');

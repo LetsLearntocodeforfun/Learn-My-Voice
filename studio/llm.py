@@ -2,6 +2,11 @@
 
 Providers:
 - ``gemini`` / ``openai``: cloud, need an API key.
+- ``anthropic``: cloud (Anthropic Messages API), needs an API key. Written from
+  memory of the vendor's documentation because the vendor pages could not be
+  opened in this session (21 November 2026), and NEVER run against the live
+  Anthropic service. No web-search tool or direct video/audio upload is wired
+  for ``anthropic``.
 - ``local``: any OpenAI-compatible server on this machine (Ollama, LM Studio,
   llama.cpp, mlx-lm). No key; nothing leaves the computer.
 
@@ -25,6 +30,8 @@ OPENAI_BASE = "https://api.openai.com/v1"
 GEMINI_BASE = "https://generativelanguage.googleapis.com/v1beta"
 ANTHROPIC_BASE = "https://api.anthropic.com/v1"
 ANTHROPIC_VERSION = "2023-06-01"
+ANTHROPIC_MAX_TOKENS = 8192
+ANTHROPIC_FALLBACK_MAX_TOKENS = 4096        # older Claude models cap output at 4,096 tokens
 SEARCH_PROVIDERS = ("gemini", "openai")     # the providers whose API can search the web while answering
 GEMINI_API_REVISION = "2026-05-20"          # the revision of Gemini's Interactions API that ``search_json`` is written for
 DEFAULT_LOCAL_BASE = "http://127.0.0.1:11434/v1"  # Ollama's OpenAI-compatible endpoint
@@ -51,7 +58,7 @@ MAX_LOCAL_MODEL_CHARS = 500
 MAX_CLOUD_MODEL_CHARS = 200
 _SECRET_HEADERS = ("authorization", "x-goog-api-key", "x-api-key", "proxy-authorization")
 _KEY_PATTERNS = (
-    re.compile(r"sk-(?:proj|ant|svcacct|admin|live|test|or)-[A-Za-z0-9_-]{6,}"),
+    re.compile(r"sk-(?:proj|ant|svcacct|admin|live|test|or)-[A-Za-z0-9_-]{4,}"),
     re.compile(r"(?<![A-Za-z])sk-[A-Za-z0-9_-]{8,}"),
     re.compile(r"AIza[A-Za-z0-9_-]{12,}"),
 )
@@ -103,8 +110,8 @@ def validate_model_name(model: str, provider: str = "local") -> str:
     r"""Validate a model identifier according to how ``provider`` transmits it.
 
     - ``gemini``: placed into a URL path segment, so ``/``, ``?``, ``#``, ``\``, ``..`` and spaces are refused.
-    - ``openai``: placed into a JSON request body; printable non-whitespace IDs up to 200 chars without
-      ``?``, ``#``, ``\`` or ``..`` are accepted (including fine-tune IDs with colons and ``@``).
+    - ``openai`` / ``anthropic``: placed into a JSON request body; printable non-whitespace IDs up to 200 chars
+      without ``?``, ``#``, ``\`` or ``..`` are accepted (including dated or fine-tune IDs with colons and ``@``).
     - ``local`` (default): placed only into a JSON body sent to a loopback server; any printable non-control
       characters up to 500 chars are accepted so file paths (``../models/x.gguf``, ``C:\models\x.gguf``),
       spaces (``Llama 3 8B``), brackets, ``+``, and CJK names work as reported by the local server.
@@ -118,12 +125,13 @@ def validate_model_name(model: str, provider: str = "local") -> str:
     if provider == "gemini":
         _gemini_model_id(cleaned)
         return cleaned
-    if provider == "openai":
+    if provider in ("openai", "anthropic"):
         if len(cleaned) > MAX_CLOUD_MODEL_CHARS:
             raise LLMError("Model name is too long (limit %d characters)" % MAX_CLOUD_MODEL_CHARS, "bad_model",
                            "模型名称太长（上限 %d 个字符）" % MAX_CLOUD_MODEL_CHARS)
         if any(ch.isspace() or ch in "?#\\" for ch in cleaned) or ".." in cleaned:
-            raise LLMError("Invalid OpenAI model name", "bad_model", "OpenAI 模型名称格式不正确")
+            label = "Anthropic" if provider == "anthropic" else "OpenAI"
+            raise LLMError("Invalid %s model name" % label, "bad_model", "%s 模型名称格式不正确" % label)
         return cleaned
     if len(cleaned) > MAX_LOCAL_MODEL_CHARS:
         raise LLMError("Model name is too long (limit %d characters)" % MAX_LOCAL_MODEL_CHARS, "bad_model",
@@ -427,7 +435,7 @@ def _send_raw(method: str, url: str, headers: Dict[str, str], data: Optional[byt
                 exc.close()                 # whatever else the server goes on sending is not waited for
             try:
                 error = json.loads(detail).get("error", detail)
-                detail = error.get("message", detail) if isinstance(error, dict) else error
+                detail = (error.get("message") or detail) if isinstance(error, dict) else error
             except (ValueError, AttributeError):
                 pass
             safe_detail = _redact_secrets(str(detail) or exc.reason, headers)[:300]
@@ -511,9 +519,17 @@ def list_models(provider: str, api_key: str = "", transport: Optional[Transport]
         data = call("GET", ANTHROPIC_BASE + "/models?limit=100",
                     {"x-api-key": api_key, "anthropic-version": ANTHROPIC_VERSION}, None)
         if not isinstance(data, dict) or not isinstance(data.get("data", []), list):
-            raise LLMError("Unexpected Anthropic model list shape", "bad_response")
-        ids = [m["id"] for m in (data.get("data") or []) if isinstance(m, dict) and isinstance(m.get("id"), str) and m["id"]]
-        return sorted(ids)
+            raise LLMError("Unexpected Anthropic model list shape", "bad_response",
+                           "Anthropic 返回的模型列表格式无法识别")
+        ids: List[str] = []
+        for m in data.get("data") or []:
+            if not isinstance(m, dict) or not isinstance(m.get("id"), str):
+                continue
+            try:
+                ids.append(validate_model_name(m["id"], "anthropic"))
+            except LLMError:
+                continue
+        return sorted(set(ids))
     base, headers = _openai_style(provider, api_key, base_url)
     data = call("GET", base + "/models", headers, None)
     if not isinstance(data, dict) or not isinstance(data.get("data", []), list):
@@ -1023,6 +1039,11 @@ def parse_manual_reply(text: str, task: str) -> Dict[str, Any]:
     )
 
 
+def _is_http_400_mentioning(exc: LLMError, term: str) -> bool:
+    """True when ``exc`` is an HTTP 400 error whose message names ``term``."""
+    return exc.code == "http" and str(exc).startswith("HTTP 400:") and term.lower() in str(exc).lower()
+
+
 def complete_json(provider: str, api_key: str, model: str, system: str, user: str,
                   transport: Optional[Transport] = None, base_url: Optional[str] = None,
                   temperature: Optional[float] = None) -> Dict[str, Any]:
@@ -1057,32 +1078,57 @@ def complete_json(provider: str, api_key: str, model: str, system: str, user: st
         safe_model = validate_model_name(model, "anthropic")
         req_body: Dict[str, Any] = {
             "model": safe_model,
-            "max_tokens": 8192,
+            "max_tokens": ANTHROPIC_MAX_TOKENS,
             "system": system + "\n\nReturn ONLY a single valid JSON object with no surrounding prose.",
             "messages": [{"role": "user", "content": user}],
         }
         if temp_val is not None:
             req_body["temperature"] = temp_val
-        data = call(
-            "POST",
-            ANTHROPIC_BASE + "/messages",
-            {"x-api-key": api_key, "anthropic-version": ANTHROPIC_VERSION},
-            req_body,
-        )
+        ant_headers = {"x-api-key": api_key, "anthropic-version": ANTHROPIC_VERSION}
         try:
-            if not isinstance(data, dict):
-                raise TypeError("response is not an object")
-            blocks = data["content"]
-            if not isinstance(blocks, list):
-                raise TypeError("content is not a list")
-            text = "".join(
-                b.get("text", "") for b in blocks
-                if isinstance(b, dict) and b.get("type") == "text" and isinstance(b.get("text", ""), str)
+            data = call("POST", ANTHROPIC_BASE + "/messages", ant_headers, dict(req_body))
+        except LLMError as exc:
+            if req_body.get("max_tokens") == ANTHROPIC_MAX_TOKENS and _is_http_400_mentioning(exc, "max_tokens"):
+                req_body = dict(req_body, max_tokens=ANTHROPIC_FALLBACK_MAX_TOKENS)
+                data = call("POST", ANTHROPIC_BASE + "/messages", ant_headers, dict(req_body))
+            else:
+                raise
+        if not isinstance(data, dict):
+            raise LLMError("Unexpected Anthropic response shape", "bad_response",
+                           "Anthropic 返回的内容格式无法识别")
+        stop_reason = data.get("stop_reason") if isinstance(data.get("stop_reason"), str) else ""
+        if stop_reason == "max_tokens":
+            raise LLMError(
+                "The Anthropic model ran out of output space before finishing its JSON reply (stop_reason: max_tokens). "
+                "Try a shorter request or a model with a higher output limit.",
+                "bad_response",
+                "Anthropic 模型在写完 JSON 回复前达到了输出长度上限（stop_reason: max_tokens）。"
+                "请缩短输入内容，或换一个输出上限更高的模型。",
             )
-            if not text.strip():
-                raise ValueError("empty content")
-        except (KeyError, IndexError, TypeError, ValueError, AttributeError):
-            raise LLMError("Unexpected Anthropic response shape", "bad_response")
+        blocks = data.get("content")
+        if stop_reason == "refusal" or (
+            isinstance(blocks, list) and any(isinstance(b, dict) and b.get("type") == "refusal" for b in blocks)
+        ):
+            raise LLMError(
+                "The Anthropic model refused this request (stop_reason: refusal).",
+                "bad_response",
+                "Anthropic 模型拒绝了这个请求（stop_reason: refusal）。",
+            )
+        if not isinstance(blocks, list):
+            raise LLMError("Unexpected Anthropic response shape", "bad_response",
+                           "Anthropic 返回的内容格式无法识别")
+        text = "".join(
+            b.get("text", "") for b in blocks
+            if isinstance(b, dict) and b.get("type") == "text" and isinstance(b.get("text", ""), str)
+        )
+        if not text.strip():
+            note = " (stop_reason: %s)" % stop_reason if stop_reason else ""
+            note_zh = "（stop_reason: %s）" % stop_reason if stop_reason else ""
+            raise LLMError(
+                "The Anthropic model returned no text%s; the request may have been refused or stopped early." % note,
+                "bad_response",
+                "Anthropic 模型没有返回可用文字%s，请求可能被拒绝或提前中止。" % note_zh,
+            )
         return parse_json_text(text)
 
     base, headers = _openai_style(provider, api_key, base_url)

@@ -110,6 +110,30 @@ def ai_video_info(store: Store) -> Dict[str, Any]:
     }
 
 
+def ai_video_refusal_messages(store: Store) -> Tuple[str, str]:
+    """Explain in English and Chinese why direct AI video/audio upload is unavailable for the current provider."""
+    config = store.load_config()
+    provider = str(config.get("provider") or "")
+    if provider == "anthropic":
+        return (
+            "Anthropic Claude does not take video or audio files directly here. Transcribe offline on this computer, "
+            "export .srt subtitles from CapCut/Jianying, use copy-and-paste, or switch to Gemini or OpenAI in Settings.",
+            "Anthropic Claude 在这里不直接接收音视频文件。请使用本机离线转写、从剪映导出 .srt 字幕、"
+            "使用复制粘贴方式，或到「设置」切换到 Gemini 或 OpenAI。",
+        )
+    if provider == "local":
+        return (
+            "The local text model does not take video or audio files directly. Transcribe offline on this computer, "
+            "export .srt subtitles from CapCut/Jianying, use copy-and-paste, or connect Gemini or OpenAI in Settings.",
+            "本地文本模型不直接接收音视频文件。请使用本机离线转写、从剪映导出 .srt 字幕、"
+            "使用复制粘贴方式，或到「设置」连接 Gemini 或 OpenAI。",
+        )
+    return (
+        "Connect a Gemini or OpenAI API key in Settings first, or use the copy-and-paste button.",
+        "请先到「设置」连接 Gemini 或 OpenAI 密钥，或使用复制粘贴方式。",
+    )
+
+
 def video_ingest_prompt(
     title: str = "",
     caption: str = "",
@@ -315,11 +339,8 @@ def transcribe_via_ai(
         provider = str(config.get("provider") or "")
         api_key = str(config["keys"].get(provider) or "")
         if provider not in AI_VIDEO_PROVIDERS or not api_key:
-            raise JobError(
-                "not_configured",
-                "Connect a Gemini or OpenAI API key in Settings first, or use the copy-and-paste button.",
-                "请先到「设置」连接 Gemini 或 OpenAI 密钥，或使用复制粘贴方式。",
-            )
+            msg_en, msg_zh = ai_video_refusal_messages(store)
+            raise JobError("not_configured", msg_en, msg_zh)
 
         try:
             size = path.stat().st_size
