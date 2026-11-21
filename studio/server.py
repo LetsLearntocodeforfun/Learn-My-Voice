@@ -1748,27 +1748,16 @@ class Handler(BaseHTTPRequestHandler):
                 raise ApiError(exc.status, exc.code, exc.message, exc.message_zh)
             return self._json(res, 201)
 
-        # ---- RedNote view-count velocity, Creator Center import & sentiment -
+        # ---- numbers by day, a table from the Creator Center, comments (studio/rednote_analytics.py) ----
         if route == ("GET", "/api/rednote/overview"):
             return self._json(rednote_analytics.analytics_overview(store))
-        if route == ("POST", "/api/rednote/extract-link"):
-            return self._json(rednote_analytics.extract_share_link(self._read_json().get("text")))
+        if route == ("POST", "/api/rednote/import/preview"):
+            # A table the creator saved from the Creator Center: {"name", "text" or "file_base64"} and, once the
+            # creator has picked them, "fields". Looking stores nothing.
+            return self._json(_counting(lambda: rednote_analytics.preview(store, self._read_json())))
         if route == ("POST", "/api/rednote/import"):
-            body = self._read_json()
-            b64 = body.get("data_base64")
-            if not isinstance(b64, str) or not b64.strip():
-                raise ApiError(400, "missing_file", "Choose a CSV, TSV, or XLSX file to import.",
-                               "请选择要导入的 CSV、TSV 或 XLSX 数据表。")
-            try:
-                raw_bytes = base64.b64decode(b64, validate=False)
-            except Exception:
-                raise ApiError(400, "bad_base64", "Invalid file encoding.", "文件编码无效。")
-            try:
-                rows = rednote_analytics.parse_creator_center_rows(raw_bytes, str(body.get("filename") or "analytics.csv"))
-                synced = rednote_analytics.sync_analytics_rows(store, rows, create_missing=bool(body.get("create_missing")))
-            except rednote_analytics.AnalyticsError as exc:
-                raise ApiError(exc.status, exc.code, exc.message, exc.message_zh)
-            return self._json(dict(synced, overview=rednote_analytics.analytics_overview(store)), 201)
+            # The same file, the columns, and the "fingerprint" of the preview: exactly what that preview showed is stored.
+            return self._json(_counting(lambda: rednote_analytics.bring_in(store, self._read_json())), 201)
 
         m = re.fullmatch(r"/api/samples/([0-9a-f]{12})/comments", path)
         if m:
@@ -1785,7 +1774,7 @@ class Handler(BaseHTTPRequestHandler):
                     "comments": comments,
                     "sentiment": sent["summary"] if sent else rednote_analytics.build_local_sentiment_summary(sample, comments),
                     "sentiment_source": sent["source"] if sent else "local",
-                    "velocity": rednote_analytics.sample_velocity(sample, snaps),
+                    "per_day": rednote_analytics.views_per_day(sample, snaps),
                 })
             if method == "POST":
                 body = self._read_json()
@@ -1889,6 +1878,15 @@ def _posting(work: Any) -> Any:
         raise _stale_script(exc)
     except TextTooLong as exc:
         raise ApiError(413, exc.code, exc.message, exc.message_zh, extra={"limit": exc.limit})
+
+
+def _counting(work: Any) -> Any:
+    """Run a step about numbers or comments, turning its refusals (``rednote_analytics.AnalyticsError``) into answers
+    a page can show, in both languages."""
+    try:
+        return work()
+    except rednote_analytics.AnalyticsError as exc:
+        raise ApiError(exc.status, exc.code, exc.message, exc.message_zh)
 
 
 def _referring(work: Any) -> Any:
