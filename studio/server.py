@@ -56,7 +56,7 @@ from typing import Any, Dict, List, Optional, Tuple
 
 from . import checks, corpus, creator, exports, keyword_import, llm, pipeline, textstats, timing, transcribe, trends
 from . import buildinfo, hooks, outside, posted, refs, suggest, video_ingest, wordlist
-from . import planner, rednote_analytics, tone_analyzer, updater
+from . import planner, rednote_analytics, soundstats, tone_analyzer, updater
 from . import setup as setup_status
 from . import backup
 from .jobs import JobError, Jobs, Progress
@@ -1987,7 +1987,10 @@ def _transcribe_upload(app: App, upload: Dict[str, Any], title: str, is_sponsore
 
     The item waits for the creator's confirmation (``needs_review``): its timing counts at once, its
     wording only after they have read it. ``timing.unclear_dropped`` is how many stretches the
-    transcriber left out because it could not make them out, so the page can say so.
+    transcriber left out because it could not make them out, so the page can say so. ``timing.sound`` is
+    what the transcriber measured from the sound it extracted (``soundstats.measure``: pauses, loudness
+    range, pitch), checked before it is kept; the upload itself is a video or a compressed recording and
+    is never measured here.
 
     The uploaded copy is deleted on the way out whatever happened. The creator
     is told that no copy of the video is kept, so that has to hold for a
@@ -2011,9 +2014,9 @@ def _transcribe_upload(app: App, upload: Dict[str, Any], title: str, is_sponsore
             raise JobError("no_speech", "No speech was found in this file, so nothing was added to your material.",
                            "这个文件里没有听到说话的声音，所以没有加进你的素材。")
         measured = dict(timing.timing_stats(segments), unclear_dropped=dropped)
-        prosody = tone_analyzer.analyze_wav_prosody(Path(path))
-        if prosody is not None:
-            measured["acoustic_prosody"] = prosody
+        sound = soundstats.clean(result.get("sound"))
+        if sound is not None:
+            measured["sound"] = sound
         try:
             if attach_to is not None:
                 sample = posted.attach_transcript(app.store, attach_to, text=text, kind="video", timing=measured,

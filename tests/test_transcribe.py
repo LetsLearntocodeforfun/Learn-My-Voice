@@ -26,7 +26,7 @@ import wave
 from pathlib import Path
 from unittest import mock
 
-from studio import timing, transcribe, whisper_worker
+from studio import soundstats, timing, transcribe, whisper_worker
 
 # Transcription is for a Mac. What it is made of (opening a folder to learn where it really is, the programs it
 # starts) has no counterpart on Windows, where the app refuses to transcribe before any of that runs. The tests
@@ -40,6 +40,9 @@ REPLY = {
     "language": "zh", "duration_sec": 12.0,
 }
 AWKWARD_NAME = "my video; rm -rf ~ $(whoami) 'q' 视频.mp4"
+# What soundstats.measure says of twelve seconds of silence, which is what the stand-in converter writes.
+SILENT_SOUND = {"measured": True, "measured_sec": 12.0, "duration_sec": 12.0, "cut_short": False, "sound_pct": 0,
+                "pauses": None, "loudness": None, "pitch": None}
 
 
 def write_wav(path, seconds, rate=16000, channels=1, tone_on=None):
@@ -53,6 +56,23 @@ def write_wav(path, seconds, rate=16000, channels=1, tone_on=None):
         out.setsampwidth(2)
         out.setframerate(rate)
         out.writeframes(b"".join(frames))
+
+
+def write_talk(path, stretches=11, hz=220, rate=16000):
+    """A WAV with what the measuring looks for in speech: 1.2 s of a tone, then half a second of silence, ``stretches`` times.
+
+    Every second stretch is three times as loud as the others (9.5 dB), so there is a loudness range as well.
+    """
+    samples = []
+    for n in range(stretches):
+        height = 9000 if n % 2 else 3000
+        samples += [int(height * math.sin(2 * math.pi * hz * i / rate)) for i in range(int(1.2 * rate))]
+        samples += [0] * (rate // 2)
+    with wave.open(str(path), "wb") as out:
+        out.setnchannels(1)
+        out.setsampwidth(2)
+        out.setframerate(rate)
+        out.writeframes(struct.pack("<%dh" % len(samples), *samples))
 
 
 class FakeTools:
@@ -71,6 +91,7 @@ class FakeTools:
         self.pip_output = "ERROR: something technical"
         self.readable = lambda source: True  # which inputs afconvert can read
         self.wav_seconds = 12.0
+        self.write_audio = None              # what afconvert writes instead of silence: a function of the path
         self.reply = REPLY
         self.worker_exit = 0
         self.worker_out = None
@@ -118,7 +139,10 @@ class FakeTools:
         elif kind == "afconvert":
             if not self.readable(args[-2]):
                 return 1, "", "afconvert: this file type is not supported"
-            write_wav(args[-1], self.wav_seconds)
+            if self.write_audio is not None:
+                self.write_audio(args[-1])
+            else:
+                write_wav(args[-1], self.wav_seconds)
         elif kind == "ffmpeg":
             write_wav(args[-1], self.wav_seconds)
         elif kind == "avconvert":
@@ -590,7 +614,8 @@ class TranscribeFileTest(Sandbox):
         with mock.patch.dict(os.environ, {"HF_TOKEN": "secret", "HTTPS_PROXY": "http://proxy:8080", "HF_HUB_OFFLINE": "0"}):
             result = transcribe.transcribe_file(str(source), lambda stage, fraction: seen.append((stage, fraction)))
         self.assertEqual(result, {"segments": REPLY["segments"], "language": "zh", "duration_sec": 12.0,
-                                  "model": "mlx-community/whisper-large-v3-turbo", "unclear_dropped": 0})
+                                  "model": "mlx-community/whisper-large-v3-turbo", "unclear_dropped": 0,
+                                  "sound": SILENT_SOUND})
         self.assertEqual(seen, [("audio", None), ("transcribe", None), ("done", 1.0)])
         stats = timing.timing_stats(result["segments"])                           # the shape timing.py uses
         self.assertEqual((stats["units"], stats["spoken_sec"], stats["pauses"], stats["speaking_rate_cpm"]), (22, 11.0, 1, 120))
@@ -607,6 +632,34 @@ class TranscribeFileTest(Sandbox):
         self.assertFalse({"HF_TOKEN", "HTTPS_PROXY", "https_proxy"} & set(env))
         self.assertGreaterEqual(timeout, 900)
         self.assertFalse(Path(wav).parent.exists())                               # the temporary audio is gone
+
+    @mac_pipeline
+    def test_the_sound_is_measured_from_the_wav_that_was_extracted_not_from_the_file_that_was_given(self):
+        """What is given is a video or an .m4a. Measured as it is, it gives nothing: that is what round 1 did."""
+        self.tools.write_audio = write_talk
+        source = self.video("clip.m4a")
+        self.assertEqual(soundstats.measure(source), {"measured": False, "reason": "unreadable"})
+        sound = transcribe.transcribe_file(source)["sound"]
+        self.assertEqual((sound["measured"], sound["measured_sec"], sound["cut_short"], sound["sound_pct"]), (True, 18.7, False, 71))
+        self.assertEqual(sound["pauses"], {"count": 10, "median_sec": 0.5, "per_minute": 33.0})     # ten silences between eleven stretches
+        self.assertEqual(sound["loudness"], {"range_db": 9.5, "seconds": 18})                      # three times as loud is 9.5 dB
+        self.assertEqual((sound["pitch"]["median_hz"], sound["pitch"]["span_semitones"]), (220, 0.0))
+        self.assertEqual(self.tools.kinds(), ["afconvert", "worker"])                              # no program was started for it
+        wav = Path(self.tools.calls[0][0][-1])
+        self.assertFalse(wav.parent.exists())                                                      # and the WAV is gone as before
+        again = self.tmp / "again.wav"
+        write_talk(again)
+        self.assertEqual(soundstats.measure(again), sound)                                         # the same file, the same numbers
+        self.assertEqual(soundstats.clean(sound), sound)                                           # in the shape that is kept
+
+    @mac_pipeline
+    def test_a_transcript_is_not_lost_when_the_sound_cannot_be_measured(self):
+        def another_shape(path):
+            write_wav(path, 2.0, rate=44100)                                      # not what the converter is asked for
+
+        self.tools.write_audio = another_shape
+        result = transcribe.transcribe_file(self.video())
+        self.assertEqual((result["segments"], result["sound"]), (REPLY["segments"], {"measured": False, "reason": "other_format"}))
 
     @mac_pipeline
     def test_long_audio_gets_a_longer_timeout(self):
@@ -769,6 +822,27 @@ class RealAudioToolTest(unittest.TestCase):
             peak = max(abs(v) for v in struct.unpack("<%dh" % out.getnframes(), out.readframes(out.getnframes())))
         self.assertGreater(peak, 4000)
 
+    def test_the_sound_of_a_real_m4a_is_measured_through_the_header_the_converter_writes_for_it(self):
+        """An upload is a video or an .m4a. Its sound comes out of the converter under the "extensible" header."""
+        talk = self.tmp / "talk.wav"
+        write_talk(talk)
+        m4a = self.tmp / "like a phone recording.m4a"
+        self.assertEqual(transcribe._run(["/usr/bin/afconvert", "-f", "m4af", "-d", "aac", talk, m4a])[0], 0)
+        self.assertEqual(soundstats.measure(m4a), {"measured": False, "reason": "unreadable"})     # the upload itself: nothing
+        wav = self.tmp / "out.wav"
+        transcribe._extract_audio(m4a, wav, self.tmp)
+        with open(str(wav), "rb") as handle:
+            self.assertEqual(handle.read(22)[20:], b"\xfe\xff")                   # the header Python 3.9's wave refuses
+            handle.seek(0)
+            header = soundstats.wav_header(handle)
+        self.assertEqual((header["pcm"], header["channels"], header["rate"], header["bits"]), (True, 1, 16000, 16))
+        sound = soundstats.measure(wav)
+        self.assertTrue(sound["measured"])
+        self.assertAlmostEqual(sound["measured_sec"], 18.7, delta=0.2)            # AAC pads the ends a little
+        self.assertEqual((sound["pauses"]["count"], sound["pauses"]["median_sec"]), (10, 0.5))
+        self.assertAlmostEqual(sound["loudness"]["range_db"], 9.5, delta=0.5)     # AAC is not exact
+        self.assertAlmostEqual(sound["pitch"]["median_hz"], 220, delta=2)
+
     def test_a_file_that_is_not_media_has_no_audio(self):
         note = self.tmp / "notes.mp4"
         note.write_text("这不是视频")
@@ -808,8 +882,11 @@ class RealAudioToolTest(unittest.TestCase):
                 stack.enter_context(mock.patch.object(transcribe, name, value))
             stack.enter_context(mock.patch.dict(os.environ, {"HF_HUB_OFFLINE": "0", "HF_TOKEN": "secret"}))
             result = transcribe.transcribe_file(self.source)
+        sound = result.pop("sound")                                               # one second of a tone, as the real converter made it
         self.assertEqual(result, {"segments": [{"start": 0.0, "end": 0.9, "text": "好啦"}], "language": "zh",
                                   "duration_sec": 1.0, "model": transcribe.MODEL, "unclear_dropped": 0})
+        self.assertEqual((sound["measured"], sound["measured_sec"], sound["sound_pct"], sound["pauses"]["count"], sound["loudness"]),
+                         (True, 1.0, 100, 0, None))
         record = json.loads(seen.read_text())
         self.assertEqual((record["shape"], record["flags"], record["outside_blocked"]), ([1, 2, 16000, 16000], 1, True))
         self.assertFalse(blocked.exists())

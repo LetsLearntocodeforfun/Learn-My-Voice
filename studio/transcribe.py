@@ -70,7 +70,7 @@ import wave
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional, Sequence, Tuple
 
-from . import buildinfo
+from . import buildinfo, soundstats
 
 try:
     import fcntl                        # not on every system this module can be imported on; only a Mac uses it
@@ -1000,25 +1000,14 @@ def _wav_seconds(path: Path) -> float:
     Read by hand rather than with the ``wave`` module because afconvert writes
     the "extensible" header for sound taken out of a video, which Python 3.9's
     ``wave`` refuses. The byte rate and data size sit in the same place in both.
+    The reading is ``soundstats.wav_header``, which the measuring of the sound uses too.
     """
     try:
         with open(str(path), "rb") as handle:
-            if handle.read(12)[8:] != b"WAVE":
-                return 0.0
-            byte_rate = 0
-            while True:
-                header = handle.read(8)
-                if len(header) < 8:
-                    return 0.0
-                size = int.from_bytes(header[4:], "little")
-                if header[:4] == b"fmt ":
-                    byte_rate = int.from_bytes(handle.read(size + (size & 1))[8:12], "little")
-                elif header[:4] == b"data":
-                    return size / float(byte_rate) if byte_rate else 0.0
-                else:
-                    handle.seek(size + (size & 1), 1)
+            header = soundstats.wav_header(handle)
     except OSError:
         return 0.0
+    return header["data_bytes"] / float(header["byte_rate"]) if header and header["byte_rate"] else 0.0
 
 
 def _afconvert_args(source: Any, wav: Path) -> List[Any]:
@@ -1121,7 +1110,7 @@ def transcribe_file(path: Any, progress: Optional[Callable[[str, Optional[float]
     be set up, nothing is run at all and the error says why
     (``unsupported`` with reason ``no_network_block``).
 
-    Returns ``{"segments", "language", "duration_sec", "model", "unclear_dropped"}``.
+    Returns ``{"segments", "language", "duration_sec", "model", "unclear_dropped", "sound"}``.
 
     - ``segments``: ``{"start", "end", "text"}`` in seconds, the shape
       ``studio.timing`` uses, so ``timing.timing_stats(result["segments"])``
@@ -1134,6 +1123,13 @@ def transcribe_file(path: Any, progress: Optional[Callable[[str, Optional[float]
     - ``unclear_dropped``: how many stretches Whisper itself scored as a failed
       decode and were therefore left out instead of being passed off as the
       creator's words. Usually 0.
+    - ``sound``: pauses, loudness range and pitch measured from the sound
+      (``soundstats.measure``), or that they were not measured and why. They
+      are measured here, in this process, from the temporary WAV, because that
+      is the only place the sound exists as samples: the file that was given
+      is a video or a compressed recording, and the WAV is deleted on the way
+      out. The worker has no part in it. At most the first ten minutes are
+      measured, and the answer says when that cut a recording short.
 
     ``progress(stage, fraction)`` is called with ``audio``, ``transcribe`` and
     ``done``; the fraction is ``None`` until done because Whisper does not
@@ -1160,6 +1156,7 @@ def transcribe_file(path: Any, progress: Optional[Callable[[str, Optional[float]
             notify("audio", None)
             _extract_audio(source, wav, Path(tmp))
             duration = _wav_seconds(wav)
+            sound = soundstats.measure(wav)           # before the worker: a fraction of a second, and it starts no program
             notify("transcribe", None)
             payload = _run_worker(wav, max(WORKER_TIMEOUT_MIN, 3 * duration))
     notify("done", 1.0)
@@ -1170,4 +1167,5 @@ def transcribe_file(path: Any, progress: Optional[Callable[[str, Optional[float]
         "duration_sec": round(duration, 3),
         "model": MODEL,
         "unclear_dropped": dropped if isinstance(dropped, int) and not isinstance(dropped, bool) else 0,
+        "sound": sound,
     }
