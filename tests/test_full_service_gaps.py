@@ -214,22 +214,17 @@ class UpdaterAndPersistenceTest(ServerHarness):
 
 class RedNoteAnalyticsAndPlannerTest(ServerHarness):
     def test_share_link_extraction_velocity_sentiment_and_planner_lifecycle(self) -> None:
-        # 1. Extract RedNote mobile share snippet
-        st, link = self.api("POST", "/api/rednote/extract-link", {
-            "text": "67 秋冬干皮晚间护肤实话 复制后打开【小红书】查看笔记！ http://xhslink.com/a/AbCd123"
-        })
-        self.assertEqual(st, 200)
-        self.assertEqual(link["url"], "http://xhslink.com/a/AbCd123")
-        self.assertIn("秋冬干皮晚间护肤实话", link["title_hint"])
+        # 1. Share-link endpoint is removed; Creator Center import requires preview first
+        st_rm, _ = self.api("POST", "/api/rednote/extract-link", {"text": "http://xhslink.com/a/AbCd123"})
+        self.assertEqual(st_rm, 404)
 
-        # 2. Seed library samples and batch-import Creator Center CSV with time-series velocity
+        # 2. Seed library samples and two-step import Creator Center CSV with time-series views per day
         s1 = self.store.create_sample(
             title="秋冬干皮护肤",
             text="一入冬吹暖气我这张干皮真的服了 / 结果换了面霜稳多了哈",
         )
-        self.store.update_sample(s1["id"], {"views": 10000, "likes": 300, "collects": 400, "comments": 30}, record_snapshot=False)
         self.store.record_metric_snapshot(
-            s1["id"], views=10000, likes=300, collects=400, comments=30, recorded_on="2026-11-15"
+            s1["id"], "2026-11-15", {"views": 10000, "likes": 300, "collects": 400, "comments": 30}
         )
         self.store.create_sample(
             title="周末超市日常",
@@ -237,18 +232,25 @@ class RedNoteAnalyticsAndPlannerTest(ServerHarness):
             metrics={"views": 2000, "likes": 80, "collects": 20, "comments": 5},
         )
 
-        csv_text = "笔记标题,观看量,点赞量,收藏量,评论量,统计日期\n秋冬干皮护肤,2.5万,900,1200,85,2026-11-20\n"
+        csv_b64 = base64.b64encode(
+            "笔记标题,观看量,点赞量,收藏量,评论量,统计日期\n秋冬干皮护肤,2.5万,900,1200,85,2026-11-20\n".encode("utf-8")
+        ).decode("ascii")
+        st_prev, prev = self.api("POST", "/api/rednote/import/preview", {"name": "xhs_creator.csv", "file_base64": csv_b64})
+        self.assertEqual(st_prev, 200)
         st_imp, imp = self.api("POST", "/api/rednote/import", {
-            "filename": "xhs_creator.csv",
-            "data_base64": base64.b64encode(csv_text.encode("utf-8")).decode("ascii"),
+            "name": "xhs_creator.csv",
+            "file_base64": csv_b64,
+            "fields": prev["fields"],
+            "fingerprint": prev["fingerprint"],
         })
         self.assertEqual(st_imp, 201)
-        self.assertEqual(imp["updated"], 1)
-        top_vid = imp["overview"]["videos"][0]
+        self.assertEqual(imp["changed"], 1)
+        _, ov = self.api("GET", "/api/rednote/overview")
+        top_vid = ov["videos"][0]
         self.assertEqual(top_vid["title"], "秋冬干皮护肤")
         self.assertEqual(top_vid["views"], 25000)
-        self.assertEqual(top_vid["quadrant"], "BREAKOUT_HIT")
-        self.assertEqual(top_vid["velocity"]["views_per_day"], 3000.0)  # +15,000 views over 5 days
+        self.assertEqual(top_vid["quadrant"], "above_median_views_and_saves")
+        self.assertEqual(top_vid["per_day"]["since_reading"]["per_day"], 3000.0)  # +15,000 views over 5 days
 
         # 3. Ingest RedNote viewer comments & run deterministic + AI sentiment synthesis
         raw_comments = "\n".join([

@@ -87,7 +87,7 @@ WINDOW_CHECK_ENV = "LEARN_MY_VOICE_WINDOW_CHECK"
 NO_UPDATE_CHECK_ENV = "LEARN_MY_VOICE_NO_UPDATE_CHECK"
 DEFAULT_PORT = 8765
 UNTITLED = {"zh": "未命名脚本", "en": "Untitled script"}
-MANUAL_TASKS = ("draft", "voice", "ideas", "trends", "suggest", "video_ingest", "sentiment")
+MANUAL_TASKS = ("draft", "voice", "ideas", "trends", "suggest", "video_ingest", "sentiment", "comment_ocr")
 IDLE_TIMEOUT_SEC = 30                   # a connection that sends nothing for this long while it is being read is closed
 
 # Sent with every answer. The pages load their scripts and their style sheet from this server, style some
@@ -991,12 +991,17 @@ class Handler(BaseHTTPRequestHandler):
             except rednote_analytics.AnalyticsError as exc:
                 raise ApiError(exc.status, exc.code, exc.message, exc.message_zh)
             return {"prompt": pipeline.single_prompt(system, user), "brief_id": brief_id}
+        elif task == "comment_ocr":
+            system, user = rednote_analytics.build_comment_screenshot_prompt()
+            return {"prompt": pipeline.single_prompt(system, user)}
         else:
             system, user = pipeline.ideas_prompt(store, focus=_focus(body))
         return {"prompt": pipeline.single_prompt(system, user)}
 
     def _manual_reply(self, body: Dict[str, Any]) -> None:
         store, task = self.app.store, _task(body)
+        if task == "comment_ocr":
+            return self._json(_counting(lambda: rednote_analytics.apply_screenshot_ocr_reply(str(body.get("reply") or ""))))
         # For ideas: what was asked, and the lookup that came before. Malformed ones are refused before the reply is read.
         focus, lookup = (_focus(body), _pasted_lookup(body)) if task == "ideas" else ("", None)
         result = llm.parse_manual_reply(str(body.get("reply") or ""), task)
@@ -1758,6 +1763,15 @@ class Handler(BaseHTTPRequestHandler):
         if route == ("POST", "/api/rednote/import"):
             # The same file, the columns, and the "fingerprint" of the preview: exactly what that preview showed is stored.
             return self._json(_counting(lambda: rednote_analytics.bring_in(store, self._read_json())), 201)
+        if route == ("POST", "/api/rednote/comments/ocr"):
+            self._require_ai()
+            return self._json(_counting(lambda: rednote_analytics.read_comments_from_screenshots_ai(
+                store, self._read_json(), transport=app.transport)))
+
+        m = re.fullmatch(r"/api/samples/([0-9a-f]{12})/posted-on", path)
+        if m and method == "PUT":
+            body = self._read_json()
+            return self._json(_counting(lambda: rednote_analytics.set_sample_posted_on(store, m.group(1), body.get("posted_on"))))
 
         m = re.fullmatch(r"/api/samples/([0-9a-f]{12})/comments", path)
         if m:
@@ -1771,6 +1785,8 @@ class Handler(BaseHTTPRequestHandler):
                 snaps = store.list_metric_snapshots(sid)
                 return self._json({
                     "sample_id": sid,
+                    "posted_on": sample.get("posted_on"),
+                    "from_script": sample.get("origin") == rednote_analytics.ORIGIN_SCRIPT,
                     "comments": comments,
                     "sentiment": sent["summary"] if sent else rednote_analytics.build_local_sentiment_summary(sample, comments),
                     "sentiment_source": sent["source"] if sent else "local",

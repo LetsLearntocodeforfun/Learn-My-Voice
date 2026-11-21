@@ -32,6 +32,8 @@ CLOUD_PROVIDERS = ("gemini", "openai", "anthropic")
 PROVIDERS = CLOUD_PROVIDERS + ("local",)
 MANUAL_PROVIDER = "manual"  # copy-and-paste with a chat subscription: no key, no model
 METRIC_FIELDS = ("views", "likes", "collects", "comments")
+EXTRA_METRIC_FIELDS = ("shares", "new_followers", "click_rate_pct", "avg_watch_sec", "completion_rate_pct")
+SNAPSHOT_FIELDS = METRIC_FIELDS + EXTRA_METRIC_FIELDS
 MAX_KEYWORD_CHARS = 40
 MAX_KEYWORDS_PER_SCRIPT = 8
 MAX_TRENDS = 2000           # tracked trend keywords kept in SQLite; oldest unverified entries go first when full
@@ -272,13 +274,17 @@ CREATE TABLE IF NOT EXISTS metric_snapshots (
     likes INTEGER,
     collects INTEGER,
     comments INTEGER,
+    shares INTEGER,
+    new_followers INTEGER,
+    click_rate_pct REAL,
+    avg_watch_sec REAL,
+    completion_rate_pct REAL,
     created_at REAL NOT NULL
 );
 CREATE INDEX IF NOT EXISTS metric_snapshots_by_sample ON metric_snapshots (sample_id);
 CREATE TABLE IF NOT EXISTS sample_comments (
     id TEXT PRIMARY KEY,
     sample_id TEXT NOT NULL,
-    author TEXT NOT NULL DEFAULT '',
     text TEXT NOT NULL,
     likes INTEGER,
     sentiment TEXT NOT NULL DEFAULT 'neutral',
@@ -387,6 +393,36 @@ def _metric(value: Any) -> Optional[int]:
     except (TypeError, ValueError, OverflowError):
         return None
     return number if 0 <= number < 2 ** 63 else None
+
+
+def _rate_pct(value: Any) -> Optional[float]:
+    """A percentage from 0 to 100, or None for blank / invalid input."""
+    if isinstance(value, bool) or value is None or value == "":
+        return None
+    try:
+        number = float(value)
+    except (TypeError, ValueError, OverflowError):
+        return None
+    return round(number, 2) if math.isfinite(number) and 0.0 <= number <= 100.0 else None
+
+
+def _seconds_val(value: Any) -> Optional[float]:
+    """A non-negative duration in seconds (< 86,400), or None for blank / invalid input."""
+    if isinstance(value, bool) or value is None or value == "":
+        return None
+    try:
+        number = float(value)
+    except (TypeError, ValueError, OverflowError):
+        return None
+    return round(number, 1) if math.isfinite(number) and 0.0 <= number < 86400.0 else None
+
+
+def _snapshot_value(field: str, value: Any) -> Any:
+    if field in ("click_rate_pct", "completion_rate_pct"):
+        return _rate_pct(value)
+    if field == "avg_watch_sec":
+        return _seconds_val(value)
+    return _metric(value)
 
 
 def clean_keyword(text: Any) -> str:
@@ -1009,6 +1045,8 @@ class Store:
                 "note_url": row["note_url"] or "", "metrics_on": row["metrics_on"],
                 "ai_draft": _json_object(row["ai_json"]), "snapshot": row["snapshot"] or "",
             })
+        elif row["posted_on"]:
+            sample["posted_on"] = row["posted_on"]
         return sample
 
     def list_samples(self) -> List[Dict[str, Any]]:
@@ -1738,23 +1776,23 @@ class Store:
         """Inside a transaction that already holds the write lock: what ``record_metric_snapshot`` does to one reading."""
         if not isinstance(read_on, str) or not _DAY_TEXT.fullmatch(read_on):
             raise ValueError("a reading needs the day it was read, as YYYY-MM-DD")
-        given = {field: _metric(values[field]) for field in METRIC_FIELDS if field in values}
+        given = {field: _snapshot_value(field, values[field]) for field in SNAPSHOT_FIELDS if field in values}
         if not given:
             return
         row = db.execute("SELECT * FROM metric_snapshots WHERE sample_id = ? AND read_on = ? ORDER BY rowid LIMIT 1",
                          (sample_id, read_on)).fetchone()
-        held = {field: (row[field] if row else None) for field in METRIC_FIELDS}
+        held = {field: (row[field] if row else None) for field in SNAPSHOT_FIELDS}
         held.update(given)
-        numbers = [held[field] for field in METRIC_FIELDS]
+        numbers = [held[field] for field in SNAPSHOT_FIELDS]
         if all(number is None for number in numbers):
             if row:
                 db.execute("DELETE FROM metric_snapshots WHERE id = ?", (row["id"],))
         elif row:
-            db.execute("UPDATE metric_snapshots SET %s, created_at = ? WHERE id = ?" % ", ".join("%s = ?" % f for f in METRIC_FIELDS),
+            db.execute("UPDATE metric_snapshots SET %s, created_at = ? WHERE id = ?" % ", ".join("%s = ?" % f for f in SNAPSHOT_FIELDS),
                        numbers + [now, row["id"]])
         else:
             db.execute("INSERT INTO metric_snapshots (id, sample_id, read_on, %s, created_at) VALUES (?,?,?,%s,?)"
-                       % (", ".join(METRIC_FIELDS), ",".join("?" * len(METRIC_FIELDS))),
+                       % (", ".join(SNAPSHOT_FIELDS), ",".join("?" * len(SNAPSHOT_FIELDS))),
                        [uuid.uuid4().hex[:12], sample_id, read_on] + numbers + [now])
             db.execute("DELETE FROM metric_snapshots WHERE sample_id = ? AND rowid NOT IN"
                        " (SELECT rowid FROM metric_snapshots WHERE sample_id = ? ORDER BY read_on DESC, rowid DESC LIMIT ?)",
@@ -1805,8 +1843,10 @@ class Store:
                 row = db.execute("SELECT origin FROM samples WHERE id = ?", (sample_id,)).fetchone()
                 if row is None:
                     raise KeyError(sample_id)
-                numbers = {field: _metric(reading["values"][field]) for field in METRIC_FIELDS if field in reading["values"]}
-                self._keep_reading(db, sample_id, read_on, numbers, now)
+                snap_vals = {field: _snapshot_value(field, reading["values"][field])
+                             for field in SNAPSHOT_FIELDS if field in reading["values"]}
+                self._keep_reading(db, sample_id, read_on, snap_vals, now)
+                numbers = {field: snap_vals[field] for field in METRIC_FIELDS if field in snap_vals}
                 if reading.get("current") and numbers:
                     sets = ["%s = ?" % field for field in numbers] + ["updated_at = ?"]
                     values = list(numbers.values()) + [now]
@@ -1831,7 +1871,11 @@ class Store:
 
     # ---- what viewers wrote under a video (studio/rednote_analytics.py) -----
     def add_sample_comments(self, sample_id: str, items: List[Dict[str, Any]], *, replace: bool = False) -> int:
-        """Store viewer comments for ``sample_id`` (capped at 500 newest/highest-liked comments)."""
+        """Store cleaned viewer comments for ``sample_id`` (up to 500, highest-liked and newest kept).
+
+        No commenter names or handles are stored: ``sample_comments`` holds only the comment text, optional like
+        count, word-list tag, and question flag.
+        """
         now = time.time()
         cleaned: List[Tuple[Any, ...]] = []
         for raw in items[:500]:
@@ -1840,13 +1884,12 @@ class Store:
             txt = str(raw.get("text") or "").strip()[:2000]
             if not txt:
                 continue
-            author = str(raw.get("author") or "").strip()[:120]
             likes = _metric(raw.get("likes"))
             sentiment = str(raw.get("sentiment") or "neutral").strip().lower()
             if sentiment not in ("positive", "neutral", "negative", "mixed"):
                 sentiment = "neutral"
             is_q = 1 if bool(raw.get("is_question")) else 0
-            cleaned.append((uuid.uuid4().hex[:12], sample_id, author, txt, likes, sentiment, is_q, now))
+            cleaned.append((uuid.uuid4().hex[:12], sample_id, txt, likes, sentiment, is_q, now))
         with self._db() as db:
             db.execute("BEGIN IMMEDIATE")
             if db.execute("SELECT 1 FROM samples WHERE id = ?", (sample_id,)).fetchone() is None:
@@ -1855,8 +1898,8 @@ class Store:
                 db.execute("DELETE FROM sample_comments WHERE sample_id = ?", (sample_id,))
             if cleaned:
                 db.executemany(
-                    "INSERT INTO sample_comments (id, sample_id, author, text, likes, sentiment, is_question, created_at)"
-                    " VALUES (?,?,?,?,?,?,?,?)",
+                    "INSERT INTO sample_comments (id, sample_id, text, likes, sentiment, is_question, created_at)"
+                    " VALUES (?,?,?,?,?,?,?)",
                     cleaned,
                 )
                 db.execute(
@@ -1867,13 +1910,14 @@ class Store:
         return len(cleaned)
 
     def list_sample_comments(self, sample_id: str) -> List[Dict[str, Any]]:
+        """Stored viewer comments for ``sample_id``, highest-liked then newest first."""
         with self._db() as db:
             rows = db.execute(
                 "SELECT * FROM sample_comments WHERE sample_id = ? ORDER BY COALESCE(likes, 0) DESC, created_at DESC, rowid DESC",
                 (sample_id,),
             ).fetchall()
         return [{
-            "id": r["id"], "sample_id": r["sample_id"], "author": r["author"] or "",
+            "id": r["id"], "sample_id": r["sample_id"],
             "text": r["text"], "likes": r["likes"], "sentiment": r["sentiment"] or "neutral",
             "is_question": bool(r["is_question"]), "created_at": r["created_at"],
         } for r in rows]

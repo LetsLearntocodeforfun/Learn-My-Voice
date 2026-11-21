@@ -180,7 +180,8 @@ def interactions(sample: Dict[str, Any]) -> Optional[int]:
 
 
 def performance(samples: List[Dict[str, Any]]) -> Dict[str, Any]:
-    """Rank her videos by interactions and views; rates are interactions / views and collects / views when views are known."""
+    """Rank videos by interactions, with views breaking ties (and ordering videos that carry views alone);
+    rates are interactions / views and collects / views when views are known."""
     rows = []
     for s in samples:
         total = interactions(s)

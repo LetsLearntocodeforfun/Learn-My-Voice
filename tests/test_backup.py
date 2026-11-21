@@ -58,7 +58,7 @@ OWN = [
 MARKUP = "<img src=x onerror=alert(1)>"
 ASSUMES = re.compile(r"\b(she|her|hers|herself|husband|wife|couple)\b", re.I)
 # The layout of the database this version of the data stands for (backup.layout_fingerprint()).
-LAYOUT_OF_DATA_VERSION = {1: "dc489db00a5395ce", 2: "b0612eef1d02873d", 3: "a28cf92a48fb189a"}
+LAYOUT_OF_DATA_VERSION = {1: "dc489db00a5395ce", 2: "b0612eef1d02873d", 3: "9b1b7bdbda5dc7bb"}
 
 # The tables as the code at 3fdd3a6 creates them: the commit this feature was built on.
 SCHEMA_AT_3FDD3A6 = """
@@ -208,8 +208,9 @@ def fill(store, tag="甲"):
     typed = store.create_script(title=tag + "超市 " + MARKUP, lines=[{"spoken_script_zh": "今天去超市买菜啦 / 人特别多嘛"}])
     first_sample = store.create_sample(title=tag + "素材一", text=OWN[0], metrics={"views": 1200, "likes": 80})
     store.pin_sample(drafted["id"], first_sample["id"], limit=10)
+    store.record_metric_snapshot(first_sample["id"], "2026-11-10", {"views": 1200, "likes": 80, "shares": 12, "click_rate_pct": 5.4, "avg_watch_sec": 42.0})
     store.add_sample_comments(first_sample["id"], [{"text": tag + "求链接？", "likes": 3, "sentiment": "positive", "is_question": True}])
-    store.save_sample_sentiment(first_sample["id"], {"overall_sentiment": "positive", "summary_zh": tag + "好评"})
+    store.save_sample_sentiment(first_sample["id"], {"overall_sentiment": "not_judged", "summary_zh": tag + "按词表统计"})
     store.create_video_plan(title=tag + "下期计划", scheduled_for="2026-11-28", script_id=drafted["id"])
     store.create_sample(title=tag + "字幕", text=OWN[1], kind="subtitle", source_name="a.srt",
                         timing={"units": 40, "spoken_sec": 12.5, "speaking_rate_cpm": 192})
