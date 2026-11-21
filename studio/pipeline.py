@@ -471,6 +471,10 @@ def _build_voice(store: Store, corpus_chars: int = LEARN_CORPUS_CHARS) -> Tuple[
         metrics["measured_speaking_rate"] = {"units_per_minute": measured["speaking_rate_cpm"],
                                              "seconds_of_speech": measured["spoken_sec"],
                                              "timed_items": measured["videos"]}
+    from . import tone_analyzer
+    delivery = tone_analyzer.delivery_metrics_for_prompt(library)
+    if delivery is not None:
+        metrics["measured_delivery"] = delivery
     visual_notes: List[Dict[str, Any]] = []
     for sample in samples:
         if sample.get("is_sponsored") or not (sample.get("text") or "").strip():

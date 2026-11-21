@@ -41,12 +41,14 @@ let vmOpen = false;
 function paintVoiceMatch(el, match) {
   if (!el) return;
   if (!match) { el.innerHTML = ''; return; }
+  const toneSlot = cur && cur.script && cur.script.id ? '<div id="tone-cmp-box"></div>' : '';
   if (!match.available) {
     const need = match.needed || {};
     const text = match.reason === 'too_little_material'
       ? tf('vm_need_material', { need: need.reference_breaths, have: match.reference ? match.reference.breaths : 0 })
       : tf('vm_need_script', { need: need.script_breaths });
-    el.innerHTML = `<p class="hint vm-none"><b>${esc(t('vm_title'))}</b> · ${esc(text)}</p>`;
+    el.innerHTML = `<p class="hint vm-none"><b>${esc(t('vm_title'))}</b> · ${esc(text)}</p>${toneSlot}`;
+    syncScriptTone();
     return;
   }
   const band = match.band;
@@ -74,9 +76,10 @@ function paintVoiceMatch(el, match) {
       ${row('vm_starts', p.starts, tf('vm_starts_d', { own: p.starts.own.rate_pct, script: p.starts.script.rate_pct, top: top(p.starts.own.top) }))}
       ${row('vm_english', p.english, tf('vm_english_d', { own: p.english.own.rate_pct, script: p.english.script.rate_pct, top: '' }))}
       <p class="hint">${esc(tf('vm_note', { n: match.reference.scripts, b: match.reference.breaths }))}</p>
-    </details></div>`;
-  const details = el.querySelector('details');
-  details.ontoggle = () => { vmOpen = details.open; };
+    </details></div>${toneSlot}`;
+  const details = el.querySelector('.vm > details');
+  if (details) details.ontoggle = () => { vmOpen = details.open; };
+  syncScriptTone();
 }
 
 /* ---------- line tools: other openings, other wordings, one-breath cuts, a critic's read ----------
@@ -445,4 +448,178 @@ function craftPaint() {
   el.classList.add('open');
   el.innerHTML = `<div class="row"><b>${esc(t('cr_' + craft.kind + '_title'))}</b><span class="spacer"></span>
     <button type="button" class="btn ghost" data-craft-do="close">${esc(t('cr_close'))}</button></div>${body}`;
+}
+
+
+/* ---------- script tone counts beside the creator's own material (/api/scripts/<id>/tone) ----------
+   Collapsible section right under Voice match in #vm-box. Plain surface counts and measured sound reference
+   only (studio/tone_analyzer.py); no composite or personality scores. */
+Object.assign(I18N.zh, {
+  tn_ed_title: '语气与用词对照',
+  tn_ed_summary: '这篇 {sb} 口气 · 对照你已确认的 {n} 篇非商单素材（{b} 口气）',
+  tn_ed_obs_n: '{n} 项差异提示',
+  tn_ed_need_material: '至少需要 {need} 口气你写过或确认过的非商单文字才能对照语气计数（当前 {have} 口气）。',
+  tn_ed_need_script: '脚本至少要有 {need} 口气才能对照语气计数。',
+  tn_ed_breath: '气口长度',
+  tn_ed_breath_v: '这篇中间值 {sm} 字（{pct}% 在你平常的 {p5}–{p95} 字之间）· 你的中间值 {om} 字',
+  tn_ed_particles: '句尾语气词与尾词',
+  tn_ed_colloq: '口语连接词',
+  tn_ed_bookish: '书面连接词',
+  tn_ed_redup: '叠词（AABB / AA的）',
+  tn_ed_hedges: '留白与限定说法',
+  tn_ed_hardsell: '常见硬广夸张词',
+  tn_ed_punct: '问号与感叹号',
+  tn_ed_punct_v: '这篇：问句 {sq}% / 感叹 {se}% · 你的非商单：问句 {oq}% / 感叹 {oe}%',
+  tn_ed_rate_cmp: '这篇 {s}% · 你的非商单 {o}%',
+  tn_ed_per100_cmp: '这篇每百口气 {s} 处 · 你的非商单 {o} 处',
+  tn_ed_range: '（单篇 {low}–{high}）',
+  tn_ed_unfamiliar: '未在你的非商单里见过：{list}',
+  tn_ed_delivery: '你的录音实测参考',
+  tn_ed_delivery_pace: '语速 {cpm} 字/分钟',
+  tn_ed_delivery_pauses: '每百字停顿 {n} 次',
+  tn_ed_delivery_loud: '响度跨度中间值 {db} dB',
+  tn_ed_delivery_pitch: '基频中间值 {hz} Hz（起伏 {st} 半音）',
+});
+
+Object.assign(I18N.en, {
+  tn_ed_title: 'Tone & wording counts',
+  tn_ed_summary: 'This script: {sb} breaths · beside {n} confirmed non-sponsored item(s) ({b} breaths)',
+  tn_ed_obs_n: '{n} noted difference(s)',
+  tn_ed_need_material: 'Needs at least {need} breaths of non-sponsored text that {@name} wrote or confirmed (currently {have}).',
+  tn_ed_need_script: 'A script needs at least {need} breaths for tone counts to be compared.',
+  tn_ed_breath: 'Breath length',
+  tn_ed_breath_v: 'This script median {sm} units ({pct}% within {@names} {p5}–{p95}) · {@names} median {om}',
+  tn_ed_particles: 'Sentence-final particles & tags',
+  tn_ed_colloq: 'Spoken connectors',
+  tn_ed_bookish: 'Formal written connectors',
+  tn_ed_redup: 'Reduplicated words',
+  tn_ed_hedges: 'Hedges & caveats',
+  tn_ed_hardsell: 'Hard-sell phrases',
+  tn_ed_punct: 'Questions & exclamations',
+  tn_ed_punct_v: 'This script: {sq}% questions / {se}% exclamations · {@names} material: {oq}% / {oe}%',
+  tn_ed_rate_cmp: 'This script {s}% · {@names} material {o}%',
+  tn_ed_per100_cmp: 'This script {s} per 100 breaths · {@names} material {o}',
+  tn_ed_range: ' (scripts: {low}–{high})',
+  tn_ed_unfamiliar: 'Not in {@names} material: {list}',
+  tn_ed_delivery: '{@Names} measured delivery',
+  tn_ed_delivery_pace: 'pace {cpm} units/min',
+  tn_ed_delivery_pauses: '{n} pauses / 100 units',
+  tn_ed_delivery_loud: 'loudness range median {db} dB',
+  tn_ed_delivery_pitch: 'pitch median {hz} Hz (span {st} semitones)',
+});
+
+let toneOpen = false;
+const toneState = { scriptId: null, updatedAt: null, data: null, reqId: 0 };
+
+function tnRangeStr(r) {
+  return r && r.scripts ? tf('tn_ed_range', { low: r.low, high: r.high }) : '';
+}
+
+function tnChipsHtml(used, unfamiliar, warnUsed) {
+  const sep = craftSep();
+  let html = (used || []).map((w) => ` <span class="tag ${warnUsed ? 'warn' : ''}">${esc(w)}</span>`).join('');
+  if (unfamiliar && unfamiliar.length) {
+    html += ` <span class="tag warn">${esc(tf('tn_ed_unfamiliar', { list: unfamiliar.join(sep) }))}</span>`;
+  }
+  return html;
+}
+
+function paintScriptToneBox(box, data) {
+  if (!box || !data) return;
+  if (!data.ready) {
+    const need = data.needed || {};
+    const msg = data.reason === 'too_little_material'
+      ? tf('tn_ed_need_material', { need: need.reference_breaths, have: data.reference ? data.reference.breaths : 0 })
+      : tf('tn_ed_need_script', { need: need.script_breaths });
+    box.innerHTML = `<p class="hint vm-none" id="tone-cmp-empty"><b>${esc(t('tn_ed_title'))}</b> · ${esc(msg)}</p>`;
+    return;
+  }
+  const c = data.comparisons || {};
+  const obs = data.observations || [];
+  const obsHtml = obs.map((o) => `<div class="cr-note" data-tone-obs="${esc(o.kind)}">${esc(lang === 'zh' ? o.message_zh : o.message_en)}</div>`).join('');
+  const kvRows = [];
+  const addKv = (key, bodyHtml) => { kvRows.push(`<dt>${esc(t(key))}</dt><dd>${bodyHtml}</dd>`); };
+
+  if (c.breath_length) {
+    const b = c.breath_length;
+    addKv('tn_ed_breath', esc(tf('tn_ed_breath_v', { sm: b.script.median, pct: b.script.inside_pct, p5: b.own.p5, p95: b.own.p95, om: b.own.median }) + tnRangeStr(b.range)));
+  }
+  if (c.particles) {
+    const p = c.particles;
+    addKv('tn_ed_particles', esc(tf('tn_ed_rate_cmp', { s: p.script_rate_pct, o: p.own_rate_pct }) + tnRangeStr(p.range)) + tnChipsHtml(p.script_used, p.unfamiliar, false));
+  }
+  if (c.colloquial_connectors) {
+    const cc = c.colloquial_connectors;
+    addKv('tn_ed_colloq', esc(tf('tn_ed_rate_cmp', { s: cc.script_rate_pct, o: cc.own_rate_pct }) + tnRangeStr(cc.range)) + tnChipsHtml(cc.script_used, cc.unfamiliar, false));
+  }
+  if (c.bookish_connectors) {
+    const bc = c.bookish_connectors;
+    addKv('tn_ed_bookish', esc(tf('tn_ed_rate_cmp', { s: bc.script_rate_pct, o: bc.own_rate_pct }) + tnRangeStr(bc.range)) + tnChipsHtml(bc.script_used, [], true));
+  }
+  if (c.reduplications) {
+    const rd = c.reduplications;
+    addKv('tn_ed_redup', esc(tf('tn_ed_per100_cmp', { s: rd.script_per_100, o: rd.own_per_100 }) + tnRangeStr(rd.range)) + tnChipsHtml(rd.script_used, [], false));
+  }
+  if (c.hedges) {
+    const hd = c.hedges;
+    addKv('tn_ed_hedges', esc(tf('tn_ed_per100_cmp', { s: hd.script_per_100, o: hd.own_per_100 }) + tnRangeStr(hd.range)) + tnChipsHtml(hd.script_used, [], false));
+  }
+  if (c.hard_sell) {
+    const hs = c.hard_sell;
+    addKv('tn_ed_hardsell', esc(tf('tn_ed_per100_cmp', { s: hs.script_per_100, o: hs.own_per_100 }) + tnRangeStr(hs.range)) + tnChipsHtml(hs.script_used, [], true));
+  }
+  if (c.questions && c.exclamations) {
+    addKv('tn_ed_punct', esc(tf('tn_ed_punct_v', {
+      sq: c.questions.script_rate_pct, se: c.exclamations.script_rate_pct,
+      oq: c.questions.own_rate_pct, oe: c.exclamations.own_rate_pct,
+    })));
+  }
+
+  const del = data.delivery || {};
+  const delParts = [];
+  if (del.measured_speaking_rate) delParts.push(tf('tn_ed_delivery_pace', { cpm: del.measured_speaking_rate.speaking_rate_cpm }));
+  if (del.pauses_per_100_units !== null && del.pauses_per_100_units !== undefined) delParts.push(tf('tn_ed_delivery_pauses', { n: del.pauses_per_100_units }));
+  if (del.sound && del.sound.loudness_range_db) delParts.push(tf('tn_ed_delivery_loud', { db: del.sound.loudness_range_db.median }));
+  if (del.sound && del.sound.pitch_hz) {
+    const sp = del.sound.pitch_span_semitones;
+    delParts.push(tf('tn_ed_delivery_pitch', { hz: del.sound.pitch_hz.median, st: sp ? sp.median : 0 }));
+  }
+  if (delParts.length) addKv('tn_ed_delivery', esc(delParts.join(' · ')));
+
+  const wlNote = data.wordlist_note && data.wordlist_note[lang] ? data.wordlist_note[lang] : '';
+  const summaryBadge = obs.length ? `<span class="tag warn">${esc(tf('tn_ed_obs_n', { n: obs.length }))}</span>` : '';
+
+  box.innerHTML = `<div class="vm" id="tone-cmp-card" style="margin-top:8px">
+    <details ${toneOpen ? 'open' : ''} id="tone-cmp-details">
+      <summary><b>${esc(t('tn_ed_title'))}</b>
+        <span class="meta"> · ${esc(tf('tn_ed_summary', { sb: data.script.breaths, n: data.reference.scripts, b: data.reference.breaths }))}</span>
+        ${summaryBadge}</summary>
+      ${obsHtml}
+      <dl class="kv" style="margin-top:8px">${kvRows.join('')}</dl>
+      ${wlNote ? `<p class="hint">${esc(wlNote)}</p>` : ''}
+    </details></div>`;
+  const details = document.getElementById('tone-cmp-details');
+  if (details) details.ontoggle = () => { toneOpen = details.open; };
+}
+
+function syncScriptTone() {
+  const box = document.getElementById('tone-cmp-box');
+  if (!box || !cur || !cur.script || !cur.script.id) return;
+  const sid = cur.script.id;
+  const stamp = cur.script.updated_at;
+  if (toneState.scriptId === sid && toneState.data) {
+    paintScriptToneBox(box, toneState.data);
+  }
+  if (toneState.scriptId === sid && toneState.updatedAt === stamp && toneState.data) return;
+  if (toneState.scriptId !== sid) toneState.data = null;
+  toneState.scriptId = sid;
+  toneState.updatedAt = stamp;
+  const reqId = ++toneState.reqId;
+  api('GET', '/api/scripts/' + encodeURIComponent(sid) + '/tone')
+    .then((data) => {
+      if (reqId !== toneState.reqId || !cur || !cur.script || cur.script.id !== sid) return;
+      toneState.data = data;
+      paintScriptToneBox(document.getElementById('tone-cmp-box'), data);
+    })
+    .catch(() => { /* optional panel; leave empty on transient error */ });
 }

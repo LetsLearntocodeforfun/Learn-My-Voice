@@ -356,25 +356,25 @@ class RedNoteAnalyticsAndPlannerTest(ServerHarness):
 
 class ToneAnalyzerProsodyAndMcpTest(ServerHarness):
     def test_tone_analyzer_wav_prosody_and_mcp_tools(self) -> None:
-        # 1. Pure-stdlib WAV acoustic prosody analyzer
-        wav_bytes = _make_wav_bytes()
-        prosody = tone_analyzer.analyze_wav_prosody(wav_bytes)
-        self.assertIsNotNone(prosody)
-        assert prosody is not None
-        self.assertGreater(prosody["dynamic_range_db"], 5.0)
-        self.assertGreaterEqual(prosody["pause_count"], 1)
-        self.assertGreater(prosody["energy_arc_db"]["opening_db"], prosody["energy_arc_db"]["closing_db"])
+        # 1. Pure-stdlib WAV soundstats measurement
+        from studio import soundstats
+        wav_path = self.tmp / "sample_prosody.wav"
+        wav_path.write_bytes(_make_wav_bytes())
+        sound = soundstats.measure(wav_path)
+        self.assertTrue(sound["measured"])
+        self.assertGreaterEqual(sound["pauses"]["count"], 1)
+        self.assertIsNotNone(sound["pitch"])
 
-        # 2. Seed organic corpus with multi-char particles, colloquial connectors, and sensory reduplications
+        # 2. Seed organic corpus (>= 10 breaths) with multi-char particles, connectors, and reduplicated words
         for idx, txt in enumerate([
-            "上周末跟我老公去 Costco 补货嘛 / 最搞笑的是某人站在货架前发呆哈 / 推开水水的很舒服对吧",
-            "不过说实话换季脸真的干干巴巴 / 但如果你是大油皮可能会觉得稍微有点润啦 / 软软糯糯的质感[轻笑]",
-            "顺便提一嘴这件毛衣洗了两次也没变形嘛 / 随便抓一件就能出门哈 / 真的巨省心喔唷",
+            "上周末跟我老公去 Costco 补货嘛 / 最搞笑的是某人站在货架前发呆哈 / 推开水水的很舒服对吧 / 回家煮了杯咖啡啦",
+            "不过说实话换季脸真的干干巴巴 / 但如果你是大油皮可能会觉得稍微有点润啦 / 软软糯糯的质感[轻笑] / 晚上涂一层就够哈",
+            "顺便提一嘴这件毛衣洗了两次也没变形嘛 / 随便抓一件就能出门哈 / 真的巨省心喔唷 / 周末穿去散步啦",
         ]):
             self.store.create_sample(
                 title="有机样本%d" % idx,
                 text=txt,
-                timing={"speaking_rate_cpm": 236, "pauses": 3, "spoken_units": 42, "acoustic_prosody": prosody},
+                timing={"speaking_rate_cpm": 236, "pauses": 3, "units": 42, "spoken_sec": 25.0, "sound": sound},
             )
 
         st, tone = self.api("GET", "/api/tone")
@@ -383,24 +383,23 @@ class ToneAnalyzerProsodyAndMcpTest(ServerHarness):
         self.assertIn("对吧", ling["particles"]["multi"])
         self.assertIn("喔唷", ling["particles"]["multi"])
         self.assertIn("最搞笑的是", ling["connectors"]["colloquial"])
-        self.assertIn("软软糯糯", ling["sensory_reduplications"])
-        self.assertIn("水水的", ling["sensory_reduplications"])
+        self.assertIn("软软糯糯", ling["reduplications"]["words"])
+        self.assertIn("水水的", ling["reduplications"]["words"])
         self.assertIsNotNone(tone["pauses_per_100_units"])
-        self.assertEqual(len(tone["acoustic_prosody_samples"]), 3)
+        self.assertEqual(len(tone["sound_samples"]), 3)
 
-        # Compare a hype-heavy script against the restrained organic baseline
+        # Compare a hype-heavy script against the organic baseline
         hype_script = self.store.create_script(
             title="Hype Test",
             lines=[
-                {"spoken_script_zh": "因此今天绝绝子按头安利！闭眼入天花板！！"},
-                {"spoken_script_zh": "不仅如此众所周知真的炸裂必买！！"},
-                {"spoken_script_zh": "总而言之疯抢封神！！"},
+                {"spoken_script_zh": "因此今天绝绝子按头安利！ / 闭眼入天花板！！"},
+                {"spoken_script_zh": "不仅如此众所周知真的炸裂必买！！ / 总而言之疯抢封神！！"},
             ],
         )
         st_cmp, cmp_res = self.api("GET", "/api/scripts/%s/tone" % hype_script["id"])
         self.assertEqual(st_cmp, 200)
         self.assertTrue(cmp_res["ready"])
-        self.assertTrue(any(d["axis"] == "restraint_authenticity" for d in cmp_res["diagnostics"]))
+        self.assertTrue(any(d["kind"] == "hard_sell" for d in cmp_res["observations"]))
 
         # 3. Verify new MCP tools over JSON-RPC
         res_tone = mcp_server.handle(self.store, {
