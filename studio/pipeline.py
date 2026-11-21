@@ -40,11 +40,12 @@ from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional, Set, Tuple
 
 from . import corpus, creator, evidence, guardrails, hooks, learning, llm, timing, trends
-from .store import (MANUAL_PROVIDER, MAX_KEYWORD_CHARS, Store, clean_keyword, keyword_key, normalize_keywords,
-                    normalize_lines)
+from .store import (MANUAL_PROVIDER, MAX_KEYWORD_CHARS, MODE_ORGANIC, MODE_SPONSORED, Store, clean_keyword, keyword_key,
+                    normalize_keywords, normalize_lines)
 
 PROMPTS_DIR = Path(__file__).resolve().parent.parent / "prompts"
 STAGE2 = "02_voice_dna_synthesizer.md"
+STAGE3 = "03_sponsored_brief_translator.md"       # a brand's brief in plain words, its requirements, ways in (studio/sponsored.py)
 STAGE4 = "04_script_generator_normal_and_sponsored.md"
 STAGE6 = "06_content_recommender.md"
 STAGE7 = "07_trend_researcher.md"
@@ -181,7 +182,7 @@ def _draft_fingerprint(notes: Any, target_sec: Any, video_format: Any, keywords:
 
 
 def _build_draft(store: Store, *, notes: str, target_sec: int, video_format: str,
-                 keywords: Any = None) -> Tuple[str, str, Dict[str, Any]]:
+                 keywords: Any = None, sponsor: Any = None) -> Tuple[str, str, Dict[str, Any]]:
     """``(system, user, basis)``: the draft prompt, and what it was built from.
 
     ``basis`` is what the script will later be said to be based on, so every part of it is read off the
@@ -189,6 +190,13 @@ def _build_draft(store: Store, *, notes: str, target_sec: int, video_format: str
     videos whose openings are in it (``hooks.best``: the creator's own, with results at or above their
     usual), how many remembered lessons are in it, and whether the voice profile is the creator's own or
     the bundled example.
+
+    ``sponsor`` is given for a sponsored script only (``sponsored.draft_prompt``): the way in the creator
+    chose and the requirements they accepted from a brand's brief, as one object. The prompt is then written
+    in SPONSORED mode and carries that object, encoded like every other value. The brief itself never goes
+    into this prompt. Everything that shows how the creator speaks is chosen exactly as for any other draft:
+    the examples and the openings come from the creator's own non-sponsored material, so nothing of a brand's
+    is among them.
     """
     dna, is_example = store.load_dna()
     who = store.load_creator()
@@ -205,13 +213,15 @@ def _build_draft(store: Store, *, notes: str, target_sec: int, video_format: str
         "retrieved_beat_exemplars_json": exemplars_text,
         "own_best_openings_json": _dump(openings),
         "top_10_wife_edit_diff_rules_json": _dump(rules),
-        "mode": "NORMAL_ORGANIC",
+        # One of two fixed words, never text from a request: this value is not encoded.
+        "mode": MODE_ORGANIC if sponsor is None else MODE_SPONSORED,
         # One of the known names, never text from a request: this value is not encoded.
         "video_format": video_format if video_format in VIDEO_FORMATS else VIDEO_FORMATS[0],
         "target_duration_sec": str(int(target_sec)),
         # Typed by the creator, or taken from an idea a model wrote: encoded like every other value, as one JSON string.
         "user_topic_and_story_notes": _inline(notes.strip()),
-        "approved_humanized_sponsor_brief_json": "null",
+        # Written by a brand, a model or the creator: encoded like every other value, as one JSON object.
+        "sponsored_plan_json": "null" if sponsor is None else _inline(sponsor),
         "target_keywords_json": _inline(words),
     })
     learned_at = profile_summary(dna).get("learned_at")
@@ -306,11 +316,14 @@ def _coerce_draft_lines(raw_lines: Any) -> Any:
 
 def apply_draft(store: Store, result: Dict[str, Any], *, notes: str, target_sec: int, video_format: str,
                 default_title: str = "未命名脚本", keywords: Any = None, brief_id: Optional[str] = None,
-                basis: Any = _UNSET) -> Dict[str, Any]:
+                basis: Any = _UNSET, mode: str = MODE_ORGANIC, title: str = "") -> Dict[str, Any]:
     """Validate a drafted script and save it with its target keywords and its basis; returns the stored script.
 
     ``basis`` is passed by ``generate_script``, which built the prompt itself. Left out, it is taken from
     the record made when the prompt was built (``recorded_basis``).
+
+    ``mode`` and ``title`` are given for a draft written from a brand's brief (``sponsored.apply_draft``): the
+    script is stored as sponsored, under that title when it is not empty.
     """
     unwrapped: Any = result
     for _ in range(2):
@@ -360,9 +373,9 @@ def apply_draft(store: Store, result: Dict[str, Any], *, notes: str, target_sec:
             elif isinstance(first_opt, dict) and isinstance(first_opt.get("title_zh"), str) and first_opt["title_zh"].strip():
                 inferred_title = first_opt["title_zh"].strip()[:60]
     return store.create_script(
-        title=inferred_title, notes=notes, target_sec=target_sec, video_format=video_format,
+        title=title.strip() or inferred_title, notes=notes, target_sec=target_sec, video_format=video_format,
         default_title=default_title, lines=normalize_lines(lines), post=post,
-        from_ai=True, keywords=keywords, basis=basis,
+        from_ai=True, keywords=keywords, basis=basis, mode=mode,
     )
 
 
@@ -1292,12 +1305,18 @@ def remember_lesson(store: Store, *, script_id: Any, ai: Any, final: Any, note: 
     The same ``ai`` and ``final`` again returns the lesson already remembered. Raises ``ValueError`` whose
     message is a code: ``not_found`` (no such script), ``no_ai_draft`` (the script was not drafted by AI,
     so there is no "what the AI wrote"), ``bad_lesson`` (wrong types or over-long text), ``no_change``
-    (the two versions differ in nothing but spacing or punctuation, which a later draft could not use) or
+    (the two versions differ in nothing but spacing or punctuation, which a later draft could not use),
     ``ai_text`` (the final wording is a proposal an AI made for this script: the creator chose it but did
-    not write it, so it says nothing about how the creator words things).
+    not write it, so it says nothing about how the creator words things) or ``sponsored_script`` (the script
+    was drafted from a brand's brief: its lines hold wording the brand asked for, and a remembered change
+    goes into every later draft as the way the creator words things. A sponsored script is kept out of that
+    the way a sponsored library item is kept out of the voice, whether or not its brief is still kept).
     """
-    if not isinstance(script_id, str) or store.get_script(script_id) is None:
+    script = store.get_script(script_id) if isinstance(script_id, str) else None
+    if script is None:
         raise ValueError("not_found")
+    if script.get("mode") == MODE_SPONSORED:
+        raise ValueError("sponsored_script")
     if store.get_ai_lines(script_id) is None:
         raise ValueError("no_ai_draft")
     ai, final, note = ("" if value is None else value for value in (ai, final, note))
