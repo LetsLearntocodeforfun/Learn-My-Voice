@@ -4,7 +4,7 @@ Two tasks of autopilot are registered here (``studio/autopilot.py``). Both are o
 them on, like every task. What they make are suggestions: something the creator takes or dismisses with a
 click. Neither ever changes a plan or a script. A plan's title, notes, day, keywords and script are the same
 after a run as before it, whichever level the creator chose; the one thing that puts a suggested keyword into
-a plan is ``take``, which only a request of the creator's calls. Nothing here is offered through MCP.
+a plan is ``take``, which only a request of the creator's calls. Through MCP an AI app can only read open suggestions and the state of automatic refreshes (``get_autopilot_status``); nothing in MCP can decide them.
 
 ``plans.suggest`` calls no model and sends nothing anywhere.
 

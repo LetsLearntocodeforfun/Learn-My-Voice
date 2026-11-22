@@ -1374,9 +1374,113 @@ class Handler(BaseHTTPRequestHandler):
             m = re.fullmatch(r"/api/autopilot/runs/([0-9a-f]{12})/undo", path)
             if m and method == "POST":
                 return self._json(pilot.undo(m.group(1)))
+            if path == "/api/autopilot/voice" and method in ("GET", "POST"):
+                return self._json(self._autopilot_voice_fallback(method))
+            if path == "/api/autopilot/sources" and method in ("GET", "POST"):
+                return self._json(self._autopilot_sources_fallback(method))
         except autopilot.AutopilotError as exc:
             raise ApiError(exc.status, exc.code, exc.message, exc.message_zh, extra=exc.extra)
         raise ApiError(404, "not_found")
+
+    def _autopilot_voice_fallback(self, method: str) -> Dict[str, Any]:
+        """Fallback handler for ``GET/POST /api/autopilot/voice`` (replaced by W3's voice-learning module on merge)."""
+        store = self.app.store
+        held = autopilot.all_settings(store).get("voice")
+        cur = held if isinstance(held, dict) else {}
+        watch_dir = str(cur.get("watch_dir") or "").strip()[:1000]
+        route_val = str(cur.get("transcribe_route") or "off")
+        if route_val not in ("off", "local", "cloud"):
+            route_val = "off"
+        if method == "POST":
+            body = self._read_json()
+            if not isinstance(body, dict):
+                raise ApiError(400, "autopilot_bad_setting", "Send the voice settings as a JSON object.",
+                               "请以 JSON 对象发送语音学习设置。")
+            if "watch_dir" in body:
+                raw_dir = body["watch_dir"]
+                if not isinstance(raw_dir, str) or "\x00" in raw_dir or len(raw_dir) > 1000:
+                    raise ApiError(400, "autopilot_bad_setting", "Watched folder path is invalid.",
+                                   "监控文件夹路径格式不正确。")
+                watch_dir = raw_dir.strip()
+            if "transcribe_route" in body:
+                wanted = body["transcribe_route"]
+                if wanted not in ("off", "local", "cloud"):
+                    raise ApiError(400, "autopilot_bad_setting",
+                                   "Transcription route must be off, local or cloud.",
+                                   "转写方式必须是关闭（off）、本机（local）或云端（cloud）。")
+                route_val = wanted
+            autopilot.save_other_setting(store, "voice", {"watch_dir": watch_dir, "transcribe_route": route_val})
+            self.app.autopilot._wake.set()
+        exists = False
+        if watch_dir:
+            try:
+                exists = Path(watch_dir).expanduser().is_dir()
+            except OSError:
+                exists = False
+        return {
+            "watch_dir": watch_dir,
+            "transcribe_route": route_val,
+            "folder_exists": exists,
+            "sponsored_subfolder": "sponsored",
+            "counts": {"ready": 0, "ingested": 0, "waiting": 0, "failed": 0},
+            "recent_files": [],
+        }
+
+    def _autopilot_sources_fallback(self, method: str) -> Dict[str, Any]:
+        """Fallback handler for ``GET/POST /api/autopilot/sources`` (replaced by W2's trend-sources module on merge)."""
+        import urllib.parse
+        store = self.app.store
+        held = autopilot.all_settings(store).get("sources")
+        cur = held if isinstance(held, dict) else {}
+        ai_lookup = bool(cur.get("ai_lookup")) if isinstance(cur.get("ai_lookup"), bool) else False
+        keyword_files = bool(cur.get("keyword_files")) if isinstance(cur.get("keyword_files"), bool) else False
+        raw_pages = cur.get("pages") if isinstance(cur.get("pages"), list) else []
+        pages = [str(u).strip()[:500] for u in raw_pages if isinstance(u, str) and str(u).strip()][:5]
+        if method == "POST":
+            body = self._read_json()
+            if not isinstance(body, dict):
+                raise ApiError(400, "autopilot_bad_setting", "Send the trend source settings as a JSON object.",
+                               "请以 JSON 对象发送热词来源设置。")
+            if "ai_lookup" in body:
+                if not isinstance(body["ai_lookup"], bool):
+                    raise ApiError(400, "autopilot_bad_setting", "ai_lookup must be true or false.",
+                                   "联网查热词开关必须是布尔值。")
+                ai_lookup = body["ai_lookup"]
+            if "keyword_files" in body:
+                if not isinstance(body["keyword_files"], bool):
+                    raise ApiError(400, "autopilot_bad_setting", "keyword_files must be true or false.",
+                                   "本地热词表格开关必须是布尔值。")
+                keyword_files = body["keyword_files"]
+            if "pages" in body:
+                given = body["pages"]
+                if not isinstance(given, list) or len(given) > 5 or not all(isinstance(x, str) for x in given):
+                    raise ApiError(400, "autopilot_bad_setting",
+                                   "Provide at most 5 HTTPS public trend page URLs.",
+                                   "最多只能填写 5 个公开的 HTTPS 热词网页地址。")
+                cleaned: List[str] = []
+                for raw_url in given:
+                    u = raw_url.strip()
+                    if not u:
+                        continue
+                    parsed = urllib.parse.urlparse(u)
+                    host = (parsed.hostname or "").lower()
+                    if parsed.scheme != "https" or not host or len(u) > 500:
+                        raise ApiError(400, "autopilot_bad_url",
+                                       "Each trend source page must be a valid https:// URL.",
+                                       "每个公开热词网页都必须是有效的 https:// 网址。")
+                    if any(host == blocked or host.endswith("." + blocked)
+                           for blocked in ("xiaohongshu.com", "xhslink.com", "rednote.com")):
+                        raise ApiError(400, "autopilot_xhs_forbidden",
+                                       "Xiaohongshu / RedNote pages are never fetched by this app.",
+                                       "本应用绝不会抓取小红书（xiaohongshu.com / rednote.com）页面。")
+                    if u not in cleaned:
+                        cleaned.append(u)
+                pages = cleaned[:5]
+            autopilot.save_other_setting(
+                store, "sources", {"ai_lookup": ai_lookup, "keyword_files": keyword_files, "pages": pages}
+            )
+            self.app.autopilot._wake.set()
+        return {"ai_lookup": ai_lookup, "keyword_files": keyword_files, "pages": pages, "max_pages": 5}
 
     # ---- api ----------------------------------------------------------------
     def _api(self, method: str, path: str) -> None:
