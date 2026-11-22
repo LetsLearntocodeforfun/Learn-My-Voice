@@ -57,6 +57,7 @@ from __future__ import annotations
 
 import contextlib
 import errno
+import functools
 import gc
 import hashlib
 import json
@@ -139,16 +140,63 @@ UpdateTransport = Callable[[str, str, Dict[str, str]], UpdateStream]
 
 
 class UpdateError(Exception):
-    """An update check, download, unpack, or migration step was refused. Nothing was half-written."""
+    """A look for updates, a download, an unpacking or a copy from another folder was refused.
+
+    ``code`` names the refusal, ``message`` and ``message_zh`` say it to the creator, ``status`` is the HTTP
+    status and ``extra`` goes into the answer beside them. What the refusal leaves behind is said in its own
+    sentence: nearly always nothing; ``move_undo_failed`` is the one that says otherwise. ``why`` is, where
+    there is one, the bare reason as ``(English, Chinese)``, for a caller that words the rest differently.
+    """
 
     def __init__(self, code: str, message: str, message_zh: str, status: int = 400,
-                 extra: Optional[Dict[str, Any]] = None) -> None:
+                 extra: Optional[Dict[str, Any]] = None, why: Optional[Tuple[str, str]] = None) -> None:
         super().__init__(message)
         self.code = code
         self.message = message
         self.message_zh = message_zh
         self.status = status
         self.extra = dict(extra or {})
+        self.why = why
+
+
+def _why(exc: BaseException) -> Tuple[str, str, int]:
+    """What stopped a write or a read, as ``(English, Chinese, HTTP status)``, in words a person can act on.
+
+    A full disk and a database that another program holds are named as what they are: both happen, and both are
+    for the creator to put right, not signs that something is wrong with the data. Anything else is given as
+    the system worded it, cut short.
+    """
+    said = str(exc)
+    low = said.lower()
+    full = (isinstance(exc, OSError) and exc.errno in (errno.ENOSPC, getattr(errno, "EDQUOT", errno.ENOSPC))) \
+        or (isinstance(exc, sqlite3.Error) and "full" in low)                  # SQLite: "database or disk is full"
+    if full:
+        return "the disk is full", "磁盘已满", 507
+    if isinstance(exc, TimeoutError) or (isinstance(exc, sqlite3.Error) and ("locked" in low or "busy" in low)):
+        return ("the database is in use by another program, such as a second copy of the app or an AI app connected to it",
+                "数据库正被另一个程序占用，比如另一个打开的工作台，或连着它的 AI 应用", 409)
+    shown = ("%s: %s" % (type(exc).__name__, said[:160])) if said else type(exc).__name__
+    return shown, shown, 500
+
+
+def _refusing(code: str, english: str, chinese: str) -> Callable[[Callable[..., Any]], Callable[..., Any]]:
+    """For a function a route calls: where the disk or the database fails it, it refuses in two languages.
+
+    Each such function says what it can about a failure where it happens (what is as it was, what to do).
+    This is for the failure nobody thought of: without it the server answers with its last resort, ``500
+    internal error``, in English only and with nothing a person can act on. ``english`` and ``chinese`` each
+    take the reason (``_why``) at ``%s``. They say that it did not work and why, and claim nothing more.
+    """
+    def wrap(function: Callable[..., Any]) -> Callable[..., Any]:
+        @functools.wraps(function)
+        def run(*args: Any, **more: Any) -> Any:
+            try:
+                return function(*args, **more)
+            except (OSError, sqlite3.Error) as exc:
+                why, why_zh, status = _why(exc)
+                raise UpdateError(code, english % why, chinese % why_zh, status, why=(why, why_zh))
+        return run
+    return wrap
 
 
 def _allowed_https_url(url: Any, *, hosts: Sequence[str]) -> bool:
@@ -617,6 +665,7 @@ def _stored_settings(store: Store, target: Optional[Dict[str, str]] = None) -> D
     }
 
 
+@_refusing("update_settings_unsaved", "The update settings could not be saved: %s.", "更新设置没能保存：%s。")
 def save_update_settings(store: Store, changes: Dict[str, Any], *, checks_on: bool = False) -> Dict[str, Any]:
     """Persist startup check preference or skipped version inside ``config.json["updates"]``. Asks GitHub nothing."""
     def mutate(cfg: Dict[str, Any]) -> None:
@@ -634,6 +683,7 @@ def save_update_settings(store: Store, changes: Dict[str, Any], *, checks_on: bo
     return status_payload(store, checks_on=checks_on)
 
 
+@_refusing("update_state_unread", "What is known about updates could not be read or kept: %s.", "更新信息没能读取或保存：%s。")
 def check_for_updates(store: Store, *, checks_on: bool = False, force: bool = False,
                       scan_previous: bool = False,
                       transport: Optional[UpdateTransport] = None,
@@ -710,6 +760,7 @@ def check_for_updates(store: Store, *, checks_on: bool = False, force: bool = Fa
                            checks_on=True, scan_previous=scan_previous)
 
 
+@_refusing("update_state_unread", "What is known about updates could not be read: %s.", "更新信息没能读取：%s。")
 def status_payload(store: Store, *, checks_on: bool = False, scan_previous: bool = False) -> Dict[str, Any]:
     """What is known about updates from local storage alone. Asks GitHub nothing, whatever ``checks_on`` is."""
     cur = current_version_info()
@@ -985,6 +1036,7 @@ def _stream_to_destination(url: str, headers: Dict[str, str], asset_name: str, e
 _ORIG_DEFAULT_TRANSPORT = _default_transport
 
 
+@_refusing("save_failed", "The download could not be saved: %s.", "下载的文件没能保存：%s。")
 def download_release_asset(store: Store, outside_mod: Any, *, checks_on: bool = False,
                            transport: Optional[UpdateTransport] = None,
                            on_progress: Optional[Callable[[str], None]] = None) -> Dict[str, Any]:
@@ -1215,28 +1267,8 @@ def _bad_source_data_error(detail_en: str, detail_zh: str) -> UpdateError:
         "bad_source_data",
         "The earlier folder's data did not pass the safety checks (%s), so nothing here was changed." % detail_en,
         "旧版本文件夹里的数据没有通过安全检查（%s），当前内容没有改动。" % detail_zh,
-        400,
+        400, why=(detail_en, detail_zh),
     )
-
-
-def _why(exc: BaseException) -> Tuple[str, str, int]:
-    """What stopped a write or a read, as ``(English, Chinese, HTTP status)``, in words a person can act on.
-
-    A full disk and a database that another program holds are named as what they are: both happen, and both are
-    for the creator to put right, not signs that something is wrong with the data. Anything else is given as
-    the system worded it, cut short.
-    """
-    said = str(exc)
-    low = said.lower()
-    full = (isinstance(exc, OSError) and exc.errno in (errno.ENOSPC, getattr(errno, "EDQUOT", errno.ENOSPC))) \
-        or (isinstance(exc, sqlite3.Error) and "full" in low)                  # SQLite: "database or disk is full"
-    if full:
-        return "the disk is full", "磁盘已满", 507
-    if isinstance(exc, TimeoutError) or (isinstance(exc, sqlite3.Error) and ("locked" in low or "busy" in low)):
-        return ("the database is in use by another program, such as a second copy of the app or an AI app connected to it",
-                "数据库正被另一个程序占用，比如另一个打开的工作台，或连着它的 AI 应用", 409)
-    shown = ("%s: %s" % (type(exc).__name__, said[:160])) if said else type(exc).__name__
-    return shown, shown, 500
 
 
 def _move_failed_error(exc: BaseException, as_before: bool = True) -> UpdateError:
@@ -1249,14 +1281,14 @@ def _move_failed_error(exc: BaseException, as_before: bool = True) -> UpdateErro
             "nothing from the other folder in it, and the other folder was not changed. You can try again." % english,
             "从旧版本文件夹复制没有完成：%s。当前文件夹和复制之前一样，里面没有留下旧文件夹的任何内容，旧文件夹也没有改动。可以再试一次。"
             % chinese,
-            status,
+            status, why=(english, chinese),
         )
     return UpdateError(
         "move_failed",
         "Copying from the earlier folder could not be finished: %s. The folder it was going into holds part of the "
         "data. The earlier folder was not changed." % english,
         "从旧版本文件夹复制没有完成：%s。目标文件夹里留有一部分内容。旧文件夹没有改动。" % chinese,
-        status,
+        status, why=(english, chinese),
     )
 
 
@@ -1517,6 +1549,7 @@ def _apply_staged_to_empty_store(target_store: Store, new_dir: Path, cfg_bytes: 
     _owner_only(target_store.data_dir)
 
 
+@_refusing("move_failed", "Copying from the earlier folder could not be done: %s.", "从旧版本文件夹复制没能进行：%s。")
 def migrate_from_previous_folder(target_store: Store, source_app_dir: Path, *,
                                  backups: Optional[backup.Backups] = None,
                                  jobs: Any = None) -> Dict[str, Any]:
@@ -1624,14 +1657,25 @@ def migrate_from_previous_folder(target_store: Store, source_app_dir: Path, *,
             if work is not None and not work_is_needed:
                 backup._remove_folder(work)
 
-        upgraded = Store(dst_data)
-        # Counted through a connection that is closed here, not through Store.list_scripts() and
-        # Store.samples_count(): those leave closing to Python, and when this store is the one in a folder that
-        # is about to be renamed (unpack_and_migrate_zip), a connection still open refuses the rename on Windows.
-        with contextlib.closing(upgraded._db()) as db:
-            script_count = int(db.execute("SELECT COUNT(*) FROM scripts").fetchone()[0])
-            sample_count = int(db.execute("SELECT COUNT(*) FROM samples").fetchone()[0])
-        settings = upgraded.public_settings()
+        try:
+            upgraded = Store(dst_data)
+            # Counted through a connection that is closed here, not through Store.list_scripts() and
+            # Store.samples_count(): those leave closing to Python, and when this store is the one in a folder
+            # that is about to be renamed (unpack_and_migrate_zip), a connection still open refuses the rename
+            # on Windows.
+            with contextlib.closing(upgraded._db()) as db:
+                script_count = int(db.execute("SELECT COUNT(*) FROM scripts").fetchone()[0])
+                sample_count = int(db.execute("SELECT COUNT(*) FROM samples").fetchone()[0])
+            settings = upgraded.public_settings()
+        except (OSError, sqlite3.Error) as exc:
+            english, chinese, status = _why(exc)
+            raise UpdateError(
+                "move_unread",
+                "The data and settings were copied into this folder, but could not be read back just now: %s. "
+                "Close the app and start it again." % english,
+                "数据和设置已经复制到当前文件夹，但刚才没能读出来：%s。请关闭应用再重新打开。" % chinese,
+                status, why=(english, chinese),
+            )
         if os.name == "nt":
             gc.collect()                    # kept as it passed on the Windows runners: see unpack_and_migrate_zip
         whisper_venv = src_root / "local_tools" / "whisper" / "venv"
@@ -1671,6 +1715,36 @@ def migrate_from_previous_folder(target_store: Store, source_app_dir: Path, *,
         if exc.code == "backup_busy":
             raise _migrate_busy_error()
         raise UpdateError(exc.code, exc.message, exc.message_zh, exc.status)
+
+
+MAX_NAMED_PATH_CHARS = 4096
+
+
+def migrate_from_named_folder(store: Store, named: Any, *, backups: Optional[backup.Backups] = None,
+                              jobs: Any = None) -> Dict[str, Any]:
+    """What ``POST /api/update/migrate`` does: copy from the folder ``named``, when it is one a look beside this one finds.
+
+    ``named`` is what the page sent: anything. Only a folder that ``discover_previous_installations`` lists is
+    taken, by the path it lists it under; everything else is ``bad_source``, also what is no text, is too long
+    to be a path, or cannot be looked up.
+    """
+    chosen = ""
+    wanted = named.strip() if isinstance(named, str) else ""
+    if wanted and len(wanted) <= MAX_NAMED_PATH_CHARS and "\x00" not in wanted:
+        try:
+            candidate = Path(wanted)
+            if not candidate.is_symlink():
+                chosen = str(candidate.resolve())
+        except (OSError, ValueError, RuntimeError):
+            chosen = ""
+    try:
+        allowed = {item["path"] for item in discover_previous_installations(store, explicit=True)}
+    except (OSError, sqlite3.Error):
+        allowed = set()
+    if not chosen or chosen not in allowed:
+        raise UpdateError("bad_source", "Choose one of the detected earlier version folders.",
+                          "请选择检测到的旧版本应用文件夹。", 400)
+    return migrate_from_previous_folder(store, Path(chosen), backups=backups, jobs=jobs)
 
 
 # ---- Strict bounded .zip unpacking into a new sibling folder ----------------
@@ -1728,6 +1802,33 @@ def _destination_exists_error(folder_name: str) -> UpdateError:
     )
 
 
+def _unpack_failed_error(exc: BaseException, left: Optional[Path] = None) -> UpdateError:
+    """The package could not be unpacked. ``left``: the folder it was being unpacked into, where that is still there."""
+    english, chinese, status = _why(exc)
+    still, still_zh = "", ""
+    if left is not None and os.path.lexists(str(left)):
+        still = " A folder named %s was left beside this one and can be deleted." % left.name
+        still_zh = "旁边留下了一个名为 %s 的文件夹，可以删掉。" % left.name
+    return UpdateError(
+        "unpack_failed",
+        "The package could not be unpacked: %s. Nothing in this folder was changed.%s You can try again, or unpack "
+        "the zip yourself." % (english, still),
+        "压缩包没能解压：%s。当前文件夹没有改动。%s可以再试一次，或者自己手动解压。" % (chinese, still_zh),
+        status, why=(english, chinese),
+    )
+
+
+def _name_key(name: str) -> str:
+    """One key for the ways of writing a path that some system takes for the same file.
+
+    Windows and macOS do not tell capitals from small letters; macOS does not tell a letter with an accent
+    from the letter followed by the accent. Two entries with one key would land in one file there.
+    """
+    return unicodedata.normalize("NFC", name).casefold()
+
+
+@_refusing("unpack_failed", "The package could not be unpacked: %s. Nothing in this folder was changed.",
+           "压缩包没能解压：%s。当前文件夹没有改动。")
 def unpack_and_migrate_zip(current_store: Store, zip_path: Path, *,
                            dest_parent: Optional[Path] = None,
                            jobs: Any = None) -> Dict[str, Any]:
@@ -1767,6 +1868,7 @@ def unpack_and_migrate_zip(current_store: Store, zip_path: Path, *,
         raise UpdateError("save_failed", "Destination parent folder is not available.",
                           "目标上级目录不可用。", 507)
 
+    staging_dir: Optional[Path] = None
     try:
         with zipfile.ZipFile(str(pkg), "r") as zf:
             infos = zf.infolist()
@@ -1777,6 +1879,8 @@ def unpack_and_migrate_zip(current_store: Store, zip_path: Path, *,
 
             tops = set()
             seen_names = set()
+            file_names = set()
+            folder_names = set()
             declared_total = 0
             for info in infos:
                 name = info.filename
@@ -1802,11 +1906,14 @@ def unpack_and_migrate_zip(current_store: Store, zip_path: Path, *,
                 if len(parts) > 16 or not all(_is_windows_safe_part(part) for part in parts):
                     raise UpdateError("bad_zip", "Archive contains a path name that is unsafe on Windows or POSIX.",
                                       "压缩包内包含不安全或不兼容 Windows 的文件名。", 400)
-                norm_key = trimmed.lower()
+                norm_key = _name_key(trimmed)
                 if norm_key in seen_names:
                     raise UpdateError("bad_zip", "Archive contains duplicate or case-colliding file names.",
                                       "压缩包内包含重复或大小写冲突的文件名。", 400)
                 seen_names.add(norm_key)
+                if not info.is_dir():
+                    file_names.add(norm_key)
+                folder_names.update(_name_key("/".join(parts[:depth])) for depth in range(1, len(parts)))
                 tops.add(parts[0])
                 if len(parts) > 1:
                     rel_check = "/".join(parts[1:]) + ("/" if info.is_dir() else "")
@@ -1821,6 +1928,9 @@ def unpack_and_migrate_zip(current_store: Store, zip_path: Path, *,
                     raise UpdateError("zip_too_large", "Archive unpacks to more than the allowed size limit.",
                                       "压缩包解压总大小超过上限。", 413)
 
+            if file_names & folder_names:
+                raise UpdateError("bad_zip", "Archive holds one name both as a file and as a folder.",
+                                  "压缩包里有同一个名字既是文件又是文件夹。", 400)
             if len(tops) != 1:
                 raise UpdateError("bad_zip", "Package must contain a single version folder.",
                                   "压缩包必须只包含一个版本根目录。", 400)
@@ -1831,7 +1941,7 @@ def unpack_and_migrate_zip(current_store: Store, zip_path: Path, *,
                                   "压缩包根目录名异常：%s" % top_folder[:80], 400)
             expected_ver = m_top.group(1)
             build_member = "%s/%s" % (top_folder, "studio/build.json")
-            if build_member.lower() not in seen_names:
+            if _name_key(build_member) not in seen_names:
                 raise UpdateError("bad_zip", "Package has no studio/build.json.",
                                   "压缩包缺少 studio/build.json。", 400)
 
@@ -1886,10 +1996,15 @@ def unpack_and_migrate_zip(current_store: Store, zip_path: Path, *,
                     out_file = (staging_resolved / rel).resolve()
                     if not str(out_file).startswith(str(staging_resolved) + os.sep):
                         raise UpdateError("bad_zip", "Path traversal refused.", "拒绝越界解压路径。", 400)
-                    out_file.parent.mkdir(parents=True, exist_ok=True)
+                    try:
+                        out_file.parent.mkdir(parents=True, exist_ok=True)
+                        made = os.open(str(out_file), os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o644)
+                    except (FileExistsError, NotADirectoryError, IsADirectoryError):
+                        # Two names that this system takes for one, in a way the checks above do not know of.
+                        raise UpdateError("bad_zip", "Archive holds names that are one and the same on this system.",
+                                          "压缩包里有在这台电脑上会重名的文件。", 400)
                     written = 0
-                    with zf.open(info, "r") as src_entry, \
-                            open(os.open(str(out_file), os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o644), "wb") as dst_entry:
+                    with open(made, "wb") as dst_entry, zf.open(info, "r") as src_entry:
                         while True:
                             block = src_entry.read(_CHUNK)
                             if not block:
@@ -1918,7 +2033,21 @@ def unpack_and_migrate_zip(current_store: Store, zip_path: Path, *,
 
                 # Copy current data/ into the newly unpacked staging folder before moving it into place.
                 staged_new_store = Store(staging_resolved / "data")
-                mig = migrate_from_previous_folder(staged_new_store, current_app_dir, jobs=jobs)
+                try:
+                    mig = migrate_from_previous_folder(staged_new_store, current_app_dir, jobs=jobs)
+                except UpdateError as exc:
+                    if exc.why is None:
+                        raise                   # busy: said in its own words
+                    # Its sentences speak of "the earlier folder" and "this folder". Here the earlier one is the
+                    # folder in use and the other is thrown away, so the reason is said in words that fit.
+                    raise UpdateError(
+                        "unpack_copy_failed",
+                        "The package was unpacked, but what this copy holds could not be copied into the new folder: "
+                        "%s. The new folder was removed again, and nothing in this folder was changed." % exc.why[0],
+                        "压缩包已经解压，但当前的数据没能复制到新文件夹里：%s。新文件夹已经删掉，当前文件夹没有改动。"
+                        % exc.why[1],
+                        exc.status, why=exc.why,
+                    )
                 if os.name == "nt":
                     gc.collect()            # kept as it passed on the Windows runners: see the note above
 
@@ -1955,6 +2084,10 @@ def unpack_and_migrate_zip(current_store: Store, zip_path: Path, *,
     except (zipfile.BadZipFile, zipfile.LargeZipFile, zlib.error, EOFError, struct.error):
         raise UpdateError("bad_zip", "Downloaded file is not a valid zip archive.",
                           "下载的文件不是有效的 zip 压缩包。", 400)
+    except (OSError, sqlite3.Error) as exc:
+        # The disk is full, the folder beside this one cannot be written to, the database of the new folder
+        # could not be made. The unpacking folder was removed on the way out (see the ``finally`` above).
+        raise _unpack_failed_error(exc, staging_dir)
 
     resolved_target = target_dir.resolve()
     mig["migrated_from"] = str(current_app_dir)

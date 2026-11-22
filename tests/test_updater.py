@@ -18,6 +18,10 @@ Each class covers one thing the creator, or whoever runs a trial, can rely on:
 - every connection on the database in the unpacked folder has been closed, not merely dropped, when the folder is
   renamed into place (Windows refuses the rename otherwise), and a rename that is refused is tried again only
   where and as long as ``updater._PLACE_TRIES`` says, then refused in two languages;
+- a copy from an earlier folder is all of it or none of it: stopped at any step, or with the app closed in the
+  middle, the folder it was going into is as it was;
+- a full disk, a folder that cannot be written to and a database another program holds are refusals in two
+  languages that say what is as it was, never the server's ``500 internal error``;
 - the page works in Chinese and English, in light and dark appearances, with zero browser console or 404 problems.
 
 No request leaves this computer in any of these tests.
@@ -1540,6 +1544,206 @@ class HandlesTest(ServerCase):
             status, answer = self.unpack("0.3.5")
         self.assertEqual((status, self.said(answer), len(tried)), (507, "save_failed", 1))
         self.assertEqual(self.leftovers(), [])
+
+
+# ---------------------------------------------------------------------------------------------- 6c. plain failures are refusals
+class PlainFailuresTest(ServerCase):
+    """A full disk, a folder that cannot be written to, a database held by another program.
+
+    Each is said in two languages, with what is as it was, and never as the server's last resort
+    (``500 internal error``, English only): ``said`` checks that for every answer here.
+    """
+
+    def setUp(self):
+        super().setUp()
+        self.packaged("0.2.0-beta")
+        self.store.create_script(title="Mine")
+        self.store.update_config(lambda config: config.update(trend_weight="heat"))
+        self.before = holds(self.store)
+
+    def unpack(self, version, entries=None):
+        package = self.save_zip(make_release_zip_bytes(version, entries), name="learn-my-voice-%s.zip" % version)
+        return self.send("POST", "/api/update/apply-zip", {"zip_path": str(package)})
+
+    def nothing_happened(self, version):
+        self.assertFalse((self.tmp / ("learn-my-voice-%s" % version)).exists())
+        self.assertEqual([entry.name for entry in self.tmp.iterdir() if ".unpacking-" in entry.name], [])
+        self.assertEqual(holds(self.store), self.before)
+
+    def test_a_place_beside_this_folder_that_cannot_be_written_to_is_said(self):
+        real_mkdir = os.mkdir
+
+        def mkdir(name, *args, **more):
+            if ".unpacking-" in os.path.basename(os.fspath(name)):
+                raise PermissionError(errno.EACCES, "Permission denied")
+            return real_mkdir(name, *args, **more)
+
+        with mock.patch.object(os, "mkdir", mkdir):
+            status, answer = self.unpack("0.3.0")
+        self.assertEqual((status, self.said(answer)), (500, "unpack_failed"))
+        self.assertIn("Permission denied", answer["message"])
+        self.assertIn("Nothing in this folder was changed", answer["message"])
+        self.assertIn("Permission denied", answer["message_zh"])
+        self.nothing_happened("0.3.0")
+
+    def test_a_full_disk_while_unpacking_is_named_and_nothing_is_left(self):
+        real_open = os.open
+        written = []
+
+        def full_after(count):
+            def opened(name, flags, *args, **more):
+                if ".unpacking-" in os.fspath(name) and flags & os.O_CREAT:
+                    written.append(os.fspath(name))
+                    if len(written) > count:
+                        raise OSError(errno.ENOSPC, "No space left on device")
+                return real_open(name, flags, *args, **more)
+            return opened
+
+        # At the first file of the package, at its third and last, and at the first file of this copy's data
+        # that is written into the new folder.
+        for version, count, code in (("0.3.0", 0, "unpack_failed"), ("0.3.1", 2, "unpack_failed"),
+                                     ("0.3.2", 3, "unpack_copy_failed")):
+            del written[:]
+            with mock.patch.object(os, "open", full_after(count)):
+                status, answer = self.unpack(version, {"README.md": "# read me\n"})
+            self.assertEqual((status, self.said(answer)), (507, code), version)
+            self.assertIn("the disk is full", answer["message"])
+            self.assertIn("in this folder was changed", answer["message"])
+            self.assertIn("磁盘已满", answer["message_zh"])
+            self.assertEqual(len(written), count + 1)
+            self.nothing_happened(version)
+        # Without the full disk the same package is unpacked.
+        status, answer = self.unpack("0.3.0", {"README.md": "# read me\n"})
+        self.assertEqual(status, 201, answer)
+
+    def test_names_that_would_land_in_one_place_are_refused_before_anything_is_written(self):
+        def package(names):
+            top = "learn-my-voice-0.4.0"
+            held = io.BytesIO()
+            with zipfile.ZipFile(held, "w", zipfile.ZIP_DEFLATED) as archive:
+                archive.writestr("%s/studio/build.json" % top,
+                                 json.dumps({"version": "0.4.0", "commit": "a" * 40, "built_on": "2026-11-21"}))
+                for name in names:
+                    archive.writestr("%s/%s" % (top, name), b"x")
+            return held.getvalue()
+
+        made = []
+        real_mkdir = os.mkdir
+
+        def mkdir(name, *args, **more):
+            made.append(os.path.basename(os.fspath(name)))
+            return real_mkdir(name, *args, **more)
+
+        for label, names in (("a file and a folder of one name", ["a", "a/b"]),
+                             ("the folder first", ["a/b", "a"]),
+                             ("capitals", ["Notes.txt", "notes.TXT"]),
+                             ("an accent written two ways", ["caf\u00e9.txt", "cafe\u0301.txt"]),
+                             ("a folder that differs in capitals from a file", ["Docs/x", "docs"])):
+            path = self.save_zip(package(names), name="clash-%d.zip" % len(made))
+            with mock.patch.object(os, "mkdir", mkdir):
+                status, answer = self.send("POST", "/api/update/apply-zip", {"zip_path": str(path)})
+            self.assertEqual((status, self.said(answer)), (400, "bad_zip"), label)
+            self.assertEqual([name for name in made if ".unpacking-" in name], [], label)
+            self.nothing_happened("0.4.0")
+
+    def test_when_what_this_copy_holds_cannot_go_into_the_new_folder_that_folder_is_removed_and_it_is_said(self):
+        with mock.patch.object(updater, "_apply_staged_to_empty_store",
+                               side_effect=OSError(errno.ENOSPC, "No space left on device")):
+            status, answer = self.unpack("0.3.0")
+        self.assertEqual((status, self.said(answer)), (507, "unpack_copy_failed"))
+        for part in ("the disk is full", "new folder was removed again", "nothing in this folder was changed"):
+            self.assertIn(part, answer["message"])
+        self.assertIn("磁盘已满", answer["message_zh"])
+        self.nothing_happened("0.3.0")
+        # This copy's own database does not pass the checks a copy makes: said in words that fit this case.
+        with contextlib.closing(sqlite3.connect(str(self.store.db_path))) as db:
+            db.executescript("CREATE VIEW odd AS SELECT * FROM scripts;")
+        self.before = holds(self.store)
+        status, answer = self.unpack("0.3.1")
+        self.assertEqual((status, self.said(answer)), (400, "unpack_copy_failed"))
+        self.assertNotIn("earlier folder", answer["message"])
+        self.nothing_happened("0.3.1")
+
+    def test_unpacking_is_refused_while_something_runs(self):
+        release, started = threading.Event(), threading.Event()
+        self.app.jobs.start("transcribe", lambda progress: (started.set(), release.wait(10)))
+        self.assertTrue(started.wait(5))
+        try:
+            status, answer = self.unpack("0.3.0")
+            self.assertEqual((status, self.said(answer)), (409, "migrate_busy"))
+            self.nothing_happened("0.3.0")
+        finally:
+            release.set()
+
+    def test_what_the_page_names_as_the_folder_to_copy_from_can_be_anything(self):
+        empty = Store(self.tmp / "learn-my-voice-0.2.9" / "data")
+        httpd = server.make_server(0, empty, None, None, self.world)
+        thread = threading.Thread(target=httpd.serve_forever, kwargs={"poll_interval": 0.02}, daemon=True)
+        thread.start()
+        self.addCleanup(lambda: (httpd.shutdown(), httpd.server_close(), thread.join(5)))
+        real, _ = self.make_sibling("0.1.9", with_whisper=False)
+        linked = self.tmp / "learn-my-voice-0.1.8"
+        os.symlink(str(real), str(linked))
+        for named in ("x" * 5000, "/" + "y/" * 3000, "a\u0000b", 7, 1.5, None, True, [], [str(real)], {"path": str(real)}, "", "  ",
+                      str(self.tmp / "learn-my-voice-0.0.1"), str(self.tmp), str(linked), str(real / "data"), "..",
+                      str(real) + "/../learn-my-voice-0.2.9"):
+            connection = http.client.HTTPConnection("127.0.0.1", httpd.server_address[1], timeout=30)
+            try:
+                connection.request("POST", "/api/update/migrate", body=json.dumps({"source_path": named}).encode("utf-8"),
+                                   headers={"Content-Type": "application/json"})
+                response = connection.getresponse()
+                answer = json.loads(response.read().decode("utf-8"))
+            finally:
+                connection.close()
+            self.assertEqual((response.status, self.said(answer)), (400, "bad_source"), repr(named)[:60])
+            self.assertTrue(updater.is_data_empty(empty))
+
+    def test_settings_and_what_is_known_about_updates_that_cannot_be_kept_or_read_are_said(self):
+        self.app.update_checks = True
+        self.app.update_transport = lambda method, url, headers: b"[]"
+        full = OSError(errno.ENOSPC, "No space left on device")
+        with mock.patch.object(Store, "_write_bytes", side_effect=full):
+            status, answer = self.send("POST", "/api/update/settings", {"auto_check": False})
+            self.assertEqual((status, self.said(answer)), (507, "update_settings_unsaved"))
+            self.assertIn("磁盘已满", answer["message_zh"])
+            status, answer = self.send("GET", "/api/update?check=1&force=1")
+            self.assertEqual((status, self.said(answer)), (507, "update_state_unread"))
+        self.assertTrue(updater._stored_settings(self.store)["auto_check"])
+        with mock.patch.object(updater, "is_data_empty", side_effect=sqlite3.OperationalError("database is locked")):
+            for look in ("/api/update", "/api/update?check=1", "/api/update?scan=1"):
+                status, answer = self.send("GET", look)
+                self.assertEqual((status, self.said(answer)), (409, "update_state_unread"), look)
+                self.assertIn("in use by another program", answer["message"])
+
+    def test_a_download_with_nowhere_to_go_is_said(self):
+        self.keep_found("9.0.0")
+        self.app.update_checks = True
+        self.app.update_transport = lambda method, url, headers: (
+            ("%s  learn-my-voice-9.0.0.zip\n" % hashlib.sha256(b"package").hexdigest()).encode("utf-8")
+            if url.endswith(".sha256") else b"package")
+        with mock.patch.object(self.world, "downloads_folder", side_effect=PermissionError(errno.EACCES, "not for you")):
+            status, answer = self.send("POST", "/api/update/download", {})
+        self.assertEqual((status, self.said(answer)), (500, "save_failed"))
+        self.assertIn("not for you", answer["message"])
+
+    def test_a_copy_that_is_in_place_and_cannot_be_read_back_says_so(self):
+        empty = Store(self.tmp / "learn-my-voice-0.2.9" / "data")
+        real, _ = self.make_sibling("0.1.9", with_whisper=False)
+        live = empty.data_dir.resolve()
+
+        class Unreadable(Store):
+            def __init__(self, data_dir=None):
+                if Path(data_dir).resolve() == live:
+                    raise sqlite3.OperationalError("disk I/O error")
+                super().__init__(data_dir)
+
+        with mock.patch.object(updater, "Store", Unreadable):
+            with self.assertRaises(updater.UpdateError) as refused:
+                updater.migrate_from_previous_folder(empty, real, backups=backup.Backups(empty))
+        self.assertEqual((refused.exception.code, refused.exception.status), ("move_unread", 500))
+        self.assertIn("were copied into this folder", refused.exception.message)
+        self.assertRegex(refused.exception.message_zh, "[\u4e00-\u9fff]")
+        self.assertEqual([script["title"] for script in empty.list_scripts()], ["旧版脚本"])
 
 
 # ---------------------------------------------------------------------------------------------- 7. the page (Chrome E2E in zh/en, light/dark)
