@@ -1,6 +1,6 @@
 # Learn-My-Voice
 
-**English** | [简体中文](README.zh-CN.md) · **[5-Minute Quick Start Guide](docs/QUICKSTART.md)** | **[5 分钟快速上手指南](docs/QUICKSTART.zh-CN.md)**
+**English** | [简体中文](README.zh-CN.md) · **[5-Minute Quick Start Guide](docs/QUICKSTART.md)** | **[5 分钟快速上手指南](docs/QUICKSTART.zh-CN.md)** · **[v1.0 Roadmap & Sign-Off Gates](docs/V1_ROADMAP.md)** · **[Threat Model](docs/THREAT_MODEL.md)**
 
 A local, bilingual (中文 / English) script studio for Xiaohongshu (RedNote) and other short-video creators.
 It learns how one creator actually talks from her own past scripts, subtitles, and RedNote videos, drafts new scripts in that voice,
@@ -18,18 +18,19 @@ This is an early version. Read this before relying on it.
 
 | Area | State |
 | :--- | :--- |
-| Script editor, checks, teleprompter, library, exports | Working. Covered by automated tests and exercised in a real browser (headless Chrome, macOS). |
-| AI steps (draft, learn voice, topic ideas) | Working against stand-in model replies in tests. Output quality with real models has not been evaluated yet. |
+| Script editor, revisions, Bilingual Partner view, checks, teleprompter, library, exports | Working. Covered by automated tests (including a 300-script / 600-sample / 5,000-comment scale suite) and exercised in a real browser with hardware CDP keystrokes (headless Chrome, macOS, `zh`/light and `en`/dark). |
+| AI steps (draft, learn voice, topic ideas, Stage 11 packaging) | Working against stand-in model replies in tests. Output quality with real models has not been evaluated yet. |
 | Guided setup, voice review, lessons from edits | Covered by automated tests. Their AI parts were tested against stand-in replies, like the row above. |
 | On-device transcription | A Mac with an Apple chip and macOS 14 or newer only. Set up and used on one Mac so far. Transcripts contain mistakes, especially in sentence-final particles, and wait for the creator's confirmation before their wording is learned from. |
 | Trend keywords | Pasting, ranking and keyword checks work, are covered by automated tests and were exercised in headless Chrome. The ranking weights are judgement calls that have **not** been tuned against real results. Lookups by a web-searching AI have only been tested with stand-in replies. Importing a spreadsheet is new and was tested with made-up files only: no real export from 新红, 千瓜 or 灰豚, and no workbook saved by Excel, WPS or Numbers, has been tried. |
 | One line to ideas | New. Typing or saying one line on 选题建议 looks current keywords up and then suggests ideas. Covered by automated tests, and the pages were run with the server in headless Chrome against stand-in AI replies. The web lookup through a Gemini or OpenAI key is written from those services' documentation and has **not** been run against either. Speaking was tested with the Whisper on one Mac and a sound stream in place of the microphone; a real microphone has **not** been tried. |
-| 剪映 / CapCut | Exports standard files to import. Importing them has **not** been verified inside 剪映 or CapCut by the maintainers. It does not write 剪映 project drafts. |
-| MCP server | 20 tools tested at protocol level (JSON-RPC over stdio), including viewer-comment safety bounds, commenter-name stripping, `IDEA`-only `add_video_plan` (capped at 50 waiting MCP ideas), and read-only `get_autopilot_status`. **Not** yet verified with ChatGPT, Codex or Claude Desktop. |
-| Updates & version migration | Startup GitHub Releases check (at most once per 12h; switchable off in Settings or via `LEARN_MY_VOICE_NO_UPDATE_CHECK=1`), streaming `.sha256`-verified downloads, desktop OS app-data persistence, and empty-only `.zip` data migration with per-key `config.json` validation and incoming AI provider/model/key preview (`local_tools/whisper` is not copied). Tested against local stand-in transports; **not** run against live `api.github.com` in automated tests. SHA-256 checks download integrity against the published `.sha256` file, not release authenticity, and installers remain unsigned. |
+| Recording booth, audio-aligned `.srt` & FCPXML 1.9 | Browser voiceover recording (16 kHz mono PCM `.wav` in memory) and `.wav`/`.mp3`/`.m4a`/`.mp4`/`.mov`/`.webm`/`.srt`/`.vtt` take attachment align script breath clauses via `SequenceMatcher` (`whisper_aligned` / `subtitle_aligned`, surfacing spoken ad-lib diffs) or pure-stdlib PCM speech-pause islands (`pause_aligned`, which performs no speech recognition), and export audio-timed `.srt` kits plus valid **FCPXML 1.9** (`.fcpxml`). Importing `.srt`, `.fcpxml` or kits has **not** been verified inside live 剪映, CapCut or Final Cut Pro by the maintainers, and it does not write proprietary 剪映 project drafts. |
+| RedNote Packaging Lab & Readiness Gate | Live 3:4 mobile feed card simulator, 20/28-unit truncation checks, compliance/never-phrase checks (`checks.lint_payload`), Pre-Filming Readiness strip, Stage 11 AI + Copy & Paste generation, and `发布文案与封面.txt` in kits. Checks enforce layout and project word lists only—they do **not** predict platform reach. |
+| MCP server | 25 tools tested at protocol level (JSON-RPC over stdio), including viewer-comment safety bounds, commenter-name stripping, `IDEA`-only `add_video_plan` (capped at 50 waiting MCP ideas), non-destructive `save_script_packaging`, and read-only `get_autopilot_status`, `get_script_timing_and_takes`, `list_script_revisions`, `get_packaging_brief` and `get_voice_calibration`. **Not** yet verified with ChatGPT, Codex or Claude Desktop. |
+| Updates, SBOM & version migration | Startup GitHub Releases check (at most once per 12h; switchable off in Settings or via `LEARN_MY_VOICE_NO_UPDATE_CHECK=1`), streaming `.sha256`-verified downloads, deterministic CycloneDX 1.5 SBOM (`tools/sbom.py`), desktop OS app-data persistence, and empty-only `.zip` data migration with per-key `config.json` validation (`local_tools/whisper` is not copied). Tested against local stand-in transports; **not** run against live `api.github.com` in automated tests. SHA-256 checks download integrity against the published `.sha256` file, not release authenticity, and installers remain unsigned (see [docs/V1_ROADMAP.md](docs/V1_ROADMAP.md)). |
 | Numbers, Creator Center import & comments | Time-series `metric_snapshots` (`views/day`), two-step preview-then-import for `.csv`/`.tsv`/`.txt`/`.xlsx` tables, negation-aware comment word-list counts, XML-fenced Stage 9 AI comment summaries, and screenshot comment OCR preview. Tested with synthetic tables and stand-in replies: **no** real Xiaohongshu Creator Center export has been seen or tried, and vision/summary AI calls were **not** run against live cloud endpoints. |
-| Video planner (`#/plan`) | List, week, and month calendar views, inline editing, batch planning from viewer questions and saved ideas, non-destructive Autopilot keyword suggestion chips (Take / Dismiss), and plan-linked script creation (AI, copy & paste, or empty). Covered by automated tests and headless Chrome (`zh`/light and `en`/dark). No test presses a key, so use by keyboard alone is **not** shown. |
-| Voice, tone counts & sound stats | Counted wording habits with per-script reference ranges on `#/voice` and beside Voice Match in the editor, plus pauses per 100 spoken units, loudness range (dB), and autocorrelation voice pitch median/span measured from extracted 16 kHz WAVs during transcription. Verified on synthetic WAVs and macOS `say`, **not** on real Xiaohongshu voiceover recordings or against external tools such as Praat. |
+| Command Palette (`⌘K`) & Video planner (`#/plan`) | Global `⌘K` / `Ctrl+K` search/jump palette, editor line shortcuts, and list/week/month planner views with inline editing, batch planning, Autopilot keyword suggestion chips, and `1`/`2`/`3` + arrow-key navigation. Covered by automated unit tests and real Chrome DevTools `Input.dispatchKeyEvent` hardware-key E2E tests (`tests/test_keyboard.py`) in `zh`/light and `en`/dark. |
+| Voice calibration, tone counts & sound stats | Leave-one-out holdout Voice Calibration Check (`studio/benchmark.py` and `#/voice` card) separating confirmed creator samples from synthetic generic AI templates, counted wording habits with per-script reference ranges, plus pauses per 100 spoken units, loudness range (dB), and autocorrelation voice pitch median/span measured from 16 kHz WAVs. Verified on synthetic WAVs, macOS `say` and bundled/seeded corpora, **not** on real Xiaohongshu voiceover recordings or human listener trials. |
 | Sponsored briefs (`#/sponsored`) | `.txt`/`.md`/`.docx` brand brief ingestion (PDFs and `.doc` refused), bilingual plain digest, grounded requirement verification, story angles, `SPONSORED` drafting (raw brief never enters Stage 4), live editor requirement/word-list checklist, and `PRAGMA secure_delete` scrubbing on deletion. Tested with synthetic `.docx` files and stand-in replies, **not** with real agency briefs or live models. |
 | Anthropic Claude & Beat bank | Anthropic Messages client (`provider="anthropic"`), stop-reason truncation/refusal guards across Gemini, OpenAI, Anthropic, and local models (`llm.PROVIDER_STOP_REASON_UNCHECKED`), centralized per-stage temperatures with HTTP 400 retry-once fallback, and Stage 1B `sample_beats` stored on Library items, surfaced in editor References, and fed into `<creator_beat_examples>` using only confirmed non-sponsored `spoken_text` and enum labels (no model prose, no `LIVE_CLIP`). The Anthropic client (`llm.ANTHROPIC_UNCHECKED`) and provider stop-reason payloads were written from documentation and tested against stand-in responses, **never** against live cloud APIs. |
 | Autopilot (`#/autopilot`) | Optional background learning and trend adaptation (switched off by default; disabled under `LEARN_MY_VOICE_NO_AUTOPILOT=1`) with `suggest` and bounded `auto` modes, a daily model-call cap, watched-folder video/audio & spreadsheet intake (`voice.ingest_folder`, `sponsored/` and `商单/` marked `is_sponsored`), continuous Voice DNA updates (`voice.relearn`) and recurring edit-lesson acceptance (`lessons.accept_recurring`), scheduled AI trend lookup and polite `robots.txt`-checked public `https://` page extraction (`trends.refresh`, `xiaohongshu.com`/`rednote.com` refused), non-destructive plan keyword chips (`plans.suggest`) and candidate topic refreshes (`ideas.refresh`), and per-run **Undo**. Covered by automated unit tests and headless Chrome (`zh`/light and `en`/dark) against stand-in transports; **not** yet run unattended over days against live cloud APIs or real public trend sites. |
@@ -75,7 +76,7 @@ python3 -m studio.server
 
 From the zip or the source, each start creates a fresh local access token and opens the studio in your browser (`http://127.0.0.1:8765/?token=...`, also printed as a launch link in the terminal window). Start it from the launcher rather than bookmarking the bare address. Settings shows which build is running.
 
-The interface starts in Chinese. Use the **English** button at the bottom of the sidebar to switch.
+The interface starts in Chinese. Use the **English** button at the bottom of the sidebar to switch, or press **`⌘K` / `Ctrl+K`** from anywhere to jump across pages, scripts, plans, library items, and studio actions.
 It follows your computer's light or dark appearance; **Settings → Appearance** has light, dark and a choice of
 accent colour. The language and the look are remembered, also the next time the desktop app is opened.
 
@@ -88,7 +89,7 @@ accent colour. The language and the look are remembered, also the next time the 
 5. **素材库 / Library**: type in views, likes, collects and comments, preview and import a Creator Center spreadsheet, or paste viewer comments (commenter nicknames are stripped and never stored) to count questions/themes or summarize with AI; tick 商单 for sponsored items.
 6. **热点 / Trends** (optional): paste keywords you see trending on Xiaohongshu to have them ranked against your own results.
 7. **选题建议 / Ideas**, **拍摄计划 / Plan** & **自动学习 / Autopilot** (optional): generate evidence-backed topic ideas, batch-add viewer questions or saved ideas to your upcoming video calendar (list, week, or month view), turn any planned item into a linked script, and optionally switch on **Autopilot** (`#/autopilot`) to watch a folder of videos/spreadsheets, adapt Voice DNA, refresh public trends, and suggest keywords for upcoming plans in the background.
-8. **我的脚本 / Scripts**: edit the draft alongside Voice Match, Tone Habits, References (with matching video beats), and Sponsored Checklist, read it with the teleprompter, and export the 剪映 kit.
+8. **我的脚本 / Scripts**: search/filter drafts or clone an A/B variant, switch on **Partner view** for side-by-side Chinese + English co-editing, inspect or restore **History** checkpoints, craft titles & 3:4 covers in the **RedNote Packaging Lab** (with Pre-Filming Readiness checks), record or attach a voiceover take to align `.srt` & **FCPXML 1.9** timelines, read with the teleprompter, and export the 剪映 / CapCut kit.
 9. Once the video is out: on the script, click **标记为已发布 / Mark as posted**, and type in or import numbers over time (`views/day`). The script joins the library with its numbers and advances any linked plan to `POSTED`.
 
 Until a voice profile has been accepted the app uses a bundled *example* voice profile for a fictional creator, and says so on screen.
@@ -124,10 +125,11 @@ Check your runtime's context-window setting: the prompts are long (often over 10
 `run_mcp.py` is a Model Context Protocol server over stdio. With it, an AI app does the writing while this
 tool supplies her voice, her past scripts, the checks and the storage. Scripts saved through MCP appear in the studio.
 
-Tools (20): `get_script_brief`, `save_script`, `update_script`, `check_script`, `list_scripts`, `get_script`,
-`get_voice_profile`, `list_library`, `get_voice_learning_brief`, `save_voice_profile`,
+Tools (25): `get_script_brief`, `save_script`, `update_script`, `check_script`, `list_scripts`, `get_script`,
+`list_script_revisions`, `get_voice_profile`, `list_library`, `get_voice_learning_brief`, `save_voice_profile`,
 `get_topic_ideas_brief`, `save_topic_ideas`, `export_jianying_kit`, `list_trends`, `add_trend_keywords`,
-`get_rednote_analytics`, `get_tone_analysis`, `list_video_plans`, `add_video_plan`, `get_autopilot_status`.
+`get_rednote_analytics`, `get_tone_analysis`, `list_video_plans`, `add_video_plan`, `get_autopilot_status`,
+`get_script_timing_and_takes`, `get_packaging_brief`, `save_script_packaging`, `get_voice_calibration`.
 
 The setups below follow each vendor's documentation as of November 2026. None has been verified by the maintainers yet.
 Use an absolute path; a path without spaces avoids quoting problems.
@@ -192,39 +194,39 @@ Then ask in chat, for example: *"Use Learn My Voice to write a 60-second script 
 - **Word list** (设置 / Settings): the checks flag advertising wording that may be a problem, and each finding says what its entry rests on: an article of the Advertising Law that was read, or that no source was checked. A separate kind of finding, labelled "hint only", marks wording that may sound written rather than spoken; it is never counted as a problem. Any entry can be switched off, and you can add phrases of your own. The list is this project's own: it is not legal advice and not a statement of Xiaohongshu's rules, and a script with no finding is not thereby allowed.
 - **Autopilot background learning & trend adaptation** (自动学习 / Autopilot `#/autopilot`): optional background scheduler (off by default) with **Suggest only** (`suggest`) and bounded **Auto** (`auto`) modes, a daily model-call cap, per-task toggles, **Run now**, and per-run **Undo**. Once configured, it watches a local folder (read-only, 60-second settle check) to ingest videos/audio (`local` offline Whisper or opt-in `cloud` Gemini/OpenAI, with `sponsored/` and `商单/` tagged `is_sponsored`) and `.csv`/`.tsv`/`.xlsx` keyword spreadsheets, continuously proposes or safely applies Voice DNA updates (`voice.relearn`) and recurring edit lessons (`lessons.accept_recurring`), refreshes trends from scheduled AI web search and up to 5 polite `robots.txt`-checked public `https://` pages (`trends.refresh`), attaches non-destructive keyword suggestion chips to upcoming plans on `#/plan` (`plans.suggest`), and stages candidate topic refreshes on `#/ideas` (`ideas.refresh`).
 - **Updates & cross-version data** (设置 / Settings): checks GitHub Releases at most once per 12 hours on startup (switchable off in Settings), shows a startup notice when a newer version exists (Download, What's new, Later, Skip this version), streams exact release assets while verifying their published `.sha256` sidecar, keeps desktop app data in the OS application-data folder across installs, and lets portable `.zip` builds unpack a verified update into a new sibling folder or migrate an earlier folder's `data/` (with per-key `config.json` validation and incoming AI provider/model/key preview) into an empty folder inside `Backups`'s safety gate.
-- **Backup and restore** (设置 / Settings): packs scripts, library items, video beats, metric snapshots, cleaned viewer comments and summaries, plans, plan keyword suggestions, candidate idea sets, Autopilot run history, sponsored briefs, the creator profile, the active and earlier voice profiles, tracked keywords and sightings, remembered edits, and word-list changes into one portable backup file (`DATA_VERSION = 4`; API keys are never included). Restoring previews the archive first and saves an automatic backup of current data so a restore can be undone.
-- **Exports**: 剪映 / CapCut kit, subtitle `.srt`, voiceover text, shot list, on-screen text list, standalone `.html` teleprompter.
+- **Backup and restore** (设置 / Settings): packs scripts, script revisions, alignment takes, library items, video beats, metric snapshots, cleaned viewer comments and summaries, plans, plan keyword suggestions, candidate idea sets, Autopilot run history, sponsored briefs, the creator profile, the active and earlier voice profiles, tracked keywords and sightings, remembered edits, and word-list changes into one portable backup file (`DATA_VERSION = 5`; API keys are never included). Restoring previews the archive first and saves an automatic backup of current data so a restore can be undone.
+- **Exports**: 剪映 / CapCut kit, subtitle `.srt` (rate-estimated or aligned to an active recording/subtitle take), standard **FCPXML 1.9** (`.fcpxml`), voiceover text, shot list, on-screen text list, `发布文案与封面.txt` (`post_and_cover.txt`), standalone `.html` teleprompter.
 
 ![Topic ideas](docs/images/ideas-zh.png)
 
-## 剪映 (Jianying) / CapCut
+## 剪映 (Jianying) / CapCut & Final Cut Pro
 
-From a script, **导出 → 剪映素材包** downloads a zip:
+From a script, **导出 → 剪映素材包** downloads a zip (and **导出 → 时间线.fcpxml** downloads an FCPXML 1.9 timeline):
 
 | File | Use |
 | :--- | :--- |
 | `口播文稿.txt` | One breath per line. Paste into 剪映's 文稿匹配 (script matching) to get subtitles aligned to the real recording. |
-| `字幕.srt` | Subtitle file to import. **Timing is estimated** from her speaking rate, not taken from a recording, so it needs adjusting. |
-| `花字.srt` | On-screen text placed near the line it belongs to. |
+| `字幕.srt` | Subtitle file to import. Uses your active recording/subtitle take (`whisper_aligned`, `subtitle_aligned`, or `pause_aligned`) when attached, or falls back to an **estimate** from speaking rate (named explicitly in `使用说明.txt`). |
+| `花字.srt` | On-screen text placed on each line's aligned or estimated span. |
 | `拍摄清单.txt` | What to film for each line. |
-| `使用说明.txt` | Import steps. |
+| `时间线.fcpxml` | Included when an active take is set (and always available from Export): vertical 1080×1920 30p **FCPXML 1.9** with subtitle titles, `花字` lane, and shot markers. |
+| `发布文案与封面.txt` | Included when packaging copy is present: selected `★` title, title options, 3:4 cover callouts, caption, `#hashtags`, and pinned comment CTA. |
+| `使用说明.txt` | Import steps and exact subtitle timing source. |
 
 Switch the app to English before exporting to get English file names and instructions.
 
 ![English interface with the export menu](docs/images/script-en.png)
 
-What it does not do yet: write a 剪映 project draft with clips and text already on the timeline, or time subtitles
-from her actual audio. The draft format is undocumented and unreadable in recent versions, and the main open-source
-generator reports limits for drafts produced on macOS, so this needs testing against a real installation first.
+What it does not do yet: write a proprietary 剪映 project draft (`draft_content.json`) directly. The draft format is undocumented and encrypted/unreadable in recent versions; standard `.srt` and **FCPXML 1.9** files are exported instead, and importing them into live 剪映, CapCut, or Final Cut Pro awaits human verification ([docs/V1_ROADMAP.md](docs/V1_ROADMAP.md)).
 
 ## Data and privacy
 
-- Everything is stored in `data/` inside the project folder (or in your OS application-data folder for the desktop app): scripts, library, beats, metric snapshots, comments, plans, Autopilot runs/sightings/suggestions, sponsored briefs, the creator profile from setup, voice profile, settings. The folder is git-ignored, and on macOS and Linux it is closed to the other accounts on the computer.
+- Everything is stored in `data/` inside the project folder (or in your OS application-data folder for the desktop app): scripts, revisions, alignment takes, library, beats, metric snapshots, comments, plans, Autopilot runs/sightings/suggestions, sponsored briefs, the creator profile from setup, voice profile, settings. The folder is git-ignored, and on macOS and Linux it is closed to the other accounts on the computer.
 - API keys are encrypted at rest via `studio/keystore.py` (Windows DPAPI or a `0600` key in your OS application-config folder on macOS/Linux) rather than stored in plaintext in `data/config.json`, and are never sent back to the browser or included in backups. If `data/` is moved to another machine, sealed keys are preserved untouched until you enter a key on that machine.
-- The web server listens on `127.0.0.1` only, requires a per-launch local capability token and port-scoped session cookie, checks `Host` and `Sec-Fetch-Site` headers, and refuses requests from other websites. See [docs/SECURITY_NOTES.md](docs/SECURITY_NOTES.md) for details.
+- The web server listens on `127.0.0.1` only, requires a per-launch local capability token and port-scoped session cookie, checks `Host` and `Sec-Fetch-Site` headers, and refuses requests from other websites. See [docs/SECURITY_NOTES.md](docs/SECURITY_NOTES.md) and [docs/THREAT_MODEL.md](docs/THREAT_MODEL.md) for details.
 - AI steps send the creator profile, her voice profile, her notes and parts of her past non-sponsored scripts/beats to whichever AI you chose. With a local model nothing leaves the computer.
 - Brand briefs added under **Sponsored brief** are kept in `studio.db` (and included in backups while kept); deleting a brief overwrites its bytes via `PRAGMA secure_delete = ON`. Reading a brief sends the brief text, creator profile, and Voice DNA (never past scripts) to the AI service named on screen; Stage 4 drafting sends only your accepted `Sponsored Plan` (never the raw brief).
-- A video added for transcription (or copied temporarily from your **Autopilot** watched folder when `transcribe_route == "local"`) is copied into `data/uploads/` and transcribed on this Mac; your original watched-folder files are never modified, renamed, or deleted. Only if you explicitly choose `transcribe_route == "cloud"` on `#/autopilot` are settled watched-folder videos/audio uploaded to your configured Gemini or OpenAI account within your daily model-call cap. Loudness range, pauses, and pitch are measured locally from the temporary 16 kHz WAV before deletion. The copy and temporary WAV are deleted when transcription ends, whatever the outcome; only text, timing, and sound numbers are kept. The programs that transcribe locally are started under macOS rules that deny them the network, and where those rules cannot be set up nothing is transcribed.
+- A video added for transcription (or a voiceover take attached in the Recording Booth, or a file copied temporarily from your **Autopilot** watched folder when `transcribe_route == "local"`) is written into `data/uploads/` temporarily; your original watched-folder files are never modified, renamed, or deleted. Only if you explicitly choose `transcribe_route == "cloud"` on `#/autopilot` are settled watched-folder videos/audio uploaded to your configured Gemini or OpenAI account within your daily model-call cap. Loudness range, pauses, and pitch are measured locally from the temporary 16 kHz WAV before deletion. The copy and temporary WAV are deleted when transcription/alignment ends, whatever the outcome; only text, cue timestamps, and sound numbers are kept. The programs that transcribe locally are started under macOS rules that deny them the network, and where those rules cannot be set up nothing is transcribed.
 - Setting up transcription downloads software from pypi.org and one speech model from huggingface.co, about 2 GB in all, into `local_tools/whisper/` inside the project folder. Nothing about the creator is sent.
 - **Nothing is fetched from Xiaohongshu (`xiaohongshu.com`, `rednote.com`, `xhslink.com`) or any social platform login.** Views, likes, collects and comments are typed in, imported locally with a preview from a spreadsheet you choose, or pasted (leading commenter nicknames are stripped and never stored; MCP tools also strip commenter names and warn connected AI apps that comments are untrusted viewer text). Optional **Autopilot** (`#/autopilot`, off by default) fetches only public `https://` trend pages you explicitly list, after verifying global public IPs (pinned against DNS rebinding) and `robots.txt` permission (`Learn-My-Voice-Autopilot`), stripping scripts/markup, and XML-fencing page text before Stage 10 keyword extraction. Extracting comments from screenshots via a configured vision AI sends the image(s) only after you confirm a warning that screenshots show other people's nicknames and avatars, and places the text in the paste box rather than saving automatically. Stage 9 AI comment summaries send only that video's title, four counts, and cleaned comment texts.
 - When started normally by a person with startup update checks enabled (default on; switchable off in **Settings** or via `LEARN_MY_VOICE_NO_UPDATE_CHECK=1`), the app sends a `GET` request at most once every 12 hours to `api.github.com` for this repository's release list (no creator data is sent, though GitHub sees your IP address and timestamp).
@@ -235,9 +237,13 @@ generator reports limits for drafts produced on macOS, so this needs testing aga
 
 | Path | Contents |
 | :--- | :--- |
-| `studio/server.py`, `studio/web/` | Local web server and the interface |
+| `studio/server.py`, `studio/web/` | Local web server and the interface (including `palette.js` `⌘K` Command Palette) |
 | `studio/guardrails.py`, `studio/lexicon.json`, `studio/checks.py` | Rule-based checks and their bilingual messages |
 | `studio/pipeline.py`, `studio/llm.py` | Prompt building, reply validation, model providers (Gemini, OpenAI, Anthropic, local, copy & paste), stage temperatures |
+| `studio/recording.py`, `studio/web/recording.js` | Voiceover Recording Booth, `SequenceMatcher` & WAV speech-pause alignment, spoken ad-lib diffs |
+| `studio/revisions.py`, `studio/web/revisions.js` | Script checkpoints, breath-by-breath diffs, non-destructive restore, A/B variant duplication |
+| `studio/packaging.py`, `studio/web/packaging.js` | Stage 11 RedNote Cover & Title Packaging Lab, 3:4 feed simulator, Pre-Filming Readiness Gate |
+| `studio/benchmark.py` | Leave-one-out Voice Calibration holdout benchmark (`python3 -m studio.benchmark` & `#/voice` card) |
 | `studio/corpus.py` | Reading her scripts, measured statistics, performance ranking |
 | `studio/creator.py`, `studio/setup.py` | The creator profile from setup, and where setup stands |
 | `studio/evidence.py` | Looks up what a proposed voice profile claims in the creator's own material |
@@ -248,20 +254,19 @@ generator reports limits for drafts produced on macOS, so this needs testing aga
 | `studio/autopilot.py`, `studio/autovoice.py`, `studio/trend_sources.py`, `studio/autosuggest.py`, `studio/web/autopilot.js` | Background Autopilot scheduler, watched-folder voice/keyword intake, polite public trend sources, plan/idea suggestions, and Undo |
 | `studio/soundstats.py`, `studio/tone_analyzer.py`, `studio/web/tone.js` | 16 kHz WAV loudness/pause/pitch measurement and counted wording/tone habits |
 | `studio/updater.py`, `studio/web/updater.js` | GitHub Releases checker, streaming `.sha256` downloader, and empty-only `.zip` data migration |
-| `studio/keystore.py`, `studio/backup.py` | OS-backed API key sealing, Windows `data/` ACL restriction, and `.lmvbackup` archive staging/restore |
-| `docs/QUICKSTART.md`, `docs/QUICKSTART.zh-CN.md` | Bilingual 5-minute Quick Start Guide with screenshots |
+| `studio/keystore.py`, `studio/backup.py` | OS-backed API key sealing, Windows `data/` ACL restriction, and `.lmvbackup` archive staging/restore (`DATA_VERSION = 5`) |
+| `docs/QUICKSTART.md`, `docs/QUICKSTART.zh-CN.md`, `docs/V1_ROADMAP.md`, `docs/THREAT_MODEL.md` | Quick Start Guides, `v1.0` architecture & human sign-off checklist, and STRIDE Threat Model |
 | `studio/learning.py` | Compares an AI draft with the creator's version |
 | `studio/timing.py` | Subtitle files, and speaking rate measured from their timestamps |
 | `studio/transcribe.py`, `studio/whisper_worker.py`, `studio/jobs.py` | On-device transcription and its background jobs |
 | `studio/trends.py` | Reading pasted trend keywords, sightings/rising marks, scoring against her own results, keyword coverage |
 | `studio/keyword_import.py` | Bounded table reader (`.csv`, `.tsv`, `.txt`, `.xlsx`) shared by keyword and Creator Center imports |
-| `studio/exports.py` | Text exports, `.srt`, 剪映 kit |
-| `studio/mcp_server.py`, `run_mcp.py` | MCP server (20 tools) |
+| `studio/exports.py` | Text exports, rate-estimated or audio-aligned `.srt`, **FCPXML 1.9** (`.fcpxml`), `发布文案与封面.txt`, 剪映 kit |
+| `studio/mcp_server.py`, `run_mcp.py` | MCP server (25 tools) |
 | `studio/buildinfo.py` | Which build is running: the version from a release package, or "from source" |
-| `prompts/` | The prompt blueprints (`01`–`10`); editing `02`–`10` changes runtime behaviour. |
-| `.github/workflows/tests.yml` | Runs the tests on macOS, Windows and Linux on every push |
-| `.github/workflows/release-candidate.yml` | On a push to a `beta/...` branch: tests, builds the zip and desktop installers, tries them, publishes a pre-release |
-| `tools/build_release.py`, `tools/try_release.py`, `tools/run_tests.py` | What those workflows run; they run the same on a desk. Not part of the download. |
+| `prompts/` | The prompt blueprints (`01`–`11`); editing `02`–`11` changes runtime behaviour. |
+| `.github/workflows/tests.yml`, `release-candidate.yml`, `release.yml` | Cross-OS test matrix, `beta/**` release-candidate publisher, and `vX.Y.Z` production release workflow |
+| `tools/build_release.py`, `tools/try_release.py`, `tools/run_tests.py`, `tools/sbom.py` | Deterministic build, trial, test runner, and CycloneDX 1.5 SBOM generator. Not part of the download. |
 | `SYSTEM_DESIGN.md` | The original, larger design. Parts of it are not built. |
 
 The prompts receive the creator profile from setup (name, niches, an on-camera partner, phrases never

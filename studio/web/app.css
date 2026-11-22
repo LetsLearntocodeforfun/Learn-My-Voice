@@ -621,53 +621,6 @@ textarea.en-gloss { width: 100%; font-size: 15px; line-height: 1.5; resize: vert
 .pal-foot { display: flex; align-items: center; gap: 14px; flex-wrap: wrap; padding: 8px 16px; border-top: 1px solid var(--line); background: var(--fill-2); color: var(--muted); font-size: 12px; }
 .pal-foot kbd { padding: 1px 6px; border-radius: 5px; background: var(--pop); border: 1px solid var(--line); color: var(--ink); font: inherit; font-size: 11px; }
 
-/* ---- references beside the script editor (refs.js): the creator's own material, pinned or found by plain rules ----
-   Every colour in this block is one of the variables at the top of this sheet, so that a change of those (another
-   look, a dark mode) reaches the panel without a change here. */
-#rf-box { margin: 0 0 12px; }
-.rf-bar { display: flex; align-items: center; gap: 8px 12px; flex-wrap: wrap; }
-/* Where the window is narrow the panel is a section above the lines, as wide as they are, that scrolls inside itself. */
-.rf-panel { display: flex; flex-direction: column; max-height: min(70vh, 640px); background: var(--card); border: 1px solid var(--line); border-radius: var(--radius); }
-.rf-head { display: flex; align-items: center; gap: 8px; padding: 8px 8px 4px 16px; font-size: 17px; }
-.rf-body { min-height: 0; overflow-y: auto; overscroll-behavior: contain; padding: 0 16px 14px; }
-.rf-body > p.hint { margin-top: 0; }
-.rf-sec { margin-top: 14px; padding-top: 12px; border-top: 1px solid var(--line); }
-.rf-sec h4 { margin: 0; font-size: 15px; }
-.rf-sec h4 .meta { font-weight: 400; }
-.rf-sec p.hint { margin: 4px 0 0; }
-.rf-sec .banner { margin: 8px 0 0; }
-.rf-sec input[type=text] { margin-top: 8px; font-size: 15px; }
-.rf-item { margin-top: 10px; padding: 10px 12px; background: var(--bg); border-radius: 12px; font-size: 14px; overflow-wrap: anywhere; }
-.rf-item .tag { margin: 0 4px 4px 0; font-size: 12px; }
-.rf-name { margin-bottom: 4px; font-size: 15px; font-weight: 600; }
-.rf-nums { margin: 2px 0; }
-/* Wording that is not confirmed as the creator's own, and what is no longer in the library: said in the colours of a notice. */
-.rf-note { margin: 6px 0; padding: 6px 10px; border-left: 3px solid var(--warn); border-radius: 8px; background: var(--warn-soft); color: var(--ink); font-size: 13px; }
-.rf-opening { margin: 6px 0 2px; }
-.rf-opening .tag { margin: 0 0 0 4px; }
-/* The text of an item is there to be read, selected and copied. */
-.rf-text { margin: 6px 0; padding: 8px 10px; background: var(--card); border: 1px solid var(--line); border-radius: 8px; white-space: pre-wrap; -webkit-user-select: text; user-select: text; cursor: text; }
-.rf-text.whole { max-height: 320px; overflow-y: auto; }
-.rf-text mark { padding: 0 1px; border-bottom: 2px solid var(--warn); border-radius: 3px 3px 0 0; background: var(--warn-soft); color: inherit; }
-.rf-actions { display: flex; align-items: center; flex-wrap: wrap; gap: 4px 12px; margin-top: 6px; font-size: 13px; }
-.rf-actions .btn { padding: 5px 14px; font-size: 13px; }
-.rf-actions .btn.ghost { padding: 5px 6px; }
-#rf-foot p.hint { margin-top: 14px; padding-top: 10px; border-top: 1px solid var(--line); }
-/* Where the window is wide the panel has a column of its own to the right of the lines, as tall as the editor, and
-   stays in view while the lines scroll. The lines keep a column of at least 650px (at 1280px) and of 860px, as
-   without the panel, from 1680px on. RF_WIDE in refs.js names the same width.
-   The column stands out into the free space at the side of the page (--view-side) until 16px are left to the edge
-   of the window (--rf-out): that is the room the lines need at 1280px, the desktop app's first window.
-   The panel stays inside its column, 16px from the top and the bottom of the window. #view keeps 80px free under
-   the page, and the column reaches down through them: where it ended with the editor, the panel had no room at
-   the end of the page and its head, with the button that closes it, was pushed out of the window. */
-@media (min-width: 1280px) {
-  .wrap.rf-on { --rf-w: clamp(320px, 24vw, 400px); --rf-out: calc(var(--view-side) - 16px); position: relative;
-    max-width: calc(884px + var(--rf-w) - var(--rf-out)); padding-right: calc(24px + var(--rf-w) - var(--rf-out)); }
-  .wrap.rf-on > #rf-box { position: absolute; top: 0; right: calc(-1 * var(--rf-out)); bottom: -80px; width: var(--rf-w); margin: 0; }
-  .wrap.rf-on .rf-panel { position: sticky; top: calc(16px - var(--view-pad)); max-height: calc(100vh - 32px); }
-}
-
 /* ---- pre-filming readiness strip & RedNote 3:4 packaging lab (packaging.js) ---- */
 .pk-ready { padding: 12px 16px; margin: 12px 0 8px; }
 .pk-ready-head { gap: 8px; margin-bottom: 8px; }
@@ -724,4 +677,51 @@ textarea.en-gloss { width: 100%; font-size: 15px; line-height: 1.5; resize: vert
 @media (max-width: 720px) {
   .pk-grid, .pk-cover-inputs { grid-template-columns: 1fr; }
   .pk-sim-col { position: static; }
+}
+
+/* ---- references beside the script editor (refs.js): the creator's own material, pinned or found by plain rules ----
+   Every colour in this block is one of the variables at the top of this sheet, so that a change of those (another
+   look, a dark mode) reaches the panel without a change here. */
+#rf-box { margin: 0 0 12px; }
+.rf-bar { display: flex; align-items: center; gap: 8px 12px; flex-wrap: wrap; }
+/* Where the window is narrow the panel is a section above the lines, as wide as they are, that scrolls inside itself. */
+.rf-panel { display: flex; flex-direction: column; max-height: min(70vh, 640px); background: var(--card); border: 1px solid var(--line); border-radius: var(--radius); }
+.rf-head { display: flex; align-items: center; gap: 8px; padding: 8px 8px 4px 16px; font-size: 17px; }
+.rf-body { min-height: 0; overflow-y: auto; overscroll-behavior: contain; padding: 0 16px 14px; }
+.rf-body > p.hint { margin: 0; }
+.rf-sec { margin-top: 14px; padding-top: 12px; border-top: 1px solid var(--line); }
+.rf-sec h4 { margin: 0; font-size: 15px; }
+.rf-sec h4 .meta { font-weight: 400; }
+.rf-sec p.hint { margin: 4px 0 0; }
+.rf-sec .banner { margin: 8px 0 0; }
+.rf-sec input[type=text] { margin-top: 8px; font-size: 15px; }
+.rf-item { margin-top: 10px; padding: 10px 12px; background: var(--bg); border-radius: 12px; font-size: 14px; overflow-wrap: anywhere; }
+.rf-item .tag { margin: 0 4px 4px 0; font-size: 12px; }
+.rf-name { margin-bottom: 4px; font-size: 15px; font-weight: 600; }
+.rf-nums { margin: 2px 0; }
+/* Wording that is not confirmed as the creator's own, and what is no longer in the library: said in the colours of a notice. */
+.rf-note { margin: 6px 0; padding: 6px 10px; border-left: 3px solid var(--warn); border-radius: 8px; background: var(--warn-soft); color: var(--ink); font-size: 13px; }
+.rf-opening { margin: 6px 0 2px; }
+.rf-opening .tag { margin: 0 0 0 4px; }
+/* The text of an item is there to be read, selected and copied. */
+.rf-text { margin: 6px 0; padding: 8px 10px; background: var(--card); border: 1px solid var(--line); border-radius: 8px; white-space: pre-wrap; -webkit-user-select: text; user-select: text; cursor: text; }
+.rf-text.whole { max-height: 320px; overflow-y: auto; }
+.rf-text mark { padding: 0 1px; border-bottom: 2px solid var(--warn); border-radius: 3px 3px 0 0; background: var(--warn-soft); color: inherit; }
+.rf-actions { display: flex; align-items: center; flex-wrap: wrap; gap: 4px 12px; margin-top: 6px; font-size: 13px; }
+.rf-actions .btn { padding: 5px 14px; font-size: 13px; }
+.rf-actions .btn.ghost { padding: 5px 6px; }
+#rf-foot p.hint { margin-top: 14px; padding-top: 10px; border-top: 1px solid var(--line); }
+/* Where the window is wide the panel has a column of its own to the right of the lines, as tall as the editor, and
+   stays in view while the lines scroll. The lines keep a column of at least 650px (at 1280px) and of 860px, as
+   without the panel, from 1680px on. RF_WIDE in refs.js names the same width.
+   The column stands out into the free space at the side of the page (--view-side) until 16px are left to the edge
+   of the window (--rf-out): that is the room the lines need at 1280px, the desktop app's first window.
+   The panel stays inside its column, 16px from the top and the bottom of the window. #view keeps 80px free under
+   the page, and the column reaches down through them: where it ended with the editor, the panel had no room at
+   the end of the page and its head, with the button that closes it, was pushed out of the window. */
+@media (min-width: 1280px) {
+  .wrap.rf-on { --rf-w: clamp(320px, 24vw, 400px); --rf-out: calc(var(--view-side) - 16px); position: relative;
+    max-width: calc(884px + var(--rf-w) - var(--rf-out)); padding-right: calc(24px + var(--rf-w) - var(--rf-out)); }
+  .wrap.rf-on > #rf-box { position: absolute; top: 0; right: calc(-1 * var(--rf-out)); bottom: -80px; width: var(--rf-w); margin: 0; }
+  .wrap.rf-on .rf-panel { position: sticky; top: calc(16px - var(--view-pad)); max-height: calc(100vh - 32px); }
 }

@@ -1,6 +1,6 @@
 # Learn-My-Voice
 
-[English](README.md) | **简体中文** · **[5 分钟快速上手指南](docs/QUICKSTART.zh-CN.md)** | **[Quick Start Guide](docs/QUICKSTART.md)**
+[English](README.md) | **简体中文** · **[5 分钟快速上手指南](docs/QUICKSTART.zh-CN.md)** | **[Quick Start Guide](docs/QUICKSTART.md)** · **[v1.0 路线图与人工验收清单](docs/V1_ROADMAP.md)** · **[威胁模型](docs/THREAT_MODEL.md)**
 
 一个在自己电脑上运行的中英双语脚本工作台，给小红书和其他短视频创作者用。
 它从你以前亲手写的脚本、字幕和小红书视频里学习你平时怎么说话，照着你的口吻写新脚本、帮你检查，再把结果交给剪映（国际版叫 CapCut）去剪辑。
@@ -17,18 +17,19 @@
 
 | 部分 | 状态 |
 | :--- | :--- |
-| 脚本编辑、检查、提词器、素材库、导出 | 可以用。有自动化测试，也在真实浏览器里跑过（macOS 上的无界面 Chrome）。 |
-| AI 功能（写初稿、学习声音、选题建议） | 测试里用的是模拟的模型回复。真实模型写出来的质量还没有评估过。 |
+| 脚本编辑、历史版本、双语协作、检查、提词器、素材库、导出 | 可以用。有自动化测试（含 300 篇脚本 / 600 条素材 / 5,000 条评论规模性能测试），也在真实浏览器里通过 Chrome DevTools 硬件按键事件跑过（macOS 上的无界面 Chrome，中文浅色与英文深色）。 |
+| AI 功能（写初稿、学习声音、选题建议、第 11 步封面与标题包装） | 测试里用的是模拟的模型回复。真实模型写出来的质量还没有评估过。 |
 | 引导设置、声音档案确认、从改稿中学习 | 有自动化测试。其中用到 AI 的部分和上一行一样，只用模拟回复测试过。 |
 | 本机视频转写 | 只支持 Apple 芯片的 Mac，macOS 14 或更新。目前只在一台 Mac 上安装并用过。机器转写会有错字，尤其是句尾语气词，所以转写的文字要你确认以后，才会用来学说话习惯。 |
 | 热点关键词 | 粘贴、排序和关键词检查可以用，有自动化测试，也在无界面 Chrome 里跑过。排序的权重是凭经验定的，**还没有**用真实结果校准过。让能联网的 AI 查热词这一步，只用模拟回复测试过。从表格导入是新功能，只用自己编的文件测试过：新红、千瓜、灰豚真实导出的文件，以及 Excel、WPS、Numbers 保存的工作簿，都**还没有**试过。 |
 | 一句话找选题 | 新功能。在「选题建议」里写一句或说一句，先查最近的热词，再给选题。有自动化测试，页面和服务也一起在无界面 Chrome 里跑过，用的是模拟的 AI 回复。用 Gemini 或 OpenAI 密钥联网查热词这一步，是照着这两家的文档写的，**还没有**真的连过任何一家。说话输入是用一台 Mac 上的 Whisper 测的，用一段声音代替了麦克风；真实的麦克风**还没有**试过。 |
-| 剪映 / CapCut | 导出的是可以导入的标准文件。维护者**还没有**在剪映或 CapCut 里实际验证过导入。目前不会直接生成剪映草稿。 |
-| MCP 服务 | 20 个工具在协议层面测试过（标准输入输出上的 JSON-RPC），包含评论长度限制、自动去除评论者昵称、`add_video_plan` 仅存为待确认 `IDEA`（上限 50 条）以及只读 `get_autopilot_status`。**还没有**和 ChatGPT、Codex 或 Claude Desktop 实际连通验证。 |
-| 版本更新与跨版本迁移 | 启动时最多每 12 小时查一次 GitHub Releases（可在「设置」关闭，或通过环境变量 `LEARN_MY_VOICE_NO_UPDATE_CHECK=1` 禁用）、流式下载并核对发布的 `.sha256` 校验文件、桌面版系统应用数据目录自动保留、压缩包仅限空目录安全迁移并对 `config.json` 逐项核验及提前展示将迁入的 AI 服务/模型（不复制 `local_tools/whisper`）。只用本机模拟传输测试过，自动化测试里**没有**连过真实的 `api.github.com`。SHA-256 只证明下载完整且与发布文件一致，不证明版本经过数字证书签名；安装包目前没有代码签名。 |
+| 录音棚对齐、音频时间轴 `.srt` 与 FCPXML 1.9 | 支持浏览器内录口播（内存重采样为 16 kHz 单声道 PCM `.wav`）或挂载 `.wav`/`.mp3`/`.m4a`/`.mp4`/`.mov`/`.webm`/`.srt`/`.vtt` 录音与字幕：可通过 Whisper 或字幕轴将分句精确对齐（`whisper_aligned` / `subtitle_aligned`，同时列出即兴改词供一键同步回稿子），无 Whisper 时可按纯标准库 PCM 语音停顿岛分布时间（`pause_aligned`，明确说明不做语音识别），并导出对齐后的 `.srt` 素材包与标准 **FCPXML 1.9**（`.fcpxml`）。维护者**还没有**在剪映、CapCut 或 Final Cut Pro 里实际导入验证过，目前也不会直接生成剪映私有草稿。 |
+| 小红书封面与标题工坊及拍摄前就绪检查 | 提供 3:4 信息流卡片预览、20/28 显示单位截断与词表/禁词检查（`checks.lint_payload`）、拍摄前就绪检查条、第 11 步 AI / 复制粘贴生成包装，以及素材包内的 `发布文案与封面.txt`。所有检查均为版式与词表规则核对，**不预测**流量或推流表现。 |
+| MCP 服务 | 25 个工具在协议层面测试过（标准输入输出上的 JSON-RPC），包含评论长度限制、自动去除评论者昵称、`add_video_plan` 仅存为待确认 `IDEA`（上限 50 条）、默认非破坏合并的 `save_script_packaging`，以及只读工具 `get_autopilot_status`、`get_script_timing_and_takes`、`list_script_revisions`、`get_packaging_brief`、`get_voice_calibration`。**还没有**和 ChatGPT、Codex 或 Claude Desktop 实际连通验证。 |
+| 版本更新、SBOM 与跨版本迁移 | 启动时最多每 12 小时查一次 GitHub Releases（可在「设置」关闭，或通过环境变量 `LEARN_MY_VOICE_NO_UPDATE_CHECK=1` 禁用）、流式下载并核对发布的 `.sha256` 校验文件、确定性 CycloneDX 1.5 软件物料清单（`tools/sbom.py`）、桌面版系统应用数据目录自动保留、压缩包仅限空目录安全迁移并对 `config.json` 逐项核验（不复制 `local_tools/whisper`）。只用本机模拟传输测试过，自动化测试里**没有**连过真实的 `api.github.com`。SHA-256 只证明下载完整且与发布文件一致，不证明版本经过数字证书签名；安装包目前没有代码签名（详见 [docs/V1_ROADMAP.md](docs/V1_ROADMAP.md)）。 |
 | 按日数据、创作者中心表格导入与评论分析 | 按天记录 `metric_snapshots`（含日均播放 `views/day`）、两步预览再导入 `.csv`/`.tsv`/`.txt`/`.xlsx` 表格、识别否定词的本地评论词表计数、XML 隔离的第 9 步 AI 评论归纳，以及评论截图文字提取预览。只用虚构表格和模拟回复测试过：**没有**见过或试过小红书创作服务平台真实导出的表格，视觉和评论归纳接口也**没有**连过真实的云端服务。 |
-| 拍摄计划（`#/plan`） | 列表、周历和月历三种视图，行内直接修改标题/备注/日期/时长/形式，从观众提问和已存选题批量加入计划，自动学习的非破坏性热词建议标签（采纳 / 忽略），以及把计划一键变成关联脚本（支持设置里的 AI、复制粘贴或空白脚本）。有自动化测试，并在无界面 Chrome（中文浅色、英文深色）中验证。没有测试按过键盘，所以**尚未**验证只用键盘能否完成全部操作。 |
-| 说话习惯统计与声音测量 | 在「我的声音」页和脚本编辑页「口吻接近度」旁，统计语气词、口语/书面连接词、叠词、保留说法、硬广套话、每口气问号和感叹号并对照非商单已确认素材的范围；转写视频时从临时 16 kHz WAV 测量停顿密度、响度范围（dB）和自相关音高估计（Hz / 半音跨度）。已在合成 WAV 和 macOS `say` 语音上验证，**没有**在真实小红书口播录音或 Praat 等外部声学软件上比对过。 |
+| 全局命令面板（`⌘K`）与拍摄计划（`#/plan`） | 全局 `⌘K` / `Ctrl+K` 搜索与跳转面板、编辑页行内快捷键，以及 `#/plan` 列表/周历/月历视图、批量排期、自动学习热词建议标签和 `1`/`2`/`3` 及方向键切换。已通过单元测试与真实 Chrome DevTools `Input.dispatchKeyEvent` 硬件按键端到端测试（`tests/test_keyboard.py`，中文浅色与英文深色）验证。 |
+| 声音辨识度留一自检、说话习惯与声音测量 | 在「我的声音」页提供留一交叉验证自检卡片（`studio/benchmark.py`），对比已确认非商单素材与通用 AI 营销号模板的区分度；统计语气词、连接词、叠词、保留说法等习惯范围；并从 16 kHz WAV 测量停顿密度、响度范围与自相关音高估计。已在合成 WAV、macOS `say` 与示例/种子语料上验证，**没有**在真实小红书口播录音或真人盲测上比对过。 |
 | 商单 Brief 与编辑页核对清单（`#/sponsored`） | 支持粘贴或导入 `.txt`/`.md`/`.docx` 商单 Brief（明确拒绝 PDF 和旧版 `.doc`），生成中英双语白话摘要、原文核对过的必提要求、日常切入角度、第 4 步商单模式写稿（原始 Brief 绝不进第 4 步提示词）、编辑页实时核对清单，以及删除时 `PRAGMA secure_delete` 覆写清零。只用合成 `.docx` 和模拟回复测试过，**没有**用真实品牌 Brief 或真实模型跑过。 |
 | Anthropic Claude 与视频分镜库（Beat Bank） | 新增 Anthropic Messages 客户端（`provider="anthropic"`）、涵盖 Gemini / OpenAI / Anthropic / 本地模型的截断与拒答结束原因检查（`llm.PROVIDER_STOP_REASON_UNCHECKED`）、统一的各阶段 `temperature` 配置（遇 HTTP 400 自动去掉 `temperature` 重试一次），以及第 1B 步视频分镜 `sample_beats` 存储、素材库与「参考」面板展示、仅把已确认非商单 `spoken_text` 与类型枚举送入 `<creator_beat_examples>`（绝不带模型改写文字或 `LIVE_CLIP`）。Anthropic 客户端（`llm.ANTHROPIC_UNCHECKED`）与结束原因解析均依据文档编写并用模拟回复测试，**从未**连过真实的云端接口。 |
 | 自动学习（`#/autopilot`） | 可选的后台持续学习与趋势跟进（默认关闭；设置 `LEARN_MY_VOICE_NO_AUTOPILOT=1` 时本次会话禁用），支持「只给建议」与有安全边界的「自动处理」两档、每日模型调用上限、监控文件夹自动导入视频/音频与热词表格（`voice.ingest_folder`，`sponsored/` 与 `商单/` 子文件夹自动标为商单）、持续更新声音档案（`voice.relearn`）与采纳高频改稿习惯（`lessons.accept_recurring`）、定时联网查热词与遵守 `robots.txt` 的公开 `https://` 热词页读取（`trends.refresh`，严禁抓取 `xiaohongshu.com` / `rednote.com`）、为近期拍摄计划挂载热词建议（`plans.suggest`）及生成候选选题集（`ideas.refresh`），每次运行均可一键**撤销**。已在单元测试和无界面 Chrome（中文浅色、英文深色）用模拟传输验证，**尚未**连着真实云端接口或公开网站连续数日无人值守试跑。 |
@@ -74,7 +75,7 @@ python3 -m studio.server
 
 用压缩包或源代码运行时，每次启动都会生成一把新的本机访问口令，并在浏览器里打开带口令的地址（`http://127.0.0.1:8765/?token=...`，终端窗口也会打印「安全访问链接」）。每次请从启动文件打开，不要把不带口令的地址存成书签。「设置」页的最下面会显示正在运行的是哪个版本。
 
-界面默认是中文。点左下角的 **English** 可以切换成英文。
+界面默认是中文。点左下角的 **English** 可以切换成英文；在任何页面按 **`⌘K` / `Ctrl+K`** 都能打开全局命令面板快速搜索脚本、计划、素材与跳转页面。
 界面会跟随电脑的浅色或深色外观；在 **设置 → 外观** 里可以选浅色、深色，也可以换强调色。
 语言和外观会记住，下次打开桌面版也一样。
 
@@ -87,7 +88,7 @@ python3 -m studio.server
 5. **素材库**：填上播放、点赞、收藏、评论，或者先预览再导入创作者中心导出的表格，也可以粘贴评论区留言（评论者昵称会自动剥掉、绝不保存）统计提问或让 AI 归纳；商单请勾选「商单」。
 6. **热点**（可选）：把你在小红书看到的热词贴进来，让它结合你自己的数据排个先后。
 7. **选题建议**、**拍摄计划**与**自动学习**（可选）：生成有依据的选题，把观众常问的问题或存下的选题批量加进拍摄日历（支持列表、周历、月历），从计划直接生成关联脚本；还可以在 **自动学习**（`#/autopilot`）开启后台监控文件夹导视频/导热词表、持续进化声音档案、刷新公开热词并为近期计划推荐关键词。
-8. **我的脚本**：对照口吻接近度、用词习惯、右侧「参考」（含同类型视频分镜）和商单核对清单改稿，用提词器念，再导出剪映素材包。
+8. **我的脚本**：支持按关键词/状态筛选或一键复制 A/B 版本、开启**双语协作**并排对照英文意译与画面、随时查看/无损恢复**历史版本**、在**小红书封面与标题工坊**核对拍摄前就绪项并预览 3:4 封面与标题、直接录口播或挂载音频对齐 `.srt` 与 **FCPXML 1.9** 时间线，再用提词器念并导出剪映素材包。
 9. 视频发出去以后：在这篇脚本上点**标记为已发布**，陆续填上或导入不同日期的数据（自动算日均播放 `views/day`）。脚本会带着数据进素材库，关联的拍摄计划也会自动变成已发布。
 
 在采用你自己的声音档案之前，工作台用的是自带的*示例*声音档案（一个虚构的博主），页面上会有提示。
@@ -120,10 +121,11 @@ ChatGPT 订阅不包含 API，所以工作台没办法直接调用它。在这�
 `run_mcp.py` 是一个通过标准输入输出通信的 MCP（Model Context Protocol）服务。接上以后，由 AI 应用负责写，
 工作台负责提供你的声音档案、以前的脚本、检查规则和保存。通过 MCP 保存的脚本会出现在工作台里。
 
-提供的工具（20 个）：`get_script_brief`、`save_script`、`update_script`、`check_script`、`list_scripts`、`get_script`、
-`get_voice_profile`、`list_library`、`get_voice_learning_brief`、`save_voice_profile`、
+提供的工具（25 个）：`get_script_brief`、`save_script`、`update_script`、`check_script`、`list_scripts`、`get_script`、
+`list_script_revisions`、`get_voice_profile`、`list_library`、`get_voice_learning_brief`、`save_voice_profile`、
 `get_topic_ideas_brief`、`save_topic_ideas`、`export_jianying_kit`、`list_trends`、`add_trend_keywords`、
-`get_rednote_analytics`、`get_tone_analysis`、`list_video_plans`、`add_video_plan`、`get_autopilot_status`。
+`get_rednote_analytics`、`get_tone_analysis`、`list_video_plans`、`add_video_plan`、`get_autopilot_status`、
+`get_script_timing_and_takes`、`get_packaging_brief`、`save_script_packaging`、`get_voice_calibration`。
 
 下面的配置方法来自各家截至 2026 年 11 月的官方文档，维护者都还没有实际验证过。
 路径请用绝对路径；路径里没有空格可以避免引号问题。
@@ -187,39 +189,39 @@ tunnel-client run --profile learn-my-voice
 - **用词提示的词表**（设置）：检查时会提示可能有问题的广告用词，并写明每一条的依据：读过的《广告法》条文，或者说明没有核对过出处。另有一类「只是提示」，标出念出来像书面稿的说法，从不算作问题。每一条都可以关掉，也可以加你自己的说法。这份词表是本项目自己整理的，不是法律意见，也不代表小红书的规则；没有提示，不等于这样说就没问题。
 - **自动学习与趋势跟进**（自动学习 `#/autopilot`）：可选的后台调度器（默认关闭），支持**只给建议**（`suggest`）和有安全边界的**自动处理**（`auto`）两档、每日模型调用上限、分任务开关、**立即运行**和每次运行一键**撤销**。设好以后，它会只读监控你指定的本地文件夹（等待文件静止满 60 秒）：自动导入视频/音频（支持本机离线 Whisper 或显式勾选的云端 Gemini/OpenAI，`sponsored/` 与 `商单/` 子文件夹自动标为商单）和 `.csv`/`.tsv`/`.xlsx` 热词表，持续提出或在安全边界内更新声音档案（`voice.relearn`）并采纳高频改稿习惯（`lessons.accept_recurring`），定时跑联网热词查询并读取最多 5 个遵守 `robots.txt` 的公开 `https://` 热词网页（`trends.refresh`），为 `#/plan` 近期拍摄计划附上非破坏性热词建议标签（`plans.suggest`），并在 `#/ideas` 生成候选选题集而不覆盖已存选题（`ideas.refresh`）。
 - **版本更新与跨版本保留设置**（设置）：启动时最多每 12 小时检查一次 GitHub Releases（可在「设置」关闭），发现新版本时弹出提示条（下载、更新内容、稍后、跳过此版本），流式下载对应安装包并实时核对发布的 `.sha256` 校验文件；桌面版数据存在系统应用数据目录里跨版本自动保留，压缩包版支持把验证过的新版解压到相邻新目录，或在 `Backups` 安全闸门保护下对 `config.json` 逐项核验并提前展示将迁入的 AI 服务/模型后，把旧目录的 `data/` 迁入空目录。
-- **备份和恢复**（设置）：把脚本、素材库、视频分镜、按日数据快照、去昵称观众评论与摘要、拍摄计划、计划热词建议、候选选题集、自动学习运行记录、商单 Brief、个人资料、当前与以前的声音档案、跟踪的热词与出现记录、记住的改法和词表改动存成一个备份文件（`DATA_VERSION = 4`；从不包含 API 密钥）。恢复前会先检查并展示对比清单，同时把当前内容自动留一份备份以便撤回。
-- **导出**：剪映素材包、字幕 `.srt`、口播文稿、拍摄清单、花字清单、独立 `.html` 提词器文件。
+- **备份和恢复**（设置）：把脚本、脚本历史版本、录音对齐记录、素材库、视频分镜、按日数据快照、去昵称观众评论与摘要、拍摄计划、计划热词建议、候选选题集、自动学习运行记录、商单 Brief、个人资料、当前与以前的声音档案、跟踪的热词与出现记录、记住的改法和词表改动存成一个备份文件（`DATA_VERSION = 5`；从不包含 API 密钥）。恢复前会先检查并展示对比清单，同时把当前内容自动留一份备份以便撤回。
+- **导出**：剪映素材包、字幕 `.srt`（支持按语速估算或按当前激活录音/字幕对齐）、标准 **FCPXML 1.9**（`.fcpxml`）、口播文稿、拍摄清单、花字清单、`发布文案与封面.txt`、独立 `.html` 提词器文件。
 
 ![选题建议](docs/images/ideas-zh.png)
 
-## 剪映 / CapCut
+## 剪映 / CapCut 与 Final Cut Pro
 
-在脚本页点 **导出 → 剪映素材包**，会下载一个压缩包：
+在脚本页点 **导出 → 剪映素材包** 会下载一个压缩包（点 **导出 → 时间线.fcpxml** 可单独下载 FCPXML 1.9 时间线）：
 
 | 文件 | 用途 |
 | :--- | :--- |
 | `口播文稿.txt` | 一口气一行。粘贴到剪映的「文稿匹配」里，字幕会和你的实际录音对齐。 |
-| `字幕.srt` | 可以导入的字幕文件。**时间是按语速估算的**，不是按录音，导入后需要微调。 |
-| `花字.srt` | 花字，位置在对应那句话附近。 |
+| `字幕.srt` | 可以导入的字幕文件。挂载并启用录音/字幕对齐记录时使用真实对齐时间轴（`whisper_aligned`、`subtitle_aligned` 或 `pause_aligned`）；未挂载时按语速**估算**（`使用说明.txt` 会写明具体来源）。 |
+| `花字.srt` | 花字，落在对应那句话的对齐或估算时间段上。 |
 | `拍摄清单.txt` | 每一句对应要拍的画面。 |
-| `使用说明.txt` | 导入步骤。 |
+| `时间线.fcpxml` | 启用对齐记录时随包附带（也可在导出菜单直接下载）：竖屏 1080×1920 30p **FCPXML 1.9** 时间线，含字幕轨道、花字轨道与画面标记。 |
+| `发布文案与封面.txt` | 填写了包装内容时随包附带：选定 `★` 标题、备选标题、3:4 封面主副字、正文、`#话题` 与置顶评论引导。 |
+| `使用说明.txt` | 导入步骤与当前字幕时间的准确来源说明。 |
 
 把界面切换成英文再导出，文件名和说明就是英文的。
 
 ![英文界面和导出菜单](docs/images/script-en.png)
 
-目前还做不到的：直接生成一个剪映草稿（素材和文字已经排在时间线上），以及根据你的实际录音给字幕打时间。
-剪映的草稿格式没有公开文档，新版本里也无法直接读取，主要的开源生成工具对 macOS 上生成的草稿也有限制说明，
-所以这一步需要先在真实安装的剪映上测试。
+目前还做不到的：直接生成剪映私有草稿文件（`draft_content.json`）。剪映新版草稿格式无公开文档且经过加密；工作台改为导出标准 `.srt` 与 **FCPXML 1.9** 时间线，在真实安装的剪映、CapCut 或 Final Cut Pro 中导入仍待人工验收（见 [docs/V1_ROADMAP.md](docs/V1_ROADMAP.md)）。
 
 ## 数据和隐私
 
-- 所有内容都保存在项目文件夹里的 `data/`（桌面版保存在系统应用数据目录）：脚本、素材库、分镜、按日数据、评论、计划、自动学习记录/建议、商单 Brief、你在「开始」里填的资料、声音档案、设置。这个文件夹不会被 git 提交；在 macOS 和 Linux 上，电脑上的其他账号也打不开它。
+- 所有内容都保存在项目文件夹里的 `data/`（桌面版保存在系统应用数据目录）：脚本、历史版本、录音对齐记录、素材库、分镜、按日数据、评论、计划、自动学习记录/建议、商单 Brief、你在「开始」里填的资料、声音档案、设置。这个文件夹不会被 git 提交；在 macOS 和 Linux 上，电脑上的其他账号也打不开它。
 - API 密钥通过 `studio/keystore.py` 加密封存在本机（Windows 使用系统 DPAPI，macOS / Linux 使用保存在系统应用配置目录里的 `0600` 密钥），不再以明文写入 `data/config.json`，也绝不传回浏览器或放进备份文件。如果把 `data/` 移到另一台电脑，打不开的加密密钥会原样保留不丢失，只需在新电脑上重新填一次即可。
-- 网页服务只监听 `127.0.0.1`，每次启动要求核对本机随机访问口令与端口级会话 Cookie，检查 `Host` 与 `Sec-Fetch-Site` 请求头，并拒绝其他网站发来的请求。详见 [docs/SECURITY_NOTES.md](docs/SECURITY_NOTES.md)。
+- 网页服务只监听 `127.0.0.1`，每次启动要求核对本机随机访问口令与端口级会话 Cookie，检查 `Host` 与 `Sec-Fetch-Site` 请求头，并拒绝其他网站发来的请求。详见 [docs/SECURITY_NOTES.md](docs/SECURITY_NOTES.md) 与 [docs/THREAT_MODEL.md](docs/THREAT_MODEL.md)。
 - 使用 AI 时，会把你在「开始」里填的资料、你的声音档案、想法和部分以前的非商单脚本/分镜发给你选择的那个 AI。用本地模型的话，内容不会离开这台电脑。
 - 在 **商单 Brief** 里添加的品牌资料保存在 `studio.db`（保留期间会包含在备份文件中）；删除时通过 `PRAGMA secure_delete = ON` 原地覆写清零。解读 Brief 时只会把 Brief 正文、个人资料和声音档案（不带过往脚本）发给页面上写明的那个 AI 服务；第 4 步生成商单初稿时只发送你勾选确认后的商单方案，绝不发送原始 Brief 正文。
-- 放进来转写的视频（或 **自动学习** 在 `transcribe_route == "local"` 下从监控文件夹临时复制过来的视频）会先复制到 `data/uploads/`，在这台 Mac 上转写；监控文件夹里的原文件绝不会被修改、重命名或删除。只有当你在 `#/autopilot` 显式选了 `transcribe_route == "cloud"` 时，静止后的视频/音频才会在每日调用上限内发往你配置的 Gemini 或 OpenAI。删除前会从临时 16 kHz WAV 测量响度范围、停顿和音高。转写一结束，不管成功还是失败，视频副本和临时 WAV 都会删除，只留下文字、时间和声音统计数字。本机转写程序是在禁止联网的 macOS 沙盒规则下启动的；规则没法生效的时候，就不会转写。
+- 放进来转写的视频（或在录音棚挂载的口播音频，或 **自动学习** 在 `transcribe_route == "local"` 下从监控文件夹临时复制过来的视频）会临时写入 `data/uploads/`；监控文件夹里的原文件绝不会被修改、重命名或删除。只有当你在 `#/autopilot` 显式选了 `transcribe_route == "cloud"` 时，静止后的视频/音频才会在每日调用上限内发往你配置的 Gemini 或 OpenAI。删除前会从临时 16 kHz WAV 测量响度范围、停顿和音高。转写或对齐一结束，不管成功还是失败，媒体副本和临时 WAV 都会立即删除，只留下文字、时间轴和声音统计数字。本机转写程序是在禁止联网的 macOS 沙盒规则下启动的；规则没法生效的时候，就不会转写。
 - 安装本机转写时，会从 pypi.org 下载组件、从 huggingface.co 下载一个语音模型，一共约 2 GB，装在项目文件夹的 `local_tools/whisper/` 里。这个过程不会发送任何关于你的内容。
 - **绝不从小红书（`xiaohongshu.com`、`rednote.com`、`xhslink.com`）或任何需要登录的社交平台抓取任何数据。** 播放、点赞、收藏、评论全部由你手动填写、从本地选择的表格预览导入，或手动粘贴（评论前方的昵称会自动剥离且绝不入库；MCP 工具也会递归剥离昵称并提醒 AI 应用评论属于不可信外部文本）。可选的 **自动学习**（`#/autopilot`，默认关闭）只会在校验公网 IP（连接时固定 IP 防止 DNS 重绑定）并确认 `robots.txt` 允许 `Learn-My-Voice-Autopilot` 后，读取你亲自填写的公开 `https://` 热词网页，剥除脚本与标签并用 XML 围栏隔离后提取热词。用视觉 AI 识别评论截图时，需要你先在提示卡片上确认知晓截图里含有他人昵称与头像才会发送，识别出的文字只放进粘贴框供核对，不会自动保存。第 9 步 AI 评论归纳只发送该条视频的标题、四项计数和清洗后的评论正文。
 - 由人正常启动且开启启动检查更新时（默认开启，可在 **设置** 里关掉或设 `LEARN_MY_VOICE_NO_UPDATE_CHECK=1`），应用最多每 12 小时向 `api.github.com` 发一次 `GET` 请求查询本仓库的发布列表（不带任何创作者数据，但 GitHub 会看到请求来源 IP 和时间）。
@@ -230,9 +232,13 @@ tunnel-client run --profile learn-my-voice
 
 | 路径 | 内容 |
 | :--- | :--- |
-| `studio/server.py`、`studio/web/` | 本地网页服务和界面 |
+| `studio/server.py`、`studio/web/` | 本地网页服务和界面（含 `palette.js` 全局 `⌘K` 命令面板） |
 | `studio/guardrails.py`、`studio/lexicon.json`、`studio/checks.py` | 规则检查和中英文提示 |
 | `studio/pipeline.py`、`studio/llm.py` | 生成提示词、校验回复、对接模型（Gemini、OpenAI、Anthropic、本地模型、复制粘贴）与各阶段温度 |
+| `studio/recording.py`、`studio/web/recording.js` | 录音棚对齐、`SequenceMatcher` 与 WAV 停顿岛时间轴对齐、即兴改词差异提示 |
+| `studio/revisions.py`、`studio/web/revisions.js` | 脚本版本节点、按口气对比差异、无损恢复与 A/B 版本复制 |
+| `studio/packaging.py`、`studio/web/packaging.js` | 第 11 步小红书封面与标题工坊、3:4 信息流预览与拍摄前就绪检查 |
+| `studio/benchmark.py` | 留一交叉验证声音辨识度自检（`python3 -m studio.benchmark` 与 `#/voice` 卡片） |
 | `studio/corpus.py` | 读取脚本、统计、表现排名 |
 | `studio/creator.py`、`studio/setup.py` | 你在「开始」里填的资料，以及设置进行到哪一步 |
 | `studio/evidence.py` | 回到你的素材里核对 AI 提出的声音档案 |
@@ -243,20 +249,19 @@ tunnel-client run --profile learn-my-voice
 | `studio/autopilot.py`、`studio/autovoice.py`、`studio/trend_sources.py`、`studio/autosuggest.py`、`studio/web/autopilot.js` | 后台自动学习调度器、监控文件夹导视频/导表、礼貌读取公开热词源、计划与选题建议及一键撤销 |
 | `studio/soundstats.py`、`studio/tone_analyzer.py`、`studio/web/tone.js` | 16 kHz WAV 响度/停顿/音高测量与用词语气习惯统计 |
 | `studio/updater.py`、`studio/web/updater.js` | GitHub Releases 检查、流式 `.sha256` 校验下载与压缩包空目录迁移 |
-| `studio/keystore.py`、`studio/backup.py` | 本机 API 密钥加密封存、Windows `data/` 权限收紧与 `.lmvbackup` 备份恢复 |
-| `docs/QUICKSTART.zh-CN.md`、`docs/QUICKSTART.md` | 中英双语 5 分钟图文快速上手指南 |
+| `studio/keystore.py`、`studio/backup.py` | 本机 API 密钥加密封存、Windows `data/` 权限收紧与 `.lmvbackup` 备份恢复（`DATA_VERSION = 5`） |
+| `docs/QUICKSTART.zh-CN.md`、`docs/QUICKSTART.md`、`docs/V1_ROADMAP.md`、`docs/THREAT_MODEL.md` | 中英双语快速上手指南、`v1.0` 路线图与人工验收清单、STRIDE 威胁模型 |
 | `studio/learning.py` | 比较 AI 的初稿和你改过的版本 |
 | `studio/timing.py` | 读取字幕文件，按时间量语速 |
 | `studio/transcribe.py`、`studio/whisper_worker.py`、`studio/jobs.py` | 本机转写和它的后台任务 |
 | `studio/trends.py` | 读取粘贴的热词、多日出现记录与上升标记、结合你自己的数据打分、检查关键词有没有用上 |
 | `studio/keyword_import.py` | 有大小与行列上限的表格读取器（`.csv`、`.tsv`、`.txt`、`.xlsx`），供热词表和创作者中心表格共用 |
-| `studio/exports.py` | 文本导出、`.srt`、剪映素材包 |
-| `studio/mcp_server.py`、`run_mcp.py` | MCP 服务（20 个工具） |
+| `studio/exports.py` | 文本导出、估算或录音对齐 `.srt`、**FCPXML 1.9**（`.fcpxml`）、`发布文案与封面.txt`、剪映素材包 |
+| `studio/mcp_server.py`、`run_mcp.py` | MCP 服务（25 个工具） |
 | `studio/buildinfo.py` | 正在运行的是哪个版本：安装包里的版本号，或者「从源代码运行」 |
-| `prompts/` | 提示词蓝图（`01`–`10`）；修改其中的 `02`–`10` 就会改变行为。 |
-| `.github/workflows/tests.yml` | 每次推送都在 macOS、Windows 和 Linux 上跑测试 |
-| `.github/workflows/release-candidate.yml` | 推送到 `beta/...` 分支时：跑测试、打压缩包和桌面安装包、试用并发布成预发布版本 |
-| `tools/build_release.py`、`tools/try_release.py`、`tools/run_tests.py` | 上面两个流程运行的脚本，在自己的电脑上也一样能跑。不在安装包里。 |
+| `prompts/` | 提示词蓝图（`01`–`11`）；修改其中的 `02`–`11` 就会改变行为。 |
+| `.github/workflows/tests.yml`、`release-candidate.yml`、`release.yml` | 三平台测试矩阵、`beta/**` 候选版本发布流程与 `vX.Y.Z` 正式版发布流程 |
+| `tools/build_release.py`、`tools/try_release.py`、`tools/run_tests.py`、`tools/sbom.py` | 确定性打包、真机试用、测试运行器与 CycloneDX 1.5 SBOM 生成脚本。不在安装包里。 |
 | `SYSTEM_DESIGN.md` | 最初的、更大的设计方案，其中一部分还没有实现。 |
 
 提示词会收到你在「开始」里填的资料（称呼、内容方向、常一起出镜的人、坚决不说的话），不再假定是某一位具体的博主。它们是为中文的小红书视频脚本写的。

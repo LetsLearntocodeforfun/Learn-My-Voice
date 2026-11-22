@@ -229,12 +229,53 @@ be read again then.
   `.unpacking-*` folders, and coordinates live-folder checks under `Backups`'s lock.
 - **Browser tab icon.** Served `studio/web/favicon.ico` (generated alongside the desktop icons by
   `desktop/make_icons.py`) so browsers open every page with zero 404 resource errors.
+- **Voiceover recording booth, audio-aligned `.srt` and FCPXML 1.9 export (`studio/recording.py`, `studio/web/recording.js`, `DATA_VERSION = 5`).**
+  In `#/s/<id>`, creators can record a voiceover take in the browser (downsampled in memory to 16 kHz mono PCM
+  `.wav` without external codecs) or attach `.wav`/`.mp3`/`.m4a`/`.mp4`/`.mov`/`.webm`/`.srt`/`.vtt` files
+  (`script_takes`; uploaded media bytes are deleted immediately after alignment and `soundstats` measurement).
+  Timestamped Whisper or `.srt`/`.vtt` cues align onto non-`LIVE_CLIP` breath clauses via `SequenceMatcher`
+  (`whisper_aligned` / `subtitle_aligned`), preserving scripted wording while surfacing spoken ad-lib diffs for
+  one-click acceptance; on machines without Whisper, pure-stdlib 20ms RMS speech-pause island detection aligns
+  clauses across real pauses by spoken-unit weight (`pause_aligned`, explicitly stating that it performs no
+  speech recognition). Active takes drive `字幕.srt`, `花字.srt`, 剪映/CapCut kits, and standard **FCPXML 1.9**
+  (`.fcpxml`, 1080×1920 30p with subtitle titles, `花字` lane and shot markers), alongside read-only MCP tool
+  `get_script_timing_and_takes`.
+- **Script revisions, safe restore, A/B variant cloning, instant `#/` search & Bilingual Partner Studio (`studio/revisions.py`, `studio/web/revisions.js`).**
+  Automatic checkpoints (`ai_draft`, `before_critic`, `before_posted`, `before_restore`) and named checkpoints
+  up to 50 per script (`script_revisions`) support breath-by-breath `+` / `−` diffs and non-destructive restore;
+  `#/` adds instant search and status/mode filters (`All` / `Drafts` / `Posted` / `Sponsored`) plus 1-click A/B
+  variant duplication; editor line cards gain Split at `/` and Merge with Next; **Partner view** (`bilingual`
+  preference) shows a synchronized 2-column Chinese + English gloss/shot layout with a live missing-gloss count;
+  and MCP adds read-only `list_script_revisions`.
+- **RedNote Cover, Title & First-3s Packaging Lab + Pre-Filming Readiness Gate (`prompts/11_packaging_hook_lab.md`, `studio/packaging.py`, `studio/web/packaging.js`).**
+  Mounts a non-blocking **Pre-Filming Readiness** strip (duration fit, compliance/never-phrase cleanliness,
+  first-3s hook length, packaging width, and sponsored obligations) and a **3:4 Mobile Feed Card Simulator**
+  with 20/28-unit CJK truncation badges, `checks.lint_payload` compliance checks across titles/covers/captions/pinned
+  CTAs, AI + Copy & Paste Stage 11 packaging generation, `发布文案与封面.txt` / `post_and_cover.txt` inside
+  剪映/CapCut kits when packaging is present, and MCP tools `get_packaging_brief` and `save_script_packaging`.
+- **Global Command Palette (`⌘K` / `Ctrl+K`), studio shortcuts and real CDP hardware keyboard E2E (`studio/web/palette.js`, `tests/browser.py`, `tests/test_keyboard.py`).**
+  `⌘K` / `Ctrl+K` (or `#palette-btn` in the sidebar) searches scripts, plans, library items, trends and studio
+  commands with full ARIA combobox/listbox navigation and focus restoration; `#/s/<id>` supports
+  `Ctrl+Enter`/`⌘Enter` (insert line below) and `Alt+ArrowUp`/`Down` (jump lines), and `#/plan` supports
+  `1`/`2`/`3` view switching and calendar arrow keys. `tests/browser.py` now dispatches real hardware keystrokes
+  via Chrome DevTools `Input.dispatchKeyEvent` (`Page.press`, `Page.type_text`), closing the previous keyboard-test
+  gap across both `zh`/light and `en`/dark.
+- **Voice holdout calibration benchmark, 600-sample scale suite, CycloneDX 1.5 SBOM, STRIDE threat model and final `release.yml` (`studio/benchmark.py`, `tools/sbom.py`, `.github/workflows/release.yml`, `docs/THREAT_MODEL.md`, `docs/V1_ROADMAP.md`).**
+  Adds leave-one-out Voice Match + tone holdout calibration against synthetic generic AI/marketing templates
+  (`python3 -m studio.benchmark`, `GET /api/voice/calibration`, MCP `get_voice_calibration`, and collapsible card
+  on `#/voice`), a 300-script / 600-sample / 5,000-comment latency & SQLite query-count suite (`tests/test_performance.py`,
+  eliminating an N+1 comment query in `rednote_analytics.analytics_overview`), a deterministic CycloneDX 1.5 SBOM
+  generator (`tools/sbom.py` auditing stdlib-only imports, 468 `Cargo.lock` crates, SHA-pinned workflows and
+  prompt/lexicon hashes), a STRIDE threat model, a `v1.0` human sign-off checklist, and a tag-triggered
+  production release workflow.
 
 **Changed**
 
-- Through MCP, `save_voice_profile` stores a proposal only, `update_script` only revises an AI draft the
-  creator has not edited, `add_video_plan` creates `IDEA` entries (up to 50 waiting MCP ideas), and
-  `get_autopilot_status` is strictly read-only.
+- Through MCP (now 25 tools), `save_voice_profile` stores a proposal only, `update_script` only revises an AI draft
+  the creator has not edited, `add_video_plan` creates `IDEA` entries (up to 50 waiting MCP ideas),
+  `save_script_packaging` preserves non-empty creator-edited copy unless `overwrite=true`, and
+  `get_autopilot_status`, `get_script_timing_and_takes`, `list_script_revisions`, `get_packaging_brief` and
+  `get_voice_calibration` are strictly read-only.
 - A save based on an older version of a script is refused instead of replacing the newer one.
 - A draft prompt now also holds the openings of the creator's best-performing videos and up to 8 confirmed
   non-sponsored Stage 1B video beats (`spoken_text` and enum labels only, recorded in `basis`).
