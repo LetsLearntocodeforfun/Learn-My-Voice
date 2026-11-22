@@ -157,6 +157,22 @@ const I18N = {
     v_history_title: '以前保存的声音档案', v_history_sub: '换新档案时旧档案都会留着，随时可以换回来。',
     v_history_restore: '恢复这份档案', v_history_restored: '已恢复以前的声音档案',
     v_history_confirm: '要用这份以前的档案替换当前正在使用的声音档案吗？（当前档案也会留在这里）',
+    v_cal_title: '声音辨识度自检',
+    v_cal_tier_insufficient_samples: '样本不足（需 ≥3 篇）',
+    v_cal_tier_calibrating: '校准中',
+    v_cal_tier_calibrated: '已校准',
+    v_cal_anchor: '参与校准的非商单原话',
+    v_cal_anchor_v: '{n} 篇（共 {b} 口气）',
+    v_cal_anchor_capped: '{n} 篇（抽样评估 {e} 篇，共 {b} 口气）',
+    v_cal_need_more: '目前只有 {n} 篇已确认的非商单素材（至少满 {need} 篇才能做留一法辨识度自检；满 {target} 篇后范围更稳）。请先在素材库导入并确认非商单脚本或转写。',
+    v_cal_own_vs_slop: '留一法原话分 vs 通用 AI 模板分',
+    v_cal_scores_v: '原话均值 {own} 分 · 通用营销模板均值 {slop} 分（差值 {margin} 分）',
+    v_cal_sep: '成对区分率',
+    v_cal_sep_v: '{pct}% 的（原话，通用模板）配对里，你的原话得分更高',
+    v_cal_fp: '原话合规误报率',
+    v_cal_fp_v: '误报率 {fp}%（{clean}% 零触发，{flagged}/{n} 篇命中词表）',
+    v_cal_slop_gate: '通用烂梗与违规模板拦截率',
+    v_cal_slop_gate_v: '{pct}%（{flagged}/{total} 篇测试模板被拦截）',
     err_default: '出错了，请再试一次。',
   },
   en: {
@@ -204,6 +220,22 @@ const I18N = {
     v_history_title: 'Earlier voice profiles', v_history_sub: 'Replaced profiles are kept here and can be restored at any time.',
     v_history_restore: 'Restore', v_history_restored: 'Restored earlier voice profile',
     v_history_confirm: 'Replace the active voice profile with this earlier one? (The current profile will also be kept here.)',
+    v_cal_title: 'Voice Calibration Check',
+    v_cal_tier_insufficient_samples: 'Needs ≥3 samples',
+    v_cal_tier_calibrating: 'Calibrating',
+    v_cal_tier_calibrated: 'Calibrated',
+    v_cal_anchor: 'Confirmed non-sponsored samples',
+    v_cal_anchor_v: '{n} item(s) ({b} breaths)',
+    v_cal_anchor_capped: '{n} item(s) (evaluated {e}, {b} breaths)',
+    v_cal_need_more: 'Only {n} confirmed non-sponsored item(s) loaded so far (at least {need} are needed for leave-one-out holdout calibration, and {target}+ for full calibration). Add and confirm non-sponsored scripts or transcripts in the Library first.',
+    v_cal_own_vs_slop: 'Held-out real voice vs generic AI templates',
+    v_cal_scores_v: '{@Names} held-out mean {own} vs generic template mean {slop} (margin {margin})',
+    v_cal_sep: 'Pairwise separation',
+    v_cal_sep_v: '{@Names} real samples outscored generic templates in {pct}% of pairs',
+    v_cal_fp: 'Compliance false-positive rate',
+    v_cal_fp_v: '{fp}% false-positive rate ({clean}% clean; {flagged}/{n} item(s) matched the word list)',
+    v_cal_slop_gate: 'Synthetic slop guardrail catch rate',
+    v_cal_slop_gate_v: '{pct}% ({flagged}/{total} synthetic templates flagged)',
     err_default: 'Something went wrong. Please try again.',
   },
 };
@@ -998,7 +1030,8 @@ async function renderVoice() {
       ${row('v_connectors', tags(get('lexical_fingerprint.discourse_connectors.high_frequency', [])))}
       ${row('v_praise', tags(praise))}
       ${row('v_never', tags(never, 'no'))}
-    </dl></div><div id="tone-box"></div><div id="voice-actions"></div></div>`;
+    </dl></div><div id="tone-box"></div><div id="voice-calibration"></div><div id="voice-actions"></div></div>`;
   if (typeof plPaintToneCard === 'function') plPaintToneCard(document.getElementById('tone-box'));
+  if (typeof paintVoiceCalibration === 'function') paintVoiceCalibration(document.getElementById('voice-calibration'));
   paintVoiceActions(dna, is_example);
 }

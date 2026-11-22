@@ -178,19 +178,22 @@ def keyword_pieces(keyword: str) -> List[str]:
     return pieces + _LATIN.findall(keyword)
 
 
+def _relevance_prepared(key: str, key_non_ascii: bool, pieces: List[str], hay: _Hay) -> float:
+    if key_non_ascii and key in hay.compact:
+        return 1.0
+    if not pieces:
+        return 0.0
+    hits = sum(1 for p in pieces if (p in hay.words if p.isascii() else p in hay.compact))
+    return hits / len(pieces)
+
+
 def relevance(keyword: str, hay: _Hay) -> float:
     """0..1: 1.0 when the keyword appears as written, else the share of its pieces present.
 
     English words must match whole words, so "gym" does not match "gymnastics".
     """
     key = keyword_key(keyword)
-    if key and not key.isascii() and key in hay.compact:
-        return 1.0
-    pieces = keyword_pieces(keyword)
-    if not pieces:
-        return 0.0
-    hits = sum(1 for p in pieces if (p in hay.words if p.isascii() else p in hay.compact))
-    return hits / len(pieces)
+    return _relevance_prepared(key, bool(key and not key.isascii()), keyword_pieces(keyword), hay)
 
 
 def is_on_topic(sample: Dict[str, Any], keywords: Sequence[str]) -> bool:
@@ -535,7 +538,11 @@ def score_trends(trend_rows: List[Dict[str, Any]], samples: List[Dict[str, Any]]
         freshness = 0.5 ** (age_days / HALF_LIFE_DAYS)
         trend = (strength if heat_known else default_strength) * freshness
 
-        matched = [(relevance(keyword, hay), sample, total, views) for sample, hay, total, views in hays]
+        kw_key = keyword_key(keyword)
+        kw_non_ascii = bool(kw_key and not kw_key.isascii())
+        kw_pieces = keyword_pieces(keyword)
+        matched = [(_relevance_prepared(kw_key, kw_non_ascii, kw_pieces, hay), sample, total, views)
+                   for sample, hay, total, views in hays]
         matched = [m for m in matched if m[0] >= RELEVANT_AT]
         log_ratios: List[Tuple[float, float]] = []
         for rel, _, total, views in matched:

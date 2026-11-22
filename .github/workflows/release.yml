@@ -1,0 +1,280 @@
+# Builds and publishes a final production release from semantic version tags (v<major>.<minor>.<patch>).
+# Beta and release-candidate tags (such as v0.2.0-beta or v1.0.0.rc.1) do NOT match this trigger.
+#
+#   tests    the whole test suite on macOS, Windows and Linux (tests.yml)
+#   build    deterministic release zip (build_release.py build --release) + CycloneDX 1.5 SBOM (tools/sbom.py),
+#            each built twice and compared byte-for-byte
+#   try      on each system: unpack that zip, start it with the launcher a person would double-click,
+#            use the running app, stop it
+#   desktop  on macOS (Apple chip and Intel chip) and Windows: build the desktop app's installer around that
+#            same zip and a Python of its own, install it, open the app, use it, end it
+#   publish  a production GitHub Release (not a pre-release) with the zip, CycloneDX SBOM, SHA-256 checksums,
+#            each installer whose trial passed, and verification notes
+#
+# Only the publish job may write to the repository. No job uses a secret other than the token GitHub gives
+# every run. Actions are pinned to 40-character commit SHAs. Values from GitHub context are passed exclusively
+# through environment variables and never interpolated into run commands.
+name: Release
+
+on:
+  push:
+    tags: ["v[0-9]+.[0-9]+.[0-9]+"]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  tests:
+    uses: ./.github/workflows/tests.yml
+
+  build:
+    name: Build the release package and SBOM
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    outputs:
+      version: ${{ steps.build.outputs.version }}
+      tag: ${{ steps.build.outputs.tag }}
+      file: ${{ steps.build.outputs.file }}
+      sha256: ${{ steps.build.outputs.sha256 }}
+    env:
+      PUSHED_TAG: ${{ github.ref_type == 'tag' && github.ref_name || '' }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1         # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0     # v7.1.0
+        with:
+          python-version: "3.13"
+      - name: Build
+        id: build
+        shell: bash
+        run: python tools/build_release.py build --release --expect-tag "$PUSHED_TAG" --out dist
+      - name: Build it again, generate SBOM, and compare
+        shell: bash
+        env:
+          BUILT_VERSION: ${{ steps.build.outputs.version }}
+        run: |
+          python tools/build_release.py build --release --expect-tag "$PUSHED_TAG" --out again
+          cmp dist/*.zip again/*.zip
+          python tools/sbom.py --version "$BUILT_VERSION" --out dist/sbom.cdx.json
+          python tools/sbom.py --version "$BUILT_VERSION" --out again/sbom.cdx.json
+          cmp dist/sbom.cdx.json again/sbom.cdx.json
+          (cd dist && sha256sum sbom.cdx.json > sbom.cdx.json.sha256)
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9   # v7.0.2
+        with:
+          name: package
+          path: dist/
+          if-no-files-found: error
+          overwrite: true
+          retention-days: 30
+
+  try:
+    name: Try it / ${{ matrix.os }} / Python ${{ matrix.python }}
+    needs: build
+    runs-on: ${{ matrix.os }}
+    continue-on-error: ${{ matrix.experimental }}
+    timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [macos-15-intel, windows-latest, ubuntu-24.04]
+        python: ["3.9", "3.15"]
+        include:
+          - os: macos-15-intel
+            experimental: false
+          - os: windows-latest
+            experimental: true
+          - os: ubuntu-24.04
+            experimental: true
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1         # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0     # v7.1.0
+        with:
+          python-version: ${{ matrix.python }}
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        id: fetch
+        continue-on-error: true
+        with:
+          name: package
+          path: dist
+      - name: Wait before fetching the package again
+        if: ${{ steps.fetch.outcome == 'failure' }}
+        shell: bash
+        run: sleep 90
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        if: ${{ steps.fetch.outcome == 'failure' }}
+        with:
+          name: package
+          path: dist
+      - name: Unpack it, start it with its launcher, use it
+        id: trial
+        env:
+          TRY_PACKAGE: dist/${{ needs.build.outputs.file }}
+          TRY_SHA256: ${{ needs.build.outputs.sha256 }}
+          TRY_LABEL: ${{ matrix.os }} / Python ${{ matrix.python }}
+          TRY_RESULT: results/try-${{ matrix.os }}-py${{ matrix.python }}.json
+        run: python tools/try_release.py
+      - name: Write down a job that left no result
+        if: ${{ always() }}
+        env:
+          RESULT_LABEL: ${{ matrix.os }} / Python ${{ matrix.python }}
+          RESULT_OUTCOME: ${{ steps.trial.outcome }}
+          RESULT_FILE: results/try-${{ matrix.os }}-py${{ matrix.python }}.json
+        run: python tools/build_release.py result --kind try --if-missing
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9   # v7.0.2
+        if: ${{ always() }}
+        with:
+          name: result-try-${{ matrix.os }}-py${{ matrix.python }}
+          path: results/
+          if-no-files-found: error
+          overwrite: true
+          retention-days: 30
+
+  desktop:
+    name: Desktop app / ${{ matrix.system }}
+    needs: build
+    runs-on: ${{ matrix.os }}
+    continue-on-error: true
+    timeout-minutes: 60
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - system: macos-arm64
+            os: macos-latest
+            ending: .dmg
+          - system: macos-x64
+            os: macos-15-intel
+            ending: .dmg
+          - system: windows-x64
+            os: windows-latest
+            ending: -setup.exe
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1         # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0     # v7.1.0
+        with:
+          python-version: "3.14"
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        id: fetch
+        continue-on-error: true
+        with:
+          name: package
+          path: dist
+      - name: Wait before fetching the package again
+        if: ${{ steps.fetch.outcome == 'failure' }}
+        shell: bash
+        run: sleep 90
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        if: ${{ steps.fetch.outcome == 'failure' }}
+        with:
+          name: package
+          path: dist
+      - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9            # v6.1.0
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            desktop/src-tauri/target
+          key: desktop-${{ matrix.system }}-${{ hashFiles('desktop/src-tauri/Cargo.toml', 'desktop/src-tauri/Cargo.lock') }}
+          restore-keys: desktop-${{ matrix.system }}-
+      - name: Build the installer
+        env:
+          DESKTOP_PACKAGE: dist/${{ needs.build.outputs.file }}
+          DESKTOP_OUT: installers
+          DESKTOP_RESULT: results/desktop-${{ matrix.system }}.json
+        run: python desktop/build.py
+      - name: Install it, open the app, use it, end it
+        id: trial
+        env:
+          INSTALLER: installers/*-${{ matrix.system }}${{ matrix.ending }}
+          INSTALLER_RESULT: results/desktop-${{ matrix.system }}.json
+          INSTALLER_SHOTS: installers
+          INSTALLER_LABEL: ${{ matrix.system }}
+        run: python desktop/try_installer.py
+      - name: Write down a job that left no result
+        if: ${{ always() }}
+        env:
+          RESULT_LABEL: ${{ matrix.system }}
+          RESULT_OUTCOME: ${{ steps.trial.outcome }}
+          RESULT_FILE: results/desktop-${{ matrix.system }}.json
+        run: python tools/build_release.py result --kind desktop --if-missing
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9   # v7.0.2
+        if: ${{ always() }}
+        with:
+          name: result-desktop-${{ matrix.system }}
+          path: results/
+          if-no-files-found: error
+          overwrite: true
+          retention-days: 30
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9   # v7.0.2
+        if: ${{ always() }}
+        with:
+          name: installer-${{ matrix.system }}
+          path: installers/
+          if-no-files-found: ignore
+          overwrite: true
+          retention-days: 30
+
+  publish:
+    name: Publish the release
+    needs: [tests, build, try, desktop]
+    if: ${{ always() && needs.tests.result == 'success' && needs.build.result == 'success' && needs.try.result == 'success' }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    permissions:
+      contents: write
+    env:
+      PACKAGE: ${{ needs.build.outputs.file }}
+      SHA256: ${{ needs.build.outputs.sha256 }}
+      TAG: ${{ needs.build.outputs.tag }}
+      VERSION: ${{ needs.build.outputs.version }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1         # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0     # v7.1.0
+        with:
+          python-version: "3.13"
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: package
+          path: dist
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          pattern: result-*
+          path: results
+          merge-multiple: true
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        continue-on-error: true
+        with:
+          pattern: installer-*
+          path: installers
+          merge-multiple: true
+      - name: Check the package, verify SBOM, and write the notes
+        shell: bash
+        env:
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          python tools/build_release.py verify "dist/$PACKAGE" --sha256 "$SHA256"
+          (cd dist && sha256sum -c sbom.cdx.json.sha256)
+          python tools/build_release.py notes --package "dist/$PACKAGE" --results results \
+            --sbom dist/sbom.cdx.json \
+            --require macos --require linux:tests --require windows:tests \
+            --require macos:desktop --require windows:desktop \
+            --legs tests=3 --legs try=2 --run-url "$RUN_URL" \
+            --installers installers --attach attach.txt --out notes.md
+          cat notes.md >> "$GITHUB_STEP_SUMMARY"
+      - name: Publish the release
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          mapfile -t FILES < attach.txt
+          gh release create "$TAG" "${FILES[@]}" \
+            --repo "$GITHUB_REPOSITORY" --target "$GITHUB_SHA" \
+            --title "$VERSION" --notes-file notes.md

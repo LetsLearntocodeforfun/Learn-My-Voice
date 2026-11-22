@@ -706,6 +706,70 @@ async function renderLibrary() {
   };
 }
 
+/* ---------- voice calibration check (#/voice) ---------- */
+let voiceCalOpen = false;
+async function paintVoiceCalibration(box) {
+  if (!box) return;
+  let cal;
+  try { cal = await api('GET', '/api/voice/calibration'); } catch (e) { return; }
+  if (!box.isConnected || !cal) return;
+  const tier = cal.readiness_tier || 'insufficient_samples';
+  const tierCls = tier === 'calibrated' ? 'ok' : (tier === 'calibrating' ? 'warn' : '');
+  const tierLabel = t('v_cal_tier_' + tier);
+  const total = Number(cal.organic_samples_total || 0);
+  const evalCount = Number(cal.samples_evaluated || 0);
+  const breaths = Number(cal.reference_breaths || 0);
+  const slopPct = Math.round(Number(cal.slop_flagged_rate || 0) * 1000) / 10;
+  const noteText = cal.honesty_note && cal.honesty_note[lang] ? cal.honesty_note[lang] : '';
+
+  let summaryMeta = '';
+  let bodyHtml = '';
+  if (tier === 'insufficient_samples') {
+    summaryMeta = `${total}/${cal.min_samples_required || 3}`;
+    bodyHtml = `<p class="hint" style="margin-top:10px">${esc(tf('v_cal_need_more', {
+      n: total, need: cal.min_samples_required || 3, target: cal.calibrated_samples_target || 5,
+    }))} <a href="#/library">${esc(t('go_library'))}</a></p>
+      <dl class="kv" style="margin-top:8px">
+        <dt>${esc(t('v_cal_slop_gate'))}</dt>
+        <dd>${esc(tf('v_cal_slop_gate_v', { pct: slopPct, flagged: cal.slop_flagged_count || 0, total: cal.synthetic_slop_count || 0 }))}</dd>
+      </dl>
+      ${noteText ? `<p class="hint" style="margin-bottom:0">${esc(noteText)}</p>` : ''}`;
+  } else {
+    const marginVal = Number(cal.margin || 0);
+    const marginSign = (marginVal >= 0 ? '+' : '') + marginVal.toFixed(1);
+    const sepPct = Math.round(Number(cal.pairwise_separation_rate || 0) * 1000) / 10;
+    const cleanPct = Math.round(Number(cal.own_guardrail_clean_rate || 0) * 1000) / 10;
+    const fpPct = Math.max(0, Math.round((100 - cleanPct) * 10) / 10);
+    const anchorText = cal.capped
+      ? tf('v_cal_anchor_capped', { n: total, e: evalCount, b: breaths })
+      : tf('v_cal_anchor_v', { n: total, b: breaths });
+    summaryMeta = `${cal.own_mean_score} vs ${cal.slop_mean_score} (${marginSign})`;
+    bodyHtml = `<dl class="kv" style="margin-top:10px">
+        <dt>${esc(t('v_cal_anchor'))}</dt><dd>${esc(anchorText)}</dd>
+        <dt>${esc(t('v_cal_own_vs_slop'))}</dt>
+        <dd>${esc(tf('v_cal_scores_v', { own: cal.own_mean_score, slop: cal.slop_mean_score, margin: marginSign }))}</dd>
+        <dt>${esc(t('v_cal_sep'))}</dt><dd>${esc(tf('v_cal_sep_v', { pct: sepPct }))}</dd>
+        <dt>${esc(t('v_cal_fp'))}</dt>
+        <dd>${esc(tf('v_cal_fp_v', { fp: fpPct, clean: cleanPct, flagged: cal.own_compliance_flagged_count || 0, n: evalCount }))}</dd>
+        <dt>${esc(t('v_cal_slop_gate'))}</dt>
+        <dd>${esc(tf('v_cal_slop_gate_v', { pct: slopPct, flagged: cal.slop_flagged_count || 0, total: cal.synthetic_slop_count || 0 }))}</dd>
+      </dl>
+      ${noteText ? `<p class="hint" style="margin-bottom:0">${esc(noteText)}</p>` : ''}`;
+  }
+
+  const shouldOpen = voiceCalOpen || tier === 'insufficient_samples';
+  box.innerHTML = `<details class="card" id="voice-calibration-card" style="margin-top:16px" ${shouldOpen ? 'open' : ''}>
+    <summary><span class="row" style="display:inline-flex;gap:8px;align-items:center;vertical-align:middle">
+      <strong>${esc(t('v_cal_title'))}</strong>
+      <span class="tag ${tierCls}">${esc(tierLabel)}</span>
+      <span class="meta">${esc(summaryMeta)}</span>
+    </span></summary>
+    ${bodyHtml}
+  </details>`;
+  const det = document.getElementById('voice-calibration-card');
+  if (det) det.ontoggle = () => { voiceCalOpen = det.open; };
+}
+
 /* ---------- voice actions ---------- */
 async function paintVoiceActions(dna, isExample) {
   const el = document.getElementById('voice-actions');

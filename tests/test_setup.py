@@ -919,7 +919,7 @@ class ProposalTest(SetupCase):
         self.assertEqual({k: result["evidence"][k] for k in ("checked", "found", "not_found", "absent", "conflict")},
                          {"checked": 7, "found": 2, "not_found": 2, "absent": 2, "conflict": 1})
         tools = {name: tool["public"] for name, tool in mcp_server.TOOLS.items()}
-        self.assertEqual(len(tools), 24)                                   # nothing was added for approval
+        self.assertEqual(len(tools), 25)                                   # nothing was added for approval
         for name, public in tools.items():
             self.assertIsNone(re.search(r"approv|accept_|activate", name), name)
         self.assertIn("does NOT become the active voice profile", tools["save_voice_profile"]["description"])
