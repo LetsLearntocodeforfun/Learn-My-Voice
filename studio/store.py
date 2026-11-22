@@ -1704,7 +1704,7 @@ class Store:
     def list_scripts(self) -> List[Dict[str, Any]]:
         with self._db() as db:
             rows = db.execute(
-                "SELECT id, title, target_sec, status, updated_at, line_count, preview,"
+                "SELECT id, title, target_sec, status, updated_at, line_count, preview, keywords_json,"
                 " CASE WHEN line_count IS NULL OR preview IS NULL THEN lines_json END AS legacy_lines_json"
                 " FROM scripts ORDER BY updated_at DESC"
             ).fetchall()
@@ -1714,10 +1714,12 @@ class Store:
                 line_count, preview = int(row["line_count"]), str(row["preview"])
             else:
                 line_count, preview = _script_summary(loads_stored(row["legacy_lines_json"] or "[]"))
+            raw_kw = loads_stored(row["keywords_json"] or "[]")
             out.append({
                 "id": row["id"], "title": row["title"], "target_sec": row["target_sec"],
                 "status": row["status"], "updated_at": row["updated_at"],
                 "line_count": line_count, "preview": preview,
+                "keywords": raw_kw if isinstance(raw_kw, list) else [],
             })
         return out
 

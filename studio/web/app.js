@@ -105,6 +105,7 @@ const ICONS = {
   voice: '<path d="M4 10.5v3M8 7v10M12 4v16M16 7v10M20 10.5v3"/>',
   settings: '<path d="M4 7.5h9M18 7.5h2M4 16.5h2M11 16.5h9"/><circle cx="15.5" cy="7.5" r="2.5"/><circle cx="8.5" cy="16.5" r="2.5"/>',
   globe: '<circle cx="12" cy="12" r="8.5"/><path d="M3.5 12h17M12 3.5c2.7 2.8 2.7 14.2 0 17M12 3.5c-2.7 2.8-2.7 14.2 0 17"/>',
+  search: '<circle cx="11" cy="11" r="6.5"/><path d="M16 16l4.5 4.5"/>',
 };
 const icon = (name) => `<svg class="ic" viewBox="0 0 24 24" width="20" height="20" aria-hidden="true">${ICONS[name] || ''}</svg>`;
 /* The app's mark beside its name: a voice, as a wave, in the colours of the app's icon (the .mark rules in app.css). */
@@ -113,7 +114,7 @@ const BRAND_MARK = '<svg class="mark" viewBox="0 0 28 28" width="28" height="28"
 
 const I18N = {
   zh: {
-    brand: '脚本工作台', nav_scripts: '我的脚本', nav_voice: '我的声音', nav_settings: '设置', lang_btn: 'English',
+    brand: '脚本工作台', pal_nav_btn: '搜索 / 跳转', nav_scripts: '我的脚本', nav_voice: '我的声音', nav_settings: '设置', lang_btn: 'English',
     home_title: '我的脚本', home_sub: '写、改、念，都在这里。', new_script: '＋ 写新脚本',
     empty: '还没有脚本，点上面的按钮开始第一篇吧。', lines_n: '句', sec: '秒',
     no_ai: '还没连接 AI。可以先自己写，或者去「设置」连接。', go_settings: '去设置',
@@ -159,7 +160,7 @@ const I18N = {
     err_default: '出错了，请再试一次。',
   },
   en: {
-    brand: 'Learn My Voice', nav_scripts: 'Scripts', nav_voice: 'Voice', nav_settings: 'Settings', lang_btn: '中文',
+    brand: 'Learn My Voice', pal_nav_btn: 'Search / Jump', nav_scripts: 'Scripts', nav_voice: 'Voice', nav_settings: 'Settings', lang_btn: '中文',
     home_title: 'Scripts', home_sub: 'Write, edit and read from one place.', new_script: '+ New script',
     empty: 'No scripts yet. Use the button above to start one.', lines_n: 'lines', sec: 's',
     no_ai: 'AI is not connected. You can write by hand, or connect it in Settings.', go_settings: 'Open settings',
@@ -307,6 +308,58 @@ function askConfirm(message, o) {
   });
 }
 
+const $modal = document.getElementById('modal');
+let modalOpener = null;
+let modalCancel = null;
+
+function onModalKey(e) {
+  if (!$modal || $modal.hidden) return;
+  if (e.key === 'Escape') {
+    e.preventDefault();
+    e.stopPropagation();
+    if (modalCancel) modalCancel();
+    else closeModal();
+  } else if (e.key === 'Tab') {
+    const stops = Array.from($modal.querySelectorAll(
+      'button:not([disabled]), input:not([disabled]):not([hidden]), textarea:not([disabled]):not([hidden]), select:not([disabled]), a[href], [tabindex]:not([tabindex="-1"])'
+    )).filter((el) => el.offsetParent !== null);
+    if (!stops.length) return;
+    const inside = $modal.contains(document.activeElement);
+    if (!inside || (!e.shiftKey && document.activeElement === stops[stops.length - 1])) { e.preventDefault(); stops[0].focus(); }
+    else if (e.shiftKey && document.activeElement === stops[0]) { e.preventDefault(); stops[stops.length - 1].focus(); }
+  }
+}
+
+function openModal(html, onCancel, opener) {
+  if (!$modal) return;
+  modalOpener = opener !== undefined ? opener : document.activeElement;
+  modalCancel = typeof onCancel === 'function' ? onCancel : null;
+  $modal.innerHTML = html;
+  $modal.hidden = false;
+  document.addEventListener('keydown', onModalKey, true);
+  $modal.onclick = (e) => {
+    if (e.target === $modal) {
+      if (modalCancel) modalCancel();
+      else closeModal();
+    }
+  };
+}
+
+function closeModal() {
+  if (!$modal) return;
+  const before = modalOpener;
+  modalOpener = null;
+  modalCancel = null;
+  document.removeEventListener('keydown', onModalKey, true);
+  $modal.onclick = null;
+  $modal.hidden = true;
+  $modal.innerHTML = '';
+  if (before && before.focus && document.contains(before)) {
+    if (!before.disabled) before.focus();
+    else setTimeout(() => { if (before && !before.disabled && document.contains(before)) before.focus(); }, 0);
+  }
+}
+
 /* ---------- inside the desktop app: files and links go through the core ---------- */
 let lastExport = null;      // what the core answered the last time it saved an export itself
 
@@ -427,6 +480,7 @@ function renderNav(route) {
   const item = (hash, key, glyph, on, mark) => `<a href="${hash}" class="${on ? 'on' : ''}"${on ? ' aria-current="page"' : ''}>` +
     `${icon(glyph)}<span>${esc(t(key))}</span>${mark ? '<i class="dot"></i>' : ''}</a>`;
   $nav.innerHTML = `<div class="brand">${BRAND_MARK}<span>${esc(t('brand'))}</span></div>` +
+    `<button type="button" class="pal-trigger" id="palette-btn" aria-keyshortcuts="Meta+K Control+K">${icon('search')}<span>${esc(t('pal_nav_btn'))}</span><kbd class="pal-kbd" aria-hidden="true">⌘K</kbd></button>` +
     item('#/start', 'nav_start', 'start', route === 'start', appState.setup_next && appState.setup_next !== 'done') +
     item('#/', 'nav_scripts', 'scripts', route === 'home' || route === 'new' || route === 'script' || route === 'sponsored') +
     item('#/plan', 'nav_plan', 'plan', route === 'plan', (appState.plan_count || 0) > 0) +
@@ -437,6 +491,8 @@ function renderNav(route) {
     item('#/autopilot', 'nav_autopilot', 'trends', route === 'autopilot') +
     item('#/settings', 'nav_settings', 'settings', route === 'settings') +
     `<div class="grow"></div><button type="button" class="lang" id="lang-btn">${icon('globe')}<span>${esc(t('lang_btn'))}</span></button>`;
+  const $palBtn = document.getElementById('palette-btn');
+  if ($palBtn && typeof openPalette === 'function') $palBtn.onclick = () => openPalette();
   document.getElementById('lang-btn').onclick = () => {
     lang = lang === 'zh' ? 'en' : 'zh';
     remember('lang', lang);
