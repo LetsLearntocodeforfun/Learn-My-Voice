@@ -420,17 +420,22 @@ class McpToolTest(McpCase):
         self.assertFalse(err_t1)
         self.assertIn("note", t1)
 
-        # add_video_plan forces PLANNED status, bounds long notes, and list_video_plans bounds count & text
+        # add_video_plan stores an idea (never a planned video), refuses a text over its limit, and
+        # list_video_plans bounds count & text
+        err_long, said = self.tool("add_video_plan", title="下周超市采购", notes="备注" * 500)
+        self.assertTrue(err_long)
+        self.assertIn("'notes' is longer than %d characters" % mcp_server.MCP_MAX_PLAN_TEXT_CHARS, said)
+        self.assertEqual(self.store.list_video_plans(), [])                 # refused, not cut: nothing was stored
         err_add, added = self.tool(
             "add_video_plan",
             title="下周超市采购",
             scheduled_for="2026-12-05",
-            notes="备注" * 500,
+            notes="备注" * 300,
             keywords=["周末采购"],
         )
         self.assertFalse(err_add)
-        self.assertEqual(added["plan"]["status"], "PLANNED")
-        self.assertLessEqual(len(added["plan"]["notes"]), mcp_server.MCP_MAX_PLAN_TEXT_CHARS)
+        self.assertEqual((added["plan"]["status"], added["plan"]["source_kind"]), ("IDEA", "mcp"))
+        self.assertEqual(added["plan"]["notes"], "备注" * 300)
         self.tool("add_video_plan", title="第二条计划")
 
         err_ls, plans = self.tool("list_video_plans", limit=1)
@@ -438,6 +443,65 @@ class McpToolTest(McpCase):
         self.assertEqual(len(plans["plans"]), 1)
         self.assertEqual(plans["plans_left_out"], 1)
         self.assertIn("untrusted viewer comments", plans["note"])
+
+
+class McpPlanIdeasTest(McpCase):
+    """Nothing an AI app can call accepts something for the creator: what it adds to the plan is an idea."""
+
+    def test_an_entry_an_ai_app_adds_is_an_idea_marked_as_coming_from_an_ai_app_and_the_answer_says_so(self):
+        is_error, out = self.tool("add_video_plan", title="  冬天护肤三件事  ", scheduled_for="2026-12-01", notes="先说干皮",
+                                  rationale_zh="评论里有人问", keywords=["冬天护肤"], status="POSTED", source_kind="manual",
+                                  script_id="abc", priority=1)
+        self.assertFalse(is_error, out)
+        (held,) = self.store.list_video_plans()
+        self.assertEqual((held["title"], held["status"], held["source_kind"], held["scheduled_for"], held["notes"]),
+                         ("冬天护肤三件事", "IDEA", "mcp", "2026-12-01", "先说干皮"))
+        self.assertFalse(held.get("script_id"))                             # what a client sends beyond the schema is not used
+        self.assertEqual(out["status"], "stored_as_an_idea_waiting_for_the_creator")
+        self.assertIn("It is not planned", out["note"])
+        self.assertIn("You cannot change its status", out["note"])
+        said = mcp_server.INSTRUCTIONS
+        self.assertIn("stored as an idea (status IDEA) marked as added by an AI app, never as planned", said)
+        self.assertIn("never say a video is planned or scheduled because you added it", said)
+        self.assertNotIn("status PLANNED", said)
+        described = mcp_server.TOOLS["add_video_plan"]["public"]["description"]
+        self.assertIn("It does not plan the video", described)
+        self.assertNotIn("PLANNED", described)
+        for name in mcp_server.TOOLS:                                       # no tool takes an idea up, moves it or removes it
+            self.assertFalse("plan" in name and any(word in name for word in ("update", "delete", "remove", "status", "schedule")), name)
+
+    def test_a_text_over_its_limit_is_refused_whole_and_nothing_is_stored(self):
+        too_long = "长" * (mcp_server.MCP_MAX_PLAN_TEXT_CHARS + 1)
+        for key in ("notes", "rationale_zh", "rationale_en"):
+            is_error, said = self.tool("add_video_plan", title="x", **{key: too_long})
+            self.assertTrue(is_error, key)
+            self.assertIn("'%s' is longer than %d characters" % (key, mcp_server.MCP_MAX_PLAN_TEXT_CHARS), said)
+        is_error, said = self.tool("add_video_plan", title="题" * 301)          # the plan's own limit on a title, said by the plan
+        self.assertTrue(is_error)
+        self.assertEqual(self.store.list_video_plans(), [])
+        is_error, out = self.tool("add_video_plan", title="x", notes="长" * mcp_server.MCP_MAX_PLAN_TEXT_CHARS)
+        self.assertFalse(is_error, out)
+        self.assertEqual(len(out["plan"]["notes"]), mcp_server.MCP_MAX_PLAN_TEXT_CHARS)
+
+    def test_only_so_many_ideas_from_ai_apps_wait_at_a_time_and_the_creator_keeps_room(self):
+        from studio import planner
+        made = planner.create_plan_item(self.store, {"title": "我自己排的", "scheduled_for": "2026-12-24"})
+        own = self.store.get_video_plan(made["id"])
+        limit = mcp_server.MCP_MAX_WAITING_PLAN_IDEAS
+        self.assertLess(limit, planner.MAX_OPEN_PLANS // 2)                    # an AI app cannot use up the creator's room
+        for n in range(limit):
+            is_error, out = self.tool("add_video_plan", title="想法 %d" % n)
+            self.assertFalse(is_error, out)
+        is_error, said = self.tool("add_video_plan", title="再来一个")
+        self.assertTrue(is_error)
+        self.assertIn("%d ideas added by AI apps" % limit, said)
+        self.assertEqual(len(self.store.list_video_plans()), limit + 1)
+        self.assertEqual(self.store.get_video_plan(own["id"]), own)          # untouched by all of it
+        planner.create_plan_item(self.store, {"title": "我还能自己加"})          # the creator still has room
+        taken_up = next(p for p in self.store.list_video_plans() if p["source_kind"] == "mcp")
+        self.store.update_video_plan(taken_up["id"], {"status": "PLANNED"})    # the creator takes one up in the app
+        is_error, out = self.tool("add_video_plan", title="再来一个")
+        self.assertFalse(is_error, out)
 
 
 class McpSubprocessTest(unittest.TestCase):
