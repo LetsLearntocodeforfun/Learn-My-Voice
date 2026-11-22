@@ -42,7 +42,7 @@ import zipfile
 from pathlib import Path
 from unittest import mock
 
-from studio import backup, creator, mcp_server, outside, posted, server, wordlist
+from studio import autopilot, backup, creator, mcp_server, outside, posted, server, wordlist
 from studio.jobs import Jobs
 from studio.store import ROOT, Store
 
@@ -58,7 +58,7 @@ OWN = [
 MARKUP = "<img src=x onerror=alert(1)>"
 ASSUMES = re.compile(r"\b(she|her|hers|herself|husband|wife|couple)\b", re.I)
 # The layout of the database this version of the data stands for (backup.layout_fingerprint()).
-LAYOUT_OF_DATA_VERSION = {1: "dc489db00a5395ce", 2: "b0612eef1d02873d", 3: "d5c2a68c0ed818d4"}
+LAYOUT_OF_DATA_VERSION = {1: "dc489db00a5395ce", 2: "b0612eef1d02873d", 3: "d5c2a68c0ed818d4", 4: "bc8828c370d2a5aa"}
 
 # The tables as the code at 3fdd3a6 creates them: the commit this feature was built on.
 SCHEMA_AT_3FDD3A6 = """
@@ -232,6 +232,15 @@ def fill(store, tag="甲"):
     store.upsert_trends([{"keyword": "早餐吃什么", "source_url": "https://example.com/a", "note_zh": "查到的"}], source="ai")
     store.add_lesson(script_id=drafted["id"], ai="因此我强烈推荐", final="所以我真的很推荐嘛", note="口语一点")
     store.save_brief("draft", {"notes": "入冬换面霜", "samples": ["素材一"]}, fingerprint="f1")
+    # One run in autopilot's log, with a change it says how to reverse, written by a look of the scheduler itself.
+    tasks = autopilot.Registry()
+    tasks.add_undo("example.noted", lambda _store, _payload: None)
+    tasks.add(autopilot.Task("example.note", every_sec=3600,
+                             run=lambda context: (context.record_undo("example.noted", {"note": tag}), {"noted": tag})[1]))
+    pilot = autopilot.Autopilot(store, registry=tasks)
+    pilot.on = True
+    autopilot.save_settings(store, {"enabled": True, "tasks": {"example.note": True}})
+    pilot.run_due()
     store.save_creator(creator.normalize({"name": tag + "小满", "pronoun": "she", "niches": "护肤", "never": ["宝子们"]}))
     store.save_dna(dict(EXAMPLE, profile_version=tag + "-0"))
     store.save_dna(dict(EXAMPLE, profile_version=tag + "-1"))
@@ -428,7 +437,7 @@ class ContentsTest(Case):
         inside = self.tmp / "inside.db"
         inside.write_bytes(held["studio.db"])
         self.assertEqual(rows(inside), rows(self.store.db_path))
-        self.assertEqual(sorted(rows(inside)), ["ai_suggestions", "briefs", "lessons", "metric_snapshots",
+        self.assertEqual(sorted(rows(inside)), ["ai_suggestions", "autopilot_runs", "briefs", "lessons", "metric_snapshots",
                                                 "sample_beats", "sample_comments", "sample_sentiments", "samples",
                                                 "script_pins", "scripts", "sponsor_briefs", "trends", "video_plans"])
         for table, found in rows(inside).items():
@@ -619,7 +628,7 @@ class RoundTripTest(Case):
 
     def test_every_table_the_app_makes_is_written_the_plain_way_a_backup_can_check(self):
         layout = backup.reference_layout()
-        self.assertEqual(sorted(layout["tables"]), ["ai_suggestions", "briefs", "lessons", "metric_snapshots",
+        self.assertEqual(sorted(layout["tables"]), ["ai_suggestions", "autopilot_runs", "briefs", "lessons", "metric_snapshots",
                                                     "sample_beats", "sample_comments", "sample_sentiments", "samples",
                                                     "script_pins", "scripts", "sponsor_briefs", "trends", "video_plans"])
         self.assertEqual(sorted(layout["indexes"]), ["ai_suggestions_by_script", "metric_snapshots_by_sample",
