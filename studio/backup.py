@@ -79,7 +79,7 @@ import zlib
 from pathlib import Path
 from typing import Any, Callable, Dict, Iterator, List, Optional, Tuple
 
-from . import buildinfo, creator, llm, pipeline, posted, trends, wordlist
+from . import autopilot, buildinfo, creator, llm, pipeline, posted, trends, wordlist
 from . import setup as setup_status
 from . import store as store_module
 from .store import Store, loads_stored
@@ -89,7 +89,7 @@ FORMAT = 1                              # how a backup file is laid out; a file 
 # The version of the data: of the tables in studio.db and of the files beside it. Raise it by one whenever a
 # table or a column is added or what a stored value means changes (tests/test_backup.py holds the layout this
 # number stands for, and fails when the layout moves without it). A backup that names a later one is refused.
-DATA_VERSION = 3
+DATA_VERSION = 4
 EXTENSION = "lmvbackup"
 EPOCH_HEADER = "X-Data-Epoch"           # with every answer: which data this is; with a change: which data the page means
 FIRST_EPOCH = "0"                       # the name of the data in a folder nothing was ever restored into
@@ -648,6 +648,7 @@ def _try_out(store: Store) -> None:
             [store.list_sample_comments(s["id"]) for s in store.list_samples()],
             store.list_sponsor_briefs(),
             len(store.list_sample_beats()),
+            autopilot.recent_runs(store),
         ]
         json.dumps(answers, ensure_ascii=False)
     except Exception as exc:  # noqa: BLE001 - whatever a reader trips over, the file is not used
