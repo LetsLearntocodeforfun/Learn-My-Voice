@@ -1229,6 +1229,9 @@ class PageInteractiveTest(Case):
                 page.httpd.app.update_transport = stand_in
                 page.httpd.app.update_checks = True
 
+                # The page began a look of its own when it drew itself, with looking still off. Let that answer
+                # arrive first: coming after the reset below, it would stand in for the one this test wants.
+                page.wait_for("Boolean(upState.status)")
                 page.eval_js("sessionStorage.removeItem('up-checked'); upState.status = null;")
                 page.go("#/trends", "Boolean(document.getElementById('up-startup-banner')) && Boolean(document.getElementById('up-prev-banner'))")
                 self.assertEqual(page.eval_js("document.documentElement.getAttribute('data-theme')"), "dark")
@@ -1270,6 +1273,7 @@ class PageInteractiveTest(Case):
                 page.httpd.app.update_transport = stand_in
                 page.httpd.app.update_checks = True
 
+                page.wait_for("Boolean(upState.status)")        # as above: the page's own first look answers first
                 page.eval_js("sessionStorage.removeItem('up-checked'); upState.status = null; upState.startupDismissed = false;")
                 page.go("#/trends", "Boolean(document.getElementById('up-startup-banner'))")
                 self.assertEqual(page.eval_js("document.documentElement.getAttribute('data-theme')"), "light")
