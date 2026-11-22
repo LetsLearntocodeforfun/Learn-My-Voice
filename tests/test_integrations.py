@@ -243,7 +243,8 @@ class McpProtocolTest(McpCase):
         read_only = {t["name"] for t in tools if t["annotations"]["readOnlyHint"]}
         self.assertEqual(read_only, {"get_script_brief", "check_script", "list_scripts", "get_script", "get_voice_profile",
                                      "list_library", "get_voice_learning_brief", "get_topic_ideas_brief",
-                                     "list_trends", "get_rednote_analytics", "get_tone_analysis", "list_video_plans"})
+                                     "list_trends", "get_rednote_analytics", "get_tone_analysis", "list_video_plans",
+                                     "get_autopilot_status"})
         self.assertEqual({t["name"] for t in tools} - read_only,
                          {"save_script", "update_script", "save_voice_profile", "save_topic_ideas", "export_jianying_kit",
                           "add_trend_keywords", "add_video_plan"})
@@ -320,6 +321,7 @@ class McpToolTest(McpCase):
             ("get_voice_learning_brief", {}), ("get_topic_ideas_brief", {}), ("save_topic_ideas", {"ideas": IDEAS_REPLY}),
             ("get_tone_analysis", {"script_id": "000000000000"}), ("get_tone_analysis", {"script_id": 123}),
             ("get_rednote_analytics", {"limit": "many"}), ("list_video_plans", {"limit": "many"}),
+            ("get_autopilot_status", {"run_limit": "many"}),
             ("add_video_plan", {}), ("add_video_plan", {"title": "   "}), ("add_video_plan", {"title": 99}),
             ("add_video_plan", {"title": "x", "video_format": "TIKTOK"}),
             ("add_video_plan", {"title": "x", "scheduled_for": "not-a-date"}),
@@ -376,11 +378,12 @@ class McpToolTest(McpCase):
         self.assertIn("commenter names", inst)
         self.assertIn("not judgements", inst)
         self.assertIn("list_video_plans", inst)
+        self.assertIn("get_autopilot_status", inst)
         self.assertIn("add_video_plan", inst)
 
         # get_tone_analysis description does NOT name the five round-1 axes or promise quality scores
         tools_by_name = {t["name"]: t for t in self.rpc("tools/list")["result"]["tools"]}
-        self.assertEqual(len(tools_by_name), 19)
+        self.assertEqual(len(tools_by_name), 20)
         tone_desc = tools_by_name["get_tone_analysis"]["description"].lower()
         for removed_axis in ("5-axis", "warmth", "humor", "humour", "restraint", "naturalness", "score"):
             self.assertNotIn(removed_axis, tone_desc)
@@ -438,6 +441,10 @@ class McpToolTest(McpCase):
         self.assertEqual(added["plan"]["notes"], "备注" * 300)
         self.tool("add_video_plan", title="第二条计划")
 
+        err_ap, ap_out = self.tool("get_autopilot_status", run_limit=5)
+        self.assertFalse(err_ap)
+        self.assertIs(ap_out["autopilot"]["on"], False)
+        self.assertEqual(ap_out["open_plan_suggestions"], [])
         err_ls, plans = self.tool("list_video_plans", limit=1)
         self.assertFalse(err_ls)
         self.assertEqual(len(plans["plans"]), 1)
@@ -596,7 +603,7 @@ class McpSubprocessTest(unittest.TestCase):
             self.assertEqual((done.returncode, done.stderr), (0, b""))
             replies = [json.loads(line) for line in done.stdout.decode("ascii").splitlines()]
             self.assertEqual([r["id"] for r in replies], [1, 2, 3])
-            self.assertEqual(len(replies[1]["result"]["tools"]), 19)
+            self.assertEqual(len(replies[1]["result"]["tools"]), 20)
             saved = json.loads(replies[2]["result"]["content"][0]["text"])
             self.assertEqual(saved["check"]["findings"], [])
             stored = Store(tmp / "data").get_script(saved["script_id"])

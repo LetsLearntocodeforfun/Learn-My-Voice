@@ -57,6 +57,7 @@ from typing import Any, Dict, List, Optional, Tuple
 from . import checks, corpus, creator, exports, keyword_import, llm, pipeline, textstats, timing, transcribe, trends
 from . import buildinfo, hooks, outside, posted, refs, suggest, video_ingest, wordlist
 from . import planner, rednote_analytics, soundstats, sponsored, tone_analyzer, updater
+from . import autosuggest     # registers autopilot's tasks plans.suggest and ideas.refresh: on a list, nothing is started
 from . import setup as setup_status
 from . import autopilot, autovoice, backup, trend_sources
 from .jobs import JobError, Jobs, Progress
@@ -1118,6 +1119,10 @@ class Handler(BaseHTTPRequestHandler):
         - ``POST /api/plans/<id>/prompt``: the draft prompt for the plan, for copy and paste. Nothing is sent.
         - ``POST /api/plans/<id>/draft``: make the plan's script and link the two: ``{"use_ai": true}`` through
           the AI service in Settings, ``{"reply", "brief_id"}`` from a pasted reply, or empty.
+        - ``POST /api/plans/<id>/suggestions/<suggestion id>/take``: the creator takes a trend keyword that was
+          suggested for the plan; it becomes one of the plan's keywords and nothing else about the plan changes.
+          ``.../dismiss``: the creator dismisses it; the plan is not changed. Both hand over to
+          ``studio/autosuggest.py``. A suggestion is made by autopilot; only these two requests decide one.
 
         Every answer that follows a change carries ``planner``: the page's data as it is afterwards.
         """
@@ -1151,6 +1156,11 @@ class Handler(BaseHTTPRequestHandler):
             except TextTooLong as exc:
                 raise ApiError(413, exc.code, exc.message, exc.message_zh, extra={"limit": exc.limit})
             return self._json(dict(made, planner=planner.payload(store)), 201)
+        m = re.fullmatch(r"/api/plans/([0-9a-f]{12})/suggestions/([0-9a-f]{12})/(take|dismiss)", path)
+        if m and method == "POST":
+            self._read_json()
+            decide = autosuggest.take if m.group(3) == "take" else autosuggest.dismiss
+            return self._json({"plan": decide(store, m.group(1), m.group(2)), "planner": planner.payload(store)})
         raise ApiError(404, "not_found")
     # ---- a brand's brief for a sponsored video (studio/sponsored.py) ---------
     def _sponsored_api(self, method: str, path: str) -> None:
@@ -1364,7 +1374,9 @@ class Handler(BaseHTTPRequestHandler):
             if route == ("GET", "/api/autopilot/sources"):
                 return self._json(trend_sources.get_source_settings(self.app.store))
             if route == ("POST", "/api/autopilot/sources"):
-                return self._json(trend_sources.save_source_settings(self.app.store, self._read_json()))
+                res = trend_sources.save_source_settings(self.app.store, self._read_json())
+                pilot._wake.set()
+                return self._json(res)
             if route == ("GET", "/api/autopilot/voice"):
                 return self._json(autovoice.voice_payload(self.app.store, now=pilot.clock()))
             if route == ("POST", "/api/autopilot/voice"):
@@ -1670,9 +1682,24 @@ class Handler(BaseHTTPRequestHandler):
             return self._json({"dna": dna, "is_example": False})
         if route == ("GET", "/api/recommendations"):
             # ``discover``: the latest one-prompt run, running or finished, so the page can follow it or show how it ended.
+            # ``automatic``: what autopilot's refresh did (autosuggest.ideas_state): whether the saved ideas are a set
+            # it made, a set that waits for the creator, and when it last made ideas and from which trends.
             return self._json({"performance": corpus.performance(store.list_samples()),
                                "result": store.load_recommendations(),
-                               "discover": app.jobs.latest(DISCOVER_JOB)})
+                               "discover": app.jobs.latest(DISCOVER_JOB),
+                               "automatic": autosuggest.ideas_state(store)})
+        m = re.fullmatch(r"/api/recommendations/automatic/([0-9a-f]{12})/(take|dismiss)", path)
+        if m and method == "POST":
+            # The creator's click on a set of ideas an automatic refresh left waiting. ``take`` makes it the saved
+            # ideas, in place of those saved now, as "Find ideas" does; ``dismiss`` leaves the saved ideas alone.
+            self._read_json()
+            try:
+                state = (autosuggest.take_ideas if m.group(2) == "take" else autosuggest.dismiss_ideas)(store, m.group(1))
+            except autosuggest.Refused as exc:
+                raise ApiError(exc.status, exc.code, exc.message, exc.message_zh)
+            return self._json({"performance": corpus.performance(store.list_samples()),
+                               "result": store.load_recommendations(),
+                               "discover": app.jobs.latest(DISCOVER_JOB), "automatic": state})
         if route == ("POST", "/api/recommendations"):
             focus = _focus(self._read_json())
             self._require_ai()

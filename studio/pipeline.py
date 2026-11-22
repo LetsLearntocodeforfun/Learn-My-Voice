@@ -993,13 +993,16 @@ def _usable_samples(store: Store) -> List[Dict[str, Any]]:
     return samples
 
 
-def _current_trends(store: Store) -> List[Dict[str, Any]]:
-    """Scored trend keywords for the ideas prompt. Keywords that clash with her voice are left out."""
+def _current_trends(store: Store, now: Optional[float] = None) -> List[Dict[str, Any]]:
+    """Scored trend keywords for the ideas prompt. Keywords that clash with her voice are left out.
+
+    ``now`` is the time the keywords are scored at; left out, it is the time by this computer's clock.
+    """
     return [{
         "keyword": t["keyword"], "score": t["score"], "trend": t["trend"], "creator_videos": t["her_videos"],
         "creator_lift": t["lift_raw"], "creator_evidence_titles": t["evidence_titles"],
         "source": "ai_lookup_unverified" if t["source"] == "ai" else "entered_by_creator",
-    } for t in trends.payload(store)["trends"] if t["usable"]][:IDEAS_MAX_TRENDS]
+    } for t in trends.payload(store, now)["trends"] if t["usable"]][:IDEAS_MAX_TRENDS]
 
 
 def _viewer_comments(record: Any) -> Optional[Dict[str, Any]]:
@@ -1102,8 +1105,11 @@ def clean_focus(value: Any) -> str:
     return " ".join(value.split())[:MAX_FOCUS_CHARS].strip() if isinstance(value, str) else ""
 
 
-def ideas_prompt(store: Store, idea_count: int = 6, focus: Any = "") -> Tuple[str, str]:
+def ideas_prompt(store: Store, idea_count: int = 6, focus: Any = "", now: Optional[float] = None) -> Tuple[str, str]:
     """Prompt that suggests next videos from her own history, her numbers and current trend keywords.
+
+    ``now`` is the time the trend keywords are scored at (``_current_trends``): the automatic refresh hands in
+    the app's clock (``studio/autosuggest.py``); every other caller leaves it out.
 
     What it carries about the creator, all of which a page offering this prompt has to name:
 
@@ -1151,7 +1157,7 @@ def ideas_prompt(store: Store, idea_count: int = 6, focus: Any = "") -> Tuple[st
                         for r in perf["rows"]],
         }),
         "planned_videos_json": _dump(planner.prompt_context(store)),
-        "current_trends_json": _dump(_current_trends(store)),
+        "current_trends_json": _dump(_current_trends(store, now)),
         "idea_count": str(int(idea_count)),
     })
 
@@ -1237,8 +1243,9 @@ def _checked_patterns(raw: Any, known_titles: Set[str]) -> List[Dict[str, Any]]:
     return patterns
 
 
-def apply_ideas(store: Store, result: Dict[str, Any], focus: Any = "", lookup: Any = None) -> Dict[str, Any]:
-    """Sanitise suggested ideas and save them.
+def checked_ideas(store: Store, result: Dict[str, Any], focus: Any = "", lookup: Any = None,
+                  now: Optional[float] = None) -> Dict[str, Any]:
+    """Sanitise suggested ideas and return them as they would be saved. Nothing is stored here.
 
     Cited video titles that are not hers and trend keywords she is not tracking are removed.
     Every piece of text is cut to a limit. ``script_notes_zh`` matters most (MAX_IDEA_NOTES_CHARS): when
@@ -1250,7 +1257,11 @@ def apply_ideas(store: Store, result: Dict[str, Any], focus: Any = "", lookup: A
 
     ``focus`` is what the creator asked for, as it went into the prompt, and ``lookup`` how the web lookup
     before these ideas went (``_lookup_record``; None when there was none). Both are saved with the ideas,
-    so the page can say what they answer and where their trend keywords came from.
+    so the page can say what they answer and where their trend keywords came from. ``now`` is the time the
+    ideas are dated with (``generated_at``); left out, it is the time by this computer's clock.
+
+    Raises ``llm.LLMError``: ``no_samples`` when the library holds no text, ``empty_result`` when the reply
+    holds no idea that can be kept.
     """
     samples = _usable_samples(store)
     perf = corpus.performance(samples)
@@ -1280,7 +1291,7 @@ def apply_ideas(store: Store, result: Dict[str, Any], focus: Any = "", lookup: A
         raise llm.LLMError("Model reply contained no ideas", "empty_result")
     patterns = _checked_patterns(result.get("patterns"), known_titles)
     payload: Dict[str, Any] = {
-        "generated_at": time.time(),
+        "generated_at": time.time() if now is None else float(now),
         "focus": clean_focus(focus), "lookup": _lookup_record(store, lookup),
         "videos_with_metrics": perf["with_metrics"], "total_videos": perf["total_videos"],
         "data_note_zh": _cut(result.get("data_note_zh"), MAX_IDEA_TEXT_CHARS),
@@ -1289,6 +1300,18 @@ def apply_ideas(store: Store, result: Dict[str, Any], focus: Any = "", lookup: A
     }
     if patterns:
         payload["patterns"] = patterns
+    return payload
+
+
+def apply_ideas(store: Store, result: Dict[str, Any], focus: Any = "", lookup: Any = None) -> Dict[str, Any]:
+    """Sanitise suggested ideas (``checked_ideas``) and save them. Returns what was saved.
+
+    Saving REPLACES the ideas that were saved before, all of them: the ideas file holds one set, the latest.
+    That is what the creator asks for with "Find ideas", with a pasted reply, and through an AI app. A set
+    made without the creator asking never comes this way: the automatic refresh keeps its set beside the
+    saved ideas and puts it in their place only where ``studio/autosuggest.py`` says it may.
+    """
+    payload = checked_ideas(store, result, focus=focus, lookup=lookup)
     store.save_recommendations(payload)
     return payload
 

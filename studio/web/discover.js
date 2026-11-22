@@ -56,6 +56,13 @@ Object.assign(I18N.zh, {
   mb_intro_ideas: '提示词里有：你在设置里填的个人资料（名字、账号名、内容方向、自我介绍、一起出镜的人、不说的话）、声音档案里的人设和段落写法、最多 60 篇素材的标题、是否商单、数据和开头 400 个字（还没确认的视频转写不带文字）、你贴过的观众评论的摘要（是按词表数出来的还是 AI 读的、评论条数、概括、每篇最多 4 个观众提问的原话）、按数据算出的名次、中位数和收藏率、最多 12 个在跟踪的热词、最多 20 条还没发布的拍摄计划（标题、状态、日期、关键词、要回答的观众提问），以及你这次填的这句话。这些会随提示词一起发给 AI。',
   err_bad_focus: '这句话没法识别，请重新写一下。', err_upload_not_found: '录音没有传上来，请再说一次。',
   err_too_large: '太长了，一两句话就够。',
+  dv_auto_wait_title: '自动学习刚刚刷新了一组候选选题（{n} 个）',
+  dv_auto_wait_time: '刷新时间：{t}',
+  dv_auto_wait_trends: '依据的顶部热词：',
+  dv_auto_wait_note: '你当前保存的选题没有被覆盖。点击「换上这组选题」才会替换下方选题；点击「忽略」则保留原样。',
+  dv_auto_take: '换上这组选题', dv_auto_dismiss: '忽略',
+  dv_auto_taken: '已换上这组新选题', dv_auto_dismissed: '已忽略这组候选选题',
+  dv_auto_in_use: '当前显示的是自动学习在 {t} 刷新的选题',
 });
 Object.assign(I18N.en, {
   dv_label: 'What should the next video be about?', dv_ph: 'Type or say one line, for example: autumn skincare, a weekend out with the kids. Leaving it empty is fine.',
@@ -100,6 +107,13 @@ Object.assign(I18N.en, {
   mb_intro_ideas: 'The prompt contains: the creator profile from setup (name, account name, niches, self-description, on-camera partner, refused phrases), the persona summary and beat playbooks from the voice profile, for up to 60 library items the title, the sponsored mark, the numbers and the first 400 characters (a video transcript not confirmed yet goes without its text), the summary of the comments pasted for an item (whether it was counted by word lists or read by an AI, how many comments, the summary, up to 4 questions in the words of the viewers), the ranking, medians and save rates worked out from the numbers, up to 12 tracked keywords, up to 20 planned videos that are not posted yet (title, state, day, keywords, the questions of viewers each answers), and the line typed here. All of it is sent to the AI with the prompt.',
   err_bad_focus: 'That line could not be read. Please type it again.', err_upload_not_found: 'The recording did not arrive. Please say it again.',
   err_too_large: 'That is too long. A sentence or two is enough.',
+  dv_auto_wait_title: 'Autopilot refreshed {n} candidate topic idea(s)',
+  dv_auto_wait_time: 'Refreshed: {t}',
+  dv_auto_wait_trends: 'From top trends: ',
+  dv_auto_wait_note: '{@Names} currently saved ideas were kept untouched. Choose "Use these ideas" to replace them, or "Dismiss" to leave them as they are.',
+  dv_auto_take: 'Use these ideas', dv_auto_dismiss: 'Dismiss',
+  dv_auto_taken: 'Replaced saved ideas with this refreshed set', dv_auto_dismissed: 'Dismissed candidate idea set',
+  dv_auto_in_use: 'Showing topic ideas refreshed by Autopilot at {t}',
 });
 
 const DV_MAX_FOCUS = 500;         // must match MAX_FOCUS_CHARS in studio/pipeline.py
@@ -503,18 +517,41 @@ async function renderIdeas() {
         ((p.evidence_titles || []).length ? `<div class="meta">${esc(t('evidence'))}：${
           p.evidence_titles.map((x) => `<span class="tag">${esc(x)}</span>`).join('')}</div>` : '')).join('') +
       `</div>` : '';
+  const autoState = (data.automatic && typeof data.automatic === 'object') ? data.automatic : {};
+  const autoWait = autoState.waiting && autoState.waiting.result ? autoState.waiting : null;
+  const autoInUse = autoState.in_use || null;
+  const waitIdeas = autoWait && Array.isArray(autoWait.result.ideas) ? autoWait.result.ideas : [];
+  const waitTrends = autoWait && Array.isArray(autoWait.trends) ? autoWait.trends : [];
+  const autoBanner = autoWait ? `<div class="banner" id="dv-auto-waiting">
+    <div class="row" style="flex-wrap:wrap;gap:10px;align-items:center">
+      <div class="spacer">
+        <strong>${esc(tf('dv_auto_wait_title', { n: waitIdeas.length }))}</strong>
+        ${autoWait.made_at ? `<span class="meta"> · ${esc(tf('dv_auto_wait_time', { t: fmtDate(autoWait.made_at) }))}</span>` : ''}
+      </div>
+      <button type="button" class="btn primary" id="dv-auto-take" data-auto-take="${esc(autoWait.set_id)}">${esc(t('dv_auto_take'))}</button>
+      <button type="button" class="btn" id="dv-auto-dismiss" data-auto-dismiss="${esc(autoWait.set_id)}">${esc(t('dv_auto_dismiss'))}</button>
+    </div>
+    ${waitTrends.length ? `<div class="meta" style="margin-top:6px">${esc(t('dv_auto_wait_trends'))}${waitTrends.map((k) => `<span class="tag">${esc(k)}</span>`).join('')}</div>` : ''}
+    ${waitIdeas.length ? `<div class="meta" style="margin-top:6px">${waitIdeas.slice(0, 4).map((x) => `「${esc(lang === 'zh' ? x.title_zh : (x.title_en || x.title_zh))}」`).join(' ')}</div>` : ''}
+    <div class="hint" style="margin-top:6px">${esc(t('dv_auto_wait_note'))}</div>
+  </div>` : '';
+  const inUseNote = autoInUse && autoInUse.made_at
+    ? `<p class="meta" id="dv-auto-in-use">${esc(tf('dv_auto_in_use', { t: fmtDate(autoInUse.made_at) }))}${(autoInUse.trends || []).length ? ' · ' + (autoInUse.trends || []).map((k) => `<span class="tag">${esc(k)}</span>`).join('') : ''}</p>`
+    : '';
   const saved = result ? `<h2 class="dv-h">${esc(t(latest ? 'dv_earlier_title' : 'dv_ideas_title'))}</h2>
       <p class="meta">${result.focus ? esc(tf('dv_for', { q: result.focus })) + ' · ' : ''}${savedAt ? esc(t('generated_at')) + ' ' + esc(fmtDate(savedAt)) : ''}</p>
+      ${inUseNote}
       ${lookedFirst ? looked : ''}
       ${note ? `<p class="meta">${esc(note)}</p>` : ''}
       ${patterns}
       <div id="ideas">${ideas.map(ideaHtml).join('')}</div>
       ${lookedFirst ? '' : looked}` : '';
-  const empty = !result && !latest && !waiting && !running && appState.settings.configured
+  const empty = !result && !autoWait && !latest && !waiting && !running && appState.settings.configured
     ? `<div class="empty">${esc(t('dv_empty'))}</div>` : '';
   $view.innerHTML = `<div class="wrap"><h1>${esc(t('ideas_title'))}</h1><p class="sub">${esc(t('ideas_sub'))}</p>
     <div id="dv-box"></div>
     ${progress}
+    ${autoBanner}
     ${dvLatestHtml(latest, byKey, !!result)}
     ${waiting ? dvLookupHtml(waiting, byKey) : ''}
     ${saved}${empty}
@@ -523,6 +560,28 @@ async function renderIdeas() {
   dvPaintBox(document.getElementById('dv-box'), false);
 
   $view.querySelectorAll('[data-dv-byhand]').forEach((b) => { b.onclick = dvLookupByHand; });
+  const $autoTake = document.getElementById('dv-auto-take');
+  if ($autoTake) {
+    $autoTake.onclick = async () => {
+      $autoTake.disabled = true;
+      try {
+        await api('POST', '/api/recommendations/automatic/' + $autoTake.dataset.autoTake + '/take', {});
+        toast(t('dv_auto_taken'));
+        await renderIdeas();
+      } catch (err) { $autoTake.disabled = false; showError(err); }
+    };
+  }
+  const $autoDismiss = document.getElementById('dv-auto-dismiss');
+  if ($autoDismiss) {
+    $autoDismiss.onclick = async () => {
+      $autoDismiss.disabled = true;
+      try {
+        await api('POST', '/api/recommendations/automatic/' + $autoDismiss.dataset.autoDismiss + '/dismiss', {});
+        toast(t('dv_auto_dismissed'));
+        await renderIdeas();
+      } catch (err) { $autoDismiss.disabled = false; showError(err); }
+    };
+  }
   $view.querySelectorAll('[data-dv-use]').forEach((b) => {
     b.onclick = () => {
       const keyword = b.dataset.dvUse;

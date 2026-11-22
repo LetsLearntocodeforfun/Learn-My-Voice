@@ -63,6 +63,10 @@ Object.assign(I18N.zh, {
   pl_opp_empty_numbers: '《{t}》的播放或收藏高于平时', pl_opp_empty_comments: '《{t}》评论区有观众反馈',
   pl_under: '《{t}》的评论区', pl_follows: '接着《{t}》',
   pl_kind_sentiment_followup: '来自评论', pl_kind_high_resonance_sequel: '来自数据', pl_kind_other: '线索',
+  pl_sug_label: '推荐热词：', pl_sug_take: '采纳', pl_sug_dismiss: '忽略',
+  pl_sug_taken: '已把热词加入这条计划', pl_sug_dismissed: '已忽略这条热词建议',
+  pl_sug_part_title: '标题', pl_sug_part_notes: '备注', pl_sug_part_questions: '观众提问',
+  pl_sug_fit: '匹配{where}：「{m}」', pl_sug_rising: '上升中',
 });
 
 Object.assign(I18N.en, {
@@ -110,6 +114,10 @@ Object.assign(I18N.en, {
   pl_opp_empty_numbers: '"{t}" stood out in views or saves', pl_opp_empty_comments: 'Viewer comments under "{t}"',
   pl_under: 'under "{t}"', pl_follows: 'following "{t}"',
   pl_kind_sentiment_followup: 'from comments', pl_kind_high_resonance_sequel: 'from the numbers', pl_kind_other: 'noted',
+  pl_sug_label: 'Suggested keywords:', pl_sug_take: 'Take', pl_sug_dismiss: 'Dismiss',
+  pl_sug_taken: 'Keyword added to the plan', pl_sug_dismissed: 'Suggestion dismissed',
+  pl_sug_part_title: 'title', pl_sug_part_notes: 'notes', pl_sug_part_questions: 'viewer questions',
+  pl_sug_fit: 'Matched in {where}: "{m}"', pl_sug_rising: 'rising',
 });
 
 /* view: list | week | month. cursor: a day in the week or month the calendar shows ('' = today). picked: the plan
@@ -147,7 +155,7 @@ function plFromIdea(idea) {
   return {
     title: idea.title_zh, video_format: idea.video_format, target_sec: idea.target_duration_sec,
     notes: idea.script_notes_zh || '', rationale_zh: idea.why_zh || '', rationale_en: idea.why_en || '',
-    keywords: (idea.trend_keywords || []).slice(0, MAX_KEYWORDS), source_kind: 'idea',
+    keywords: (idea.trend_keywords || []).slice(0, MAX_KEYWORDS), source_kind: 'idea', basis: 'model',
   };
 }
 /* A question a viewer asked. The plan is named after the question and keeps it whole as the question it answers.
@@ -155,12 +163,14 @@ function plFromIdea(idea) {
 function plFromQuestion(q) {
   const asked = String(q.question_zh || '').replace(/\s+/g, ' ').trim();
   const video = String(q.video_title || '').trim();
+  const qBasis = q && q.basis === 'model' ? 'model' : 'word_lists';
   return {
     title: asked.length > PL_TITLE_SHOWN ? asked.slice(0, PL_TITLE_SHOWN - 1) + '…' : asked,
     questions: [asked],
     rationale_zh: video ? `《${video}》的评论区有人问了这个问题` : '评论区有人问了这个问题',
     rationale_en: video ? `A viewer asked this under "${video}"` : 'A viewer asked this in the comments',
     source_kind: 'viewer_question',
+    basis: qBasis,
   };
 }
 const plBasis = (o) => (o && PL_BASES.includes(o.basis) ? o.basis : 'word_lists');
@@ -179,6 +189,7 @@ function plFromOpportunity(o, writtenTitle, writtenNotes) {
     rationale_zh: whyZh,
     rationale_en: whyEn,
     source_kind: o.kind || 'opportunity',
+    basis,
   };
 }
 
@@ -283,10 +294,30 @@ function plCardHtml(p) {
       : `<label class="meta" for="pl-date-${esc(p.id)}">${esc(t('pl_day'))}</label>
          <input type="date" id="pl-date-${esc(p.id)}" data-pl-date="${esc(p.id)}" value="${esc(hasDay ? p.scheduled_for : '')}" style="width:auto">
          ${hasDay ? `<button type="button" class="btn ghost" data-pl-clear-day="${esc(p.id)}">${esc(t('pl_clear_day'))}</button>` : ''}`);
+  const planBasisBadge = (p.basis === 'model' || p.basis === 'word_lists')
+    ? `<span class="tag" style="margin:0" data-plan-basis="${esc(p.basis)}">${esc(t('pl_basis_' + p.basis))}</span>` : '';
+  const sugs = !posted && Array.isArray(p.suggestions) ? p.suggestions : [];
+  const sugHtml = sugs.length ? `<div class="card soft" data-pl-suggestions="${esc(p.id)}" style="margin-top:10px;padding:10px 12px">
+    <div class="meta" style="margin-bottom:6px">${esc(t('pl_sug_label'))}</div>
+    ${sugs.map((s) => {
+      const sep = lang === 'zh' ? '、' : ', ';
+      const where = (s.matched_in || []).map((part) => (I18N.zh['pl_sug_part_' + part] ? t('pl_sug_part_' + part) : part)).join(sep);
+      const fitWhy = tf('pl_sug_fit', { where: where || t('pl_sug_part_title'), m: s.matched || s.keyword });
+      return `<div class="row" data-pl-sug="${esc(s.id)}" style="flex-wrap:wrap;gap:8px;align-items:center;margin-top:4px">
+        <span class="tag ok" style="margin:0">${esc(s.keyword)}</span>
+        ${s.rising ? `<span class="tag" style="margin:0">${esc(t('pl_sug_rising'))}</span>` : ''}
+        ${s.source === 'ai' ? `<span class="tag warn" style="margin:0">${esc(t('tr_src_ai'))}</span>` : ''}
+        <span class="meta spacer">${esc(fitWhy)}</span>
+        <button type="button" class="btn primary" data-pl-sug-take="${esc(s.id)}" data-plan-id="${esc(p.id)}">${esc(t('pl_sug_take'))}</button>
+        <button type="button" class="btn" data-pl-sug-dismiss="${esc(s.id)}" data-plan-id="${esc(p.id)}">${esc(t('pl_sug_dismiss'))}</button>
+      </div>`;
+    }).join('')}
+  </div>` : '';
   return `<div class="card pl-plan" data-plan-card="${esc(p.id)}">
     <div class="row" style="flex-wrap:wrap;gap:8px 10px">
       <h3 style="margin:0">${esc(p.title)}</h3>
       <span class="tag ${posted ? 'ok' : ''}" style="margin:0" data-pl-state="${esc(p.status)}">${esc(t('pl_status_' + p.status))}</span>
+      ${planBasisBadge}
       ${(p.keywords || []).map((k) => `<span class="tag" style="margin:0">${esc(k)}</span>`).join('')}
       <span class="spacer"></span>
       ${quickDay}
@@ -294,6 +325,7 @@ function plCardHtml(p) {
     ${why ? `<p class="meta" style="margin:8px 0 0">${esc(t('pl_why'))}${esc(why)}</p>` : ''}
     ${questions}
     ${p.notes && !editing ? `<p class="hint" style="margin:6px 0 0;white-space:pre-wrap">${esc(p.notes)}</p>` : ''}
+    ${sugHtml}
     ${form}
     <div class="row" style="margin-top:12px;flex-wrap:wrap;gap:8px">
       ${acts}
@@ -670,6 +702,20 @@ async function plClicked(e) {
     if (plUi.picked === plan.id) plUi.picked = null;
     if (plUi.editing === plan.id) { plUi.editing = null; plUi.editDraft = null; }
     if (await plSend('DELETE', '/api/plans/' + plan.id, undefined, '#pl-new-title')) toast(t('pl_deleted'));
+    return undefined;
+  }
+  if ((el = hit('data-pl-sug-take'))) {
+    const pid = el.dataset.planId;
+    const sid = el.dataset.plSugTake;
+    const ans = await plSend('POST', `/api/plans/${pid}/suggestions/${sid}/take`, {}, `[data-plan-card="${pid}"] [data-pl-edit]`);
+    if (ans) toast(t('pl_sug_taken'));
+    return undefined;
+  }
+  if ((el = hit('data-pl-sug-dismiss'))) {
+    const pid = el.dataset.planId;
+    const sid = el.dataset.plSugDismiss;
+    const ans = await plSend('POST', `/api/plans/${pid}/suggestions/${sid}/dismiss`, {}, `[data-plan-card="${pid}"] [data-pl-edit]`);
+    if (ans) toast(t('pl_sug_dismissed'));
     return undefined;
   }
   if ((el = hit('data-pl-draft'))) {
