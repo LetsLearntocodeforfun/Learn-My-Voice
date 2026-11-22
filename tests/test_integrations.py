@@ -244,10 +244,10 @@ class McpProtocolTest(McpCase):
         self.assertEqual(read_only, {"get_script_brief", "check_script", "list_scripts", "get_script", "get_voice_profile",
                                      "list_library", "get_voice_learning_brief", "get_topic_ideas_brief",
                                      "list_trends", "get_rednote_analytics", "get_tone_analysis", "list_video_plans",
-                                     "get_autopilot_status"})
+                                     "get_autopilot_status", "get_packaging_brief"})
         self.assertEqual({t["name"] for t in tools} - read_only,
                          {"save_script", "update_script", "save_voice_profile", "save_topic_ideas", "export_jianying_kit",
-                          "add_trend_keywords", "add_video_plan"})
+                          "add_trend_keywords", "add_video_plan", "save_script_packaging"})
         for t in tools:
             schema = t["inputSchema"]
             self.assertEqual(schema["type"], "object")
@@ -383,7 +383,7 @@ class McpToolTest(McpCase):
 
         # get_tone_analysis description does NOT name the five round-1 axes or promise quality scores
         tools_by_name = {t["name"]: t for t in self.rpc("tools/list")["result"]["tools"]}
-        self.assertEqual(len(tools_by_name), 20)
+        self.assertEqual(len(tools_by_name), 22)
         tone_desc = tools_by_name["get_tone_analysis"]["description"].lower()
         for removed_axis in ("5-axis", "warmth", "humor", "humour", "restraint", "naturalness", "score"):
             self.assertNotIn(removed_axis, tone_desc)
@@ -603,7 +603,7 @@ class McpSubprocessTest(unittest.TestCase):
             self.assertEqual((done.returncode, done.stderr), (0, b""))
             replies = [json.loads(line) for line in done.stdout.decode("ascii").splitlines()]
             self.assertEqual([r["id"] for r in replies], [1, 2, 3])
-            self.assertEqual(len(replies[1]["result"]["tools"]), 20)
+            self.assertEqual(len(replies[1]["result"]["tools"]), 22)
             saved = json.loads(replies[2]["result"]["content"][0]["text"])
             self.assertEqual(saved["check"]["findings"], [])
             stored = Store(tmp / "data").get_script(saved["script_id"])

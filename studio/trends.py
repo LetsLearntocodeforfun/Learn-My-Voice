@@ -619,9 +619,13 @@ def coverage(keywords: Sequence[str], lines: Any, post: Any) -> List[Dict[str, A
         for line in (lines if isinstance(lines, list) else [])
         if isinstance(line, dict) and str(line.get("audio_mode", "")).strip().upper() != "LIVE_CLIP"))
     options = post.get("title_options") if isinstance(post.get("title_options"), list) else []
-    titles = keyword_key(" ".join(str(o.get("title_zh", "")) for o in options if isinstance(o, dict)))
-    caption = keyword_key(str(post.get("caption_body_zh") or ""))
-    tags = post.get("hashtags_zh") if isinstance(post.get("hashtags_zh"), list) else []
+    titles = keyword_key(" ".join(
+        str(o.get("title_zh", "")) if isinstance(o, dict) else (o if isinstance(o, str) else "")
+        for o in options
+    ) + " " + str(post.get("cover_text_zh") or "") + " " + str(post.get("cover_sub_zh") or ""))
+    caption = keyword_key(str(post.get("body_zh") or post.get("caption_body_zh") or ""))
+    raw_tags = post.get("hashtags") if isinstance(post.get("hashtags"), list) and post.get("hashtags") else post.get("hashtags_zh")
+    tags = raw_tags if isinstance(raw_tags, list) else []
     hashtags = keyword_key(" ".join(str(tag) for tag in tags).replace("#", " ").replace("\uff03", " "))
     out = []
     for keyword in keywords:

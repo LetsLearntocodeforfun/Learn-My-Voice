@@ -610,6 +610,7 @@ async function saveNow(opts) {
     poAfterSave(s);     // posted.js: a posted script that was edited says so
     rfAfterSave(s);     // refs.js: a new title or keyword changes which of the creator's material is on the same topic
     spAfterSave(s);     // sponsored.js: re-check required mentions, forbidden wording and tags on the saved script
+    pkAfterSave(s);     // packaging.js: refresh pre-filming readiness gate and packaging checks
     if (!dirty) setSaved('saved');
   } catch (e) {
     dirty = true;
@@ -699,6 +700,7 @@ function paintScript() {
     <div class="chips" style="margin:10px 0 4px">${secs.map((v) =>
       `<button type="button" class="chip ${v === s.target_sec ? 'on' : ''}" data-sec="${v}">${v}${esc(t('sec'))}</button>`).join('')}</div>
     <div id="kw-box"></div>
+    <div id="pk-ready-box"></div>
     <div class="summary" id="summary"></div>
     <div id="wl-note"></div>
     <div id="vm-box"></div>
@@ -766,6 +768,7 @@ function paintScript() {
   craftAttach();    // craft.js: the per-line writing tools and whichever of them is open
   rfAttach();       // refs.js: the creator's own material beside the lines, put back as it was before this redraw
   spAttach();       // sponsored.js: the brand-brief checklist beside a sponsored script
+  pkAttach();       // packaging.js: pre-filming readiness strip + RedNote 3:4 packaging lab
 }
 
 async function renderScript(id) {

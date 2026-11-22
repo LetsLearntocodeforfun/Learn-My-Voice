@@ -1212,8 +1212,12 @@ class _Post:
     def __init__(self, post: Any) -> None:
         post = post if isinstance(post, dict) else {}
         caption = post.get("caption_body_zh")
+        if not isinstance(caption, str) or not caption.strip():
+            caption = post.get("body_zh")
         self.caption = caption[:MAX_POST_CHARS] if isinstance(caption, str) else ""
         tags = post.get("hashtags_zh")
+        if not isinstance(tags, list) or not tags:
+            tags = post.get("hashtags")
         self.tags = [tag[:200] for tag in (tags if isinstance(tags, list) else [])[:MAX_POST_TAGS] if isinstance(tag, str)]
         options = post.get("title_options")
         titles = [option.get("title_zh") if isinstance(option, dict) else option
@@ -1280,6 +1284,31 @@ def for_script(store: Store, script_id: Any) -> Dict[str, Any]:
     record = store.sponsor_brief_of_script(script["id"])
     if record is None:
         return {"sponsored": True, "brief": None}
+    return _evaluate_script_against_record(script, record)
+
+
+def check_script_brief(store: Store, script: Dict[str, Any], brief_id: Any = None) -> Dict[str, Any]:
+    """Check ``script`` against its linked sponsor brief (or an explicit ``brief_id``)."""
+    explicit_id = brief_id.strip() if isinstance(brief_id, str) and brief_id.strip() else None
+    if explicit_id is None:
+        raw_bid = script.get("brief_id")
+        if isinstance(raw_bid, str) and raw_bid.strip():
+            explicit_id = raw_bid.strip()
+    if explicit_id is not None:
+        record = store.get_sponsor_brief(explicit_id)
+        if record is None:
+            return {"sponsored": True, "brief": None}
+        return _evaluate_script_against_record(script, record)
+    sid = script.get("id")
+    linked = store.sponsor_brief_of_script(sid) if isinstance(sid, str) and sid else None
+    if linked is not None:
+        return _evaluate_script_against_record(script, linked)
+    if script.get("mode") == MODE_SPONSORED:
+        return {"sponsored": True, "brief": None}
+    return {"sponsored": False}
+
+
+def _evaluate_script_against_record(script: Dict[str, Any], record: Dict[str, Any]) -> Dict[str, Any]:
     wanted = _accepted(record)
     lines = [line if isinstance(line, dict) else {} for line in script["lines"]]
     spoken = _Joined([str(line.get("spoken_script_zh") or "") for line in lines], spoken=True)
