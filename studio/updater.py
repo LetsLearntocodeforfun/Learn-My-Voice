@@ -102,6 +102,10 @@ MAX_ZIP_ENTRY_BYTES = 128 * 1024 * 1024
 MAX_ZIP_DIRECTORY_BYTES = 2 * 1024 * 1024
 MAX_REDIRECTS = 5
 _CHUNK = 256 * 1024
+# Windows refuses to rename a folder while any file in it is open, also by another program that is only looking
+# at it (a virus scanner, the search index). Such a refusal ends by itself, so there the rename that puts an
+# unpacked folder in place is tried again for a little over a second. Elsewhere a refusal is a real one.
+_PLACE_TRIES = 12 if os.name == "nt" else 1
 
 _CORE_VER_RE = re.compile(
     r"^(?P<major>[0-9]{1,9})\.(?P<minor>[0-9]{1,9})\.(?P<patch>[0-9]{1,9})(?P<rest>.*)$",
@@ -1430,7 +1434,6 @@ def migrate_from_previous_folder(target_store: Store, source_app_dir: Path, *,
         try:
             existing_cfg = target_store._read_raw_config_dict()
             _staged, copied_files, cfg_bytes = _stage_folder_migration(src_data, work, existing_cfg)
-            del _staged
             if backups is not None:
                 backups.gate.keep_everyone_out()
             _apply_staged_to_empty_store(target_store, work / "new", cfg_bytes)
@@ -1440,13 +1443,15 @@ def migrate_from_previous_folder(target_store: Store, source_app_dir: Path, *,
             backup._remove_folder(work)
 
         upgraded = Store(dst_data)
+        # Counted through a connection that is closed here, not through Store.list_scripts() and
+        # Store.samples_count(): those leave closing to Python, and when this store is the one in a folder that
+        # is about to be renamed (unpack_and_migrate_zip), a connection still open refuses the rename on Windows.
         with contextlib.closing(upgraded._db()) as db:
             script_count = int(db.execute("SELECT COUNT(*) FROM scripts").fetchone()[0])
             sample_count = int(db.execute("SELECT COUNT(*) FROM samples").fetchone()[0])
         settings = upgraded.public_settings()
-        del upgraded
         if os.name == "nt":
-            gc.collect()
+            gc.collect()                    # kept as it passed on the Windows runners: see unpack_and_migrate_zip
         whisper_venv = src_root / "local_tools" / "whisper" / "venv"
         had_whisper = whisper_venv.is_dir() and not whisper_venv.is_symlink()
         return {
@@ -1660,9 +1665,21 @@ def unpack_and_migrate_zip(current_store: Store, zip_path: Path, *,
                 candidate = parent / (".%s.unpacking-%s" % (top_folder, uuid.uuid4().hex[:8]))
                 try:
                     # Owner-only while it is being filled, as tempfile.mkdtemp made it. On Windows no mode is
-                    # passed: from Python 3.12.4 a 0o700 mkdir sets an owner-only ACL there. Whether that ACL or
-                    # a database handle not yet closed refused the rename on the 3.14/3.15 runners was not
-                    # isolated; both were changed together.
+                    # passed: from Python 3.12.4 a 0o700 mkdir sets an owner-only ACL there, and that would stay
+                    # on the new app folder after the rename.
+                    #
+                    # On the Windows runners with Python 3.14 and 3.15 the rename below was refused (WinError 5)
+                    # while Python 3.9 passed. The cause as it was READ, NOT RUN (there was no Windows and no
+                    # Python 3.11 or later where this was written): the move used to end with
+                    # Store.list_scripts() and Store.samples_count() on the store in this folder. Both leave
+                    # their connection for Python to close. Before 3.11 that happens as the call returns (this
+                    # half was run, on 3.9). Since 3.11 a connection and its statement cache refer to each
+                    # other, so it stays open until cycles are next collected, and Windows refuses to rename a
+                    # folder while a file inside it is open. By that reading the fix is the explicitly closed
+                    # connection in migrate_from_previous_folder, and tests/test_updater.py (HandlesTest) holds
+                    # every connection on the unpacked database to a close() before the rename, on any system.
+                    # This plain mkdir, the gc.collect() calls and the retry below were changed in the same
+                    # commit. They are kept because that combination is the only one seen to pass there.
                     if os.name == "nt":
                         os.mkdir(str(candidate))
                     else:
@@ -1720,13 +1737,12 @@ def unpack_and_migrate_zip(current_store: Store, zip_path: Path, *,
                 # Copy current data/ into the newly unpacked staging folder before moving it into place.
                 staged_new_store = Store(staging_resolved / "data")
                 mig = migrate_from_previous_folder(staged_new_store, current_app_dir, jobs=jobs)
-                del staged_new_store
                 if os.name == "nt":
-                    gc.collect()
+                    gc.collect()            # kept as it passed on the Windows runners: see the note above
 
                 if os.path.lexists(str(target_dir)):
                     raise _destination_exists_error(top_folder)
-                rename_tries = 12 if os.name == "nt" else 1
+                rename_tries = _PLACE_TRIES
                 wait = 0.01
                 for attempt in range(1, rename_tries + 1):
                     try:

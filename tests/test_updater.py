@@ -15,11 +15,15 @@ Each class covers one thing the creator, or whoever runs a trial, can rely on:
   and never copies ``local_tools/whisper``;
 - unpacking a release ``.zip`` works in a sibling temporary directory under strict entry, size and path bounds and
   refuses when the destination folder already exists;
+- every connection on the database in the unpacked folder has been closed, not merely dropped, when the folder is
+  renamed into place (Windows refuses the rename otherwise), and a rename that is refused is tried again only
+  where and as long as ``updater._PLACE_TRIES`` says, then refused in two languages;
 - the page works in Chinese and English, in light and dark appearances, with zero browser console or 404 problems.
 
 No request leaves this computer in any of these tests.
 """
 import contextlib
+import errno
 import hashlib
 import http.client
 import importlib.util
@@ -37,6 +41,7 @@ import time
 import tracemalloc
 import unittest
 import urllib.error
+import urllib.parse
 import urllib.request
 import zipfile
 from pathlib import Path
@@ -107,6 +112,60 @@ def loopback_only():
 
     with mock.patch.object(socket.socket, "connect", connect), mock.patch.object(socket, "getaddrinfo", lookup):
         yield blocked
+
+
+def database_path(database):
+    """Where a database handed to ``sqlite3.connect`` is, also when it is named the ``file:`` way."""
+    name = os.fsdecode(os.fspath(database))
+    if name.startswith("file:"):
+        name = urllib.request.url2pathname(urllib.parse.urlsplit(name).path)
+    return os.path.normcase(os.path.realpath(name))
+
+
+@contextlib.contextmanager
+def watched_databases():
+    """Every database opened while this lasts, as ``[{"path", "closed"}]``: ``closed`` says ``close()`` was called.
+
+    A connection that is only dropped is closed by Python when it gets round to it: as the call returns before
+    Python 3.11, at the next collection of cycles since. Until then the file is open, and Windows refuses to
+    rename the folder it is in. So "dropped" is not "closed", and only ``close()`` counts here, on every system
+    and every Python. Nothing here keeps a connection alive: the connection holds its note, not the note the
+    connection.
+    """
+    notes = []
+    real_connect = sqlite3.connect
+
+    class Watched(sqlite3.Connection):
+        def close(self):
+            self.note["closed"] = True
+            super().close()
+
+    def connect(database, *args, **more):
+        more.setdefault("factory", Watched)
+        db = real_connect(database, *args, **more)
+        if isinstance(db, Watched):
+            db.note = {"path": database_path(database), "closed": False}
+            notes.append(db.note)
+        return db
+
+    with mock.patch.object(sqlite3, "connect", connect):
+        yield notes
+
+
+@contextlib.contextmanager
+def at_the_rename(notes):
+    """What ``notes`` say about ``data/studio.db`` in an unpacked folder, each time it is to be renamed into place."""
+    looks = []
+    real_rename = os.rename
+
+    def rename(source, target, *args, **more):
+        if ".unpacking-" in os.path.basename(os.fspath(source)):
+            unpacked = database_path(os.path.join(os.fspath(source), "data", "studio.db"))
+            looks.append([dict(note) for note in notes if note["path"] == unpacked])
+        return real_rename(source, target, *args, **more)
+
+    with mock.patch.object(os, "rename", rename):
+        yield looks
 
 
 def found(version="9.0.0", *, notes="Faster exports and cleaner checks.", suffix=".zip", with_checksum=True):
@@ -249,6 +308,14 @@ class ServerCase(Case):
         self.assertRegex(answer.get("message_zh", ""), "[\u4e00-\u9fff]")
         self.assertRegex(answer["message"], "[A-Za-z]{4}")
         return answer["error"]
+
+    def save_zip(self, zip_bytes, name="learn-my-voice-0.3.0-beta.zip"):
+        """A package in the Downloads folder, as if the app had just downloaded it."""
+        self.world.downloads.mkdir(parents=True, exist_ok=True)
+        path = self.world.downloads / name
+        path.write_bytes(zip_bytes)
+        self.app.remember_saved(path)
+        return path
 
 
 # ---------------------------------------------------------------------------------------------- 1. U1: nothing leaves unless a person started the app
@@ -1001,13 +1068,6 @@ class SiblingScanAndMigrationTest(ServerCase):
 
 # ---------------------------------------------------------------------------------------------- 6. U3 & U5: bounded apply-zip, never into an existing folder
 class ApplyZipTest(ServerCase):
-    def save_zip(self, zip_bytes, name="learn-my-voice-0.3.0-beta.zip"):
-        self.world.downloads.mkdir(parents=True, exist_ok=True)
-        path = self.world.downloads / name
-        path.write_bytes(zip_bytes)
-        self.app.remember_saved(path)
-        return path
-
     def test_apply_zip_unpacks_via_temp_folder_migrates_data_and_never_copies_whisper(self):
         self.packaged("0.2.0-beta")
         self.store.update_config(lambda c: (
@@ -1128,6 +1188,110 @@ class ApplyZipTest(ServerCase):
         self.assertEqual((st_sz, self.said(ans_sz)), (413, "zip_too_large"))
         self.assertFalse((self.tmp / "learn-my-voice-0.4.0").exists())
         self.assertEqual([p.name for p in self.tmp.iterdir() if ".unpacking-" in p.name], [])
+
+
+# ---------------------------------------------------------------------------------------------- 6b. the unpacked database is closed before the rename
+class HandlesTest(ServerCase):
+    """An unpacked folder is renamed into place with no connection left open on the database inside it.
+
+    On the Windows runners with Python 3.14 and 3.15 that rename was refused once, while 3.9 passed. Nothing
+    here runs on Windows; what is checked is what Windows needs, in a way every system can check.
+    """
+
+    def unpack(self, version):
+        package = self.save_zip(make_release_zip_bytes(version), name="learn-my-voice-%s.zip" % version)
+        return self.send("POST", "/api/update/apply-zip", {"zip_path": str(package)})
+
+    def leftovers(self):
+        return [path.name for path in self.tmp.iterdir() if ".unpacking-" in path.name]
+
+    def test_every_connection_on_the_unpacked_database_is_closed_before_the_folder_is_put_in_place(self):
+        self.packaged("0.2.0-beta")
+        self.store.create_script(title="Carry Me Over")
+        self.store.create_sample(title="素材", text="今天去买咖啡啦")
+        with watched_databases() as notes, at_the_rename(notes) as looks:
+            status, answer = self.unpack("0.3.0-beta")
+        self.assertEqual(status, 201, answer)
+        self.assertEqual(len(looks), 1)
+        # It was made, looked at to see that it is empty, filled, and counted: the watch saw that.
+        self.assertGreaterEqual(len(looks[0]), 3, looks[0])
+        self.assertEqual([note for note in looks[0] if not note["closed"]], [])
+        self.assertEqual((answer["migration"]["scripts"], answer["migration"]["samples"]), (1, 1))
+
+    def test_the_same_watch_notices_a_connection_that_is_only_dropped(self):
+        """Without this the test above would also pass if the watch saw nothing, or took dropped for closed."""
+        self.packaged("0.2.0-beta")
+        really_empty = updater.is_data_empty
+
+        def counts_first(store):
+            store.samples_count()           # ``with self._db() as db:`` commits and does not close
+            return really_empty(store)
+
+        with watched_databases() as notes, at_the_rename(notes) as looks, \
+                mock.patch.object(updater, "is_data_empty", counts_first):
+            status, answer = self.unpack("0.3.0-beta")
+        self.assertEqual(status, 201, answer)
+        self.assertEqual(len([note for note in looks[0] if not note["closed"]]), 1)
+
+    def test_a_refusal_that_ends_is_waited_out_and_one_that_lasts_is_said_in_two_languages(self):
+        self.packaged("0.2.0-beta")
+        real_rename = os.rename
+        tried = []
+
+        def refused(times, error, first=None):
+            """Stands in for ``os.rename``: the first ``times`` tries to place an unpacked folder raise ``error``."""
+            def rename(source, target, *args, **more):
+                if ".unpacking-" not in os.path.basename(os.fspath(source)):
+                    return real_rename(source, target, *args, **more)
+                tried.append(os.fspath(target))
+                if len(tried) <= times:
+                    if first is not None and len(tried) == 1:
+                        first(Path(os.fspath(target)))
+                    raise error
+                return real_rename(source, target, *args, **more)
+            return rename
+
+        held = PermissionError(errno.EACCES, "held by another program")
+
+        # Held for two tries, as by a program that is only looking: waited out, where waiting is on.
+        with mock.patch.object(updater, "_PLACE_TRIES", 4), mock.patch.object(os, "rename", refused(2, held)):
+            status, answer = self.unpack("0.3.1")
+        self.assertEqual((status, len(tried)), (201, 3), answer)
+        self.assertTrue((self.tmp / "learn-my-voice-0.3.1" / "data" / "studio.db").is_file())
+
+        # Held for good: every try is used, then it is said, and nothing is left behind.
+        del tried[:]
+        with mock.patch.object(updater, "_PLACE_TRIES", 4), mock.patch.object(os, "rename", refused(99, held)):
+            status, answer = self.unpack("0.3.2")
+        self.assertEqual((status, self.said(answer), len(tried)), (507, "save_failed", 4))
+        self.assertIn("held by another program", answer["message"])
+        self.assertFalse((self.tmp / "learn-my-voice-0.3.2").exists())
+        self.assertEqual(self.leftovers(), [])
+
+        # Where a refusal is a real one (every system but Windows) it is tried once.
+        del tried[:]
+        self.assertEqual(updater._PLACE_TRIES, 12 if os.name == "nt" else 1)
+        with mock.patch.object(updater, "_PLACE_TRIES", 1), mock.patch.object(os, "rename", refused(99, held)):
+            status, answer = self.unpack("0.3.3")
+        self.assertEqual((status, self.said(answer), len(tried)), (507, "save_failed", 1))
+        self.assertEqual(self.leftovers(), [])
+
+        # A folder of that name made by somebody else in the meantime is noticed, and left as it is.
+        del tried[:]
+        with mock.patch.object(updater, "_PLACE_TRIES", 4), \
+                mock.patch.object(os, "rename", refused(99, held, first=lambda target: target.mkdir())):
+            status, answer = self.unpack("0.3.4")
+        self.assertEqual((status, self.said(answer), len(tried)), (409, "destination_exists", 1))
+        self.assertEqual(list((self.tmp / "learn-my-voice-0.3.4").iterdir()), [])
+        self.assertEqual(self.leftovers(), [])
+
+        # Any other failure is not one that ends by itself: not tried again.
+        del tried[:]
+        elsewhere = OSError(errno.EXDEV, "another disk")
+        with mock.patch.object(updater, "_PLACE_TRIES", 4), mock.patch.object(os, "rename", refused(99, elsewhere)):
+            status, answer = self.unpack("0.3.5")
+        self.assertEqual((status, self.said(answer), len(tried)), (507, "save_failed", 1))
+        self.assertEqual(self.leftovers(), [])
 
 
 # ---------------------------------------------------------------------------------------------- 7. the page (Chrome E2E in zh/en, light/dark)
