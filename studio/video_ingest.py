@@ -450,16 +450,8 @@ def transcribe_via_ai(
                         "generationConfig": {"responseMimeType": "application/json"},
                     },
                 )
-                try:
-                    parts = data["candidates"][0]["content"]["parts"]
-                    reply_text = "".join(p.get("text", "") for p in parts if isinstance(p, dict))
-                except (KeyError, IndexError, TypeError):
-                    raise llm.LLMError(
-                        "Unexpected Gemini response shape (the reply may have been blocked)",
-                        "bad_response",
-                        "Gemini 返回的内容无法读取（可能被安全策略拦截）",
-                    )
-                parsed = llm.parse_json_text(reply_text)
+                # Read as every Gemini answer is: one the service cut off or withheld is said to be so, not parsed.
+                parsed = llm.parse_json_text(llm.gemini_text(data), pasted=False)
                 fallback_dur = duration_sec
             else:
                 if progress:

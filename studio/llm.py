@@ -87,7 +87,7 @@ class LLMError(Exception):
     the same in Chinese when the error was written with one.
     Codes: not_configured, manual_mode, local_address, bad_model, http, network,
     bad_response, bad_json, empty_result, no_samples, unknown_provider,
-    cannot_browse, no_focus, too_large, other.
+    cannot_browse, no_focus, too_large, cut_off, refused, other.
     """
 
     def __init__(self, message: str, code: str = "other", message_zh: str = "") -> None:
@@ -624,7 +624,7 @@ def search_json(provider: str, api_key: str, model: str, prompt: str,
     text = "".join(block["text"] for block in blocks if isinstance(block.get("text"), str))
     if not text.strip():
         raise LLMError("Unexpected response shape from %s: the reply holds no text" % provider, "bad_response")
-    return parse_json_text(text), _cited_pages(blocks)
+    return parse_json_text(text, pasted=False), _cited_pages(blocks)
 
 
 def _pop_trailing_commas(out: List[str]) -> None:
@@ -864,6 +864,45 @@ def _decode_whole(candidate: str) -> Tuple[bool, Any]:
     return False, None
 
 
+# What may follow an opening bracket that starts JSON, spaces aside. A bracket in the prose around a reply
+# ("[see note", ":-{") is followed by something else and is not counted by ``_unclosed_from``.
+_STARTS_JSON = {"{": '"\u201c}', "[": '{["\u201c]'}
+
+
+def _unclosed_from(text: str) -> Optional[int]:
+    """Where the first JSON structure begins that is still open when ``text`` ends; None when there is none.
+
+    A reply that was cut off ends inside its own object. The objects that stand whole inside it (the first
+    line of a script, the first idea of a list) are parts of that reply and not the reply, so
+    ``_scan_top_level`` takes nothing from there on. Brackets inside quoted text are not counted; a closing
+    bracket closes only the kind that is open; an opener counts only when what follows it looks like JSON
+    (``_STARTS_JSON``), so a stray bracket in prose before a whole reply changes nothing.
+    """
+    open_now: List[Tuple[str, int]] = []
+    in_str = False
+    i, n = 0, len(text)
+    while i < n:
+        ch = text[i]
+        if in_str:
+            if ch == "\\":
+                i += 2
+                continue
+            if ch == '"':
+                in_str = False
+        elif ch == '"':
+            in_str = True
+        elif ch in "{[":
+            open_now.append((ch, i))
+        elif ch in "}]" and open_now and open_now[-1][0] == ("{" if ch == "}" else "["):
+            open_now.pop()
+        i += 1
+    for opener, at in open_now:
+        after = text[at + 1:at + 200].lstrip()
+        if after[:1] and after[0] in _STARTS_JSON[opener]:
+            return at
+    return None
+
+
 def _is_property_value(text: str, pos: int) -> bool:
     """True if ``text[pos]`` is preceded by ``"key":`` (a nested value inside an unclosed outer object)."""
     k = pos - 1
@@ -883,6 +922,7 @@ def _scan_top_level(text: str, allow_array: bool) -> Tuple[bool, Any]:
     pos = 0
     matches: List[Tuple[int, int, Any]] = []  # (is_dict_rank, span_length, value)
     check_surrogates = bool(_SURROGATE_CHAR.search(text) or _SURROGATE_ESCAPE.search(text))
+    open_from = _unclosed_from(text)        # from here on the text is the inside of something that never closes
     while pos < n:
         next_obj = text.find("{", pos)
         next_arr = text.find("[", pos) if allow_array else -1
@@ -892,6 +932,8 @@ def _scan_top_level(text: str, allow_array: bool) -> Tuple[bool, Any]:
             at = next_obj
         else:
             at = next_arr
+        if open_from is not None and at > open_from:
+            break                           # a part of a reply that was cut off is not the reply
         if _is_property_value(text, at):
             pos = at + 1
             continue
@@ -979,7 +1021,7 @@ def _looks_truncated_json(cleaned: str) -> bool:
     return saw_open and (depth > 0 or in_str)
 
 
-def parse_json_any(text: str, allow_array: bool = False) -> Any:
+def parse_json_any(text: str, allow_array: bool = False, pasted: bool = True) -> Any:
     """Parse model or file text into a JSON value (object, or array if ``allow_array``).
 
     Tolerates UTF-8 BOM, zero-width spaces, markdown code fences anywhere in prose,
@@ -1019,6 +1061,8 @@ def parse_json_any(text: str, allow_array: bool = False) -> Any:
     except _NonFiniteJSON:
         raise LLMError("Model did not return valid JSON", "bad_json")
 
+    if not pasted and _looks_truncated_json(cleaned):
+        raise _cut_off()                    # it came from a service: nothing to copy again, so other advice
     if _looks_truncated_json(cleaned):
         raise LLMError(
             "The pasted JSON looks incomplete (cut off before the closing '}'). Copy the full reply again, or choose the .json file directly.",
@@ -1028,12 +1072,12 @@ def parse_json_any(text: str, allow_array: bool = False) -> Any:
     raise LLMError("Model did not return valid JSON", "bad_json")
 
 
-def parse_json_text(text: str) -> Dict[str, Any]:
+def parse_json_text(text: str, pasted: bool = True) -> Dict[str, Any]:
     """Parse model text as a JSON object, tolerating ```json fences and stray prose.
 
     ``NaN`` and ``Infinity`` are refused like any other invalid JSON (see ``loads_strict``).
     """
-    value = parse_json_any(text, allow_array=False)
+    value = parse_json_any(text, allow_array=False, pasted=pasted)
     if not isinstance(value, dict):
         raise LLMError("Model returned JSON that is not an object", "bad_json")
     return value
@@ -1052,6 +1096,136 @@ def parse_manual_reply(text: str, task: str) -> Dict[str, Any]:
         "bad_json",
         "粘贴的 JSON 不是对象格式（最外层应为 { ... }），请确认复制了完整回复。",
     )
+
+
+# ---- why an answer stopped -----------------------------------------------------------------------------------
+# A service says with every answer why it ended. An answer it cut off for length, or declined to give, is not
+# read as JSON at all: ``cut_off`` or ``refused`` is raised, each with a message in two languages. The reader
+# would otherwise take a whole object from inside the cut-off reply for the reply (see ``_unclosed_from``).
+#
+# The names of these fields are from memory of each service's documentation. They were not compared with the
+# documentation in the session that wrote this (22 November 2026) and no answer of this kind was ever seen
+# from a service: every test of them runs on a stand-in. Where a service does not send them, nothing changes.
+GEMINI_UNCHECKED = (
+    "that an answer cut off for length carries candidates[0].finishReason 'MAX_TOKENS'",
+    "that an answer the service withheld carries finishReason 'SAFETY', 'RECITATION', 'BLOCKLIST', "
+    "'PROHIBITED_CONTENT' or 'SPII', and that a request it blocked carries promptFeedback.blockReason and no candidate",
+)
+OPENAI_UNCHECKED = (
+    "that an answer cut off for length carries choices[0].finish_reason 'length' (OpenAI, and the servers on "
+    "this computer that speak like it: Ollama, LM Studio, llama.cpp, mlx-lm)",
+    "that an answer the service withheld carries finish_reason 'content_filter', or a text under choices[0].message.refusal",
+)
+_GEMINI_WITHHELD = ("SAFETY", "RECITATION", "BLOCKLIST", "PROHIBITED_CONTENT", "SPII")
+
+
+def _cut_off() -> LLMError:
+    return LLMError(
+        "The AI service stopped before its answer was finished (it reached the length limit of one answer), "
+        "so the answer was not used. Try again with less material, or choose a model in Settings that writes "
+        "longer answers.",
+        "cut_off",
+        "AI 服务的回答没写完就停了（达到了单次回答的长度上限），所以这次回答没有被采用。"
+        "可以减少素材后再试，或到「设置」里换一个能写更长回答的模型。")
+
+
+def _refused() -> LLMError:
+    return LLMError(
+        "The AI service declined to answer this request, so there is nothing to use. Change the wording of "
+        "the material and try again, or choose another model in Settings.",
+        "refused",
+        "AI 服务拒绝回答这次请求，所以没有可用的内容。可以调整素材的措辞后再试，或到「设置」里换一个模型。")
+
+
+def gemini_text(data: Any) -> str:
+    """The text of a Gemini ``generateContent`` answer, for a draft, a video or a screenshot alike.
+
+    Raises ``cut_off`` and ``refused`` (see GEMINI_UNCHECKED for what they rest on), and ``bad_response``
+    for an answer of another shape than the one expected.
+    """
+    if isinstance(data, dict):
+        candidates = data.get("candidates")
+        first = candidates[0] if isinstance(candidates, list) and candidates else None
+        reason = first.get("finishReason") if isinstance(first, dict) else None
+        feedback = data.get("promptFeedback")
+        if reason == "MAX_TOKENS":
+            raise _cut_off()
+        if reason in _GEMINI_WITHHELD or (first is None and isinstance(feedback, dict) and feedback.get("blockReason")):
+            raise _refused()
+    try:
+        if not isinstance(data, dict):
+            raise TypeError("response is not an object")
+        parts = data["candidates"][0]["content"]["parts"]
+        if not isinstance(parts, list):
+            raise TypeError("parts is not a list")
+        return "".join(p.get("text", "") for p in parts if isinstance(p, dict) and isinstance(p.get("text", ""), str))
+    except (KeyError, IndexError, TypeError, AttributeError):
+        raise LLMError("Unexpected Gemini response shape (the reply may have been blocked)", "bad_response",
+                       "Gemini 返回的内容无法读取（可能被安全策略拦截）")
+
+
+def openai_text(data: Any, provider: str) -> str:
+    """The text of a chat-completions answer, from OpenAI or from a server on this computer that speaks like it.
+
+    Raises ``cut_off`` and ``refused`` (see OPENAI_UNCHECKED), and ``bad_response`` for another shape.
+    """
+    try:
+        if not isinstance(data, dict):
+            raise TypeError("response is not an object")
+        first = data["choices"][0]
+        message = first["message"]
+        if first.get("finish_reason") == "length":
+            raise _cut_off()
+        declined = message.get("refusal")
+        if first.get("finish_reason") == "content_filter" or (isinstance(declined, str) and declined.strip()):
+            raise _refused()
+        text = message["content"]
+        if not isinstance(text, str):
+            raise TypeError("content is not text")
+        return text
+    except (KeyError, IndexError, TypeError, AttributeError):
+        raise LLMError("Unexpected response shape from %s" % provider, "bad_response")
+
+
+def anthropic_text(data: Any) -> str:
+    """The text of an Anthropic Messages answer. Written from memory and never run, like the request for it."""
+    if not isinstance(data, dict):
+        raise LLMError("Unexpected Anthropic response shape", "bad_response",
+                       "Anthropic 返回的内容格式无法识别")
+    stop_reason = data.get("stop_reason") if isinstance(data.get("stop_reason"), str) else ""
+    if stop_reason == "max_tokens":
+        raise LLMError(
+            "The Anthropic model ran out of output space before finishing its JSON reply (stop_reason: max_tokens). "
+            "Try a shorter request or a model with a higher output limit.",
+            "cut_off",
+            "Anthropic 模型在写完 JSON 回复前达到了输出长度上限（stop_reason: max_tokens）。"
+            "请缩短输入内容，或换一个输出上限更高的模型。",
+        )
+    blocks = data.get("content")
+    if stop_reason == "refusal" or (
+        isinstance(blocks, list) and any(isinstance(b, dict) and b.get("type") == "refusal" for b in blocks)
+    ):
+        raise LLMError(
+            "The Anthropic model refused this request (stop_reason: refusal).",
+            "refused",
+            "Anthropic 模型拒绝了这个请求（stop_reason: refusal）。",
+        )
+    if not isinstance(blocks, list):
+        raise LLMError("Unexpected Anthropic response shape", "bad_response",
+                       "Anthropic 返回的内容格式无法识别")
+    text = "".join(
+        b.get("text", "") for b in blocks
+        if isinstance(b, dict) and b.get("type") == "text" and isinstance(b.get("text", ""), str)
+    )
+    if not text.strip():
+        note = " (stop_reason: %s)" % stop_reason if stop_reason else ""
+        note_zh = "（stop_reason: %s）" % stop_reason if stop_reason else ""
+        raise LLMError(
+            "The Anthropic model returned no text%s; the request may have been refused or stopped early." % note,
+            "bad_response",
+            "Anthropic 模型没有返回可用文字%s，请求可能被拒绝或提前中止。" % note_zh,
+        )
+    return text
 
 
 def _is_http_400_mentioning(exc: LLMError, term: str) -> bool:
@@ -1088,16 +1262,7 @@ def complete_json(provider: str, api_key: str, model: str, system: str, user: st
                 data = call("POST", gem_url, gem_headers, dict(gem_body, generationConfig=no_temp_cfg))
             else:
                 raise
-        try:
-            if not isinstance(data, dict):
-                raise TypeError("response is not an object")
-            parts = data["candidates"][0]["content"]["parts"]
-            if not isinstance(parts, list):
-                raise TypeError("parts is not a list")
-            text = "".join(p.get("text", "") for p in parts if isinstance(p, dict) and isinstance(p.get("text", ""), str))
-        except (KeyError, IndexError, TypeError, AttributeError):
-            raise LLMError("Unexpected Gemini response shape (the reply may have been blocked)", "bad_response")
-        return parse_json_text(text)
+        return parse_json_text(gemini_text(data), pasted=False)
 
     if provider == "anthropic":
         safe_model = validate_model_name(model, "anthropic")
@@ -1131,43 +1296,7 @@ def complete_json(provider: str, api_key: str, model: str, system: str, user: st
                     adjusted = True
                 if not adjusted:
                     raise
-        if not isinstance(data, dict):
-            raise LLMError("Unexpected Anthropic response shape", "bad_response",
-                           "Anthropic 返回的内容格式无法识别")
-        stop_reason = data.get("stop_reason") if isinstance(data.get("stop_reason"), str) else ""
-        if stop_reason == "max_tokens":
-            raise LLMError(
-                "The Anthropic model ran out of output space before finishing its JSON reply (stop_reason: max_tokens). "
-                "Try a shorter request or a model with a higher output limit.",
-                "bad_response",
-                "Anthropic 模型在写完 JSON 回复前达到了输出长度上限（stop_reason: max_tokens）。"
-                "请缩短输入内容，或换一个输出上限更高的模型。",
-            )
-        blocks = data.get("content")
-        if stop_reason == "refusal" or (
-            isinstance(blocks, list) and any(isinstance(b, dict) and b.get("type") == "refusal" for b in blocks)
-        ):
-            raise LLMError(
-                "The Anthropic model refused this request (stop_reason: refusal).",
-                "bad_response",
-                "Anthropic 模型拒绝了这个请求（stop_reason: refusal）。",
-            )
-        if not isinstance(blocks, list):
-            raise LLMError("Unexpected Anthropic response shape", "bad_response",
-                           "Anthropic 返回的内容格式无法识别")
-        text = "".join(
-            b.get("text", "") for b in blocks
-            if isinstance(b, dict) and b.get("type") == "text" and isinstance(b.get("text", ""), str)
-        )
-        if not text.strip():
-            note = " (stop_reason: %s)" % stop_reason if stop_reason else ""
-            note_zh = "（stop_reason: %s）" % stop_reason if stop_reason else ""
-            raise LLMError(
-                "The Anthropic model returned no text%s; the request may have been refused or stopped early." % note,
-                "bad_response",
-                "Anthropic 模型没有返回可用文字%s，请求可能被拒绝或提前中止。" % note_zh,
-            )
-        return parse_json_text(text)
+        return parse_json_text(anthropic_text(data), pasted=False)
 
     base, headers = _openai_style(provider, api_key, base_url)
     safe_model = validate_model_name(model, provider)
@@ -1186,12 +1315,4 @@ def complete_json(provider: str, api_key: str, model: str, system: str, user: st
             data = call("POST", base + "/chat/completions", headers, no_temp_body)
         else:
             raise
-    try:
-        if not isinstance(data, dict):
-            raise TypeError("response is not an object")
-        text = data["choices"][0]["message"]["content"]
-        if not isinstance(text, str):
-            raise TypeError("content is not text")
-    except (KeyError, IndexError, TypeError, AttributeError):
-        raise LLMError("Unexpected response shape from %s" % provider, "bad_response")
-    return parse_json_text(text)
+    return parse_json_text(openai_text(data, provider), pasted=False)

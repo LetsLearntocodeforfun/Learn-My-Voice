@@ -108,7 +108,7 @@ class AnthropicClientHardeningTest(unittest.TestCase):
 
         with self.assertRaises(llm.LLMError) as trunc:
             llm.complete_json("anthropic", "sk-ant-fake-0001", "claude-sonnet-4-5", "sys", "usr", truncated_transport)
-        self.assertEqual(trunc.exception.code, "bad_response")
+        self.assertEqual(trunc.exception.code, "cut_off")           # one code for one thing, whichever service cut the answer
         self.assertIn("max_tokens", str(trunc.exception))
         self.assertIn("max_tokens", trunc.exception.message_zh)
 
@@ -118,19 +118,19 @@ class AnthropicClientHardeningTest(unittest.TestCase):
 
         with self.assertRaises(llm.LLMError) as ref:
             llm.complete_json("anthropic", "sk-ant-fake-0001", "claude-sonnet-4-5", "sys", "usr", refusal_transport)
-        self.assertEqual(ref.exception.code, "bad_response")
+        self.assertEqual(ref.exception.code, "refused")
         self.assertIn("refus", str(ref.exception).lower())
         self.assertIn("拒绝", ref.exception.message_zh)
 
         # Content block of type "refusal" or empty text content
-        for reply in (
-            {"stop_reason": "end_turn", "content": [{"type": "refusal", "refusal": "Cannot comply"}]},
-            {"stop_reason": "end_turn", "content": []},
-            {"stop_reason": "end_turn", "content": [{"type": "thinking", "thinking": "..."}]},
+        for reply, code in (
+            ({"stop_reason": "end_turn", "content": [{"type": "refusal", "refusal": "Cannot comply"}]}, "refused"),
+            ({"stop_reason": "end_turn", "content": []}, "bad_response"),
+            ({"stop_reason": "end_turn", "content": [{"type": "thinking", "thinking": "..."}]}, "bad_response"),
         ):
             with self.assertRaises(llm.LLMError) as empty_err:
                 llm.complete_json("anthropic", "sk-ant-fake-0001", "claude-sonnet-4-5", "sys", "usr", lambda *a, r=reply: r)
-            self.assertEqual(empty_err.exception.code, "bad_response")
+            self.assertEqual(empty_err.exception.code, code)
             self.assertTrue(empty_err.exception.message_zh)
 
     def test_max_tokens_400_retries_once_at_4096_and_never_loops(self) -> None:
@@ -576,6 +576,137 @@ class StageTemperatureAndFallbackTest(unittest.TestCase):
         self.assertEqual(len(seen), 2)
         self.assertEqual(json.loads(seen[0]["body"]).get("temperature"), 0.55)
         self.assertNotIn("temperature", json.loads(seen[1]["body"]))
+
+
+# A draft reply that stops inside its second line. Its first line stands whole inside it.
+CUT_DRAFT = ('{"title": "周末", "script_lines": [{"line_no": 1, "spoken_script_zh": "第一句"}, '
+             '{"line_no": 2, "spoken_script_zh": "第二')
+FIRST_LINE = {"line_no": 1, "spoken_script_zh": "第一句"}
+WHOLE = {"title": "周末", "script_lines": [FIRST_LINE]}
+PASTE_ADVICE = ("ChatGPT", "Copy the full reply", "pasted", "复制")
+
+
+def _answer(provider, text, why=None):
+    """A made-up answer of one service holding ``text``, ended for the reason ``why`` (that service's own word for it)."""
+    if provider == "gemini":
+        return {"candidates": [dict({"content": {"parts": [{"text": text}]}}, **({"finishReason": why} if why else {}))]}
+    if provider == "anthropic":
+        return dict({"content": [{"type": "text", "text": text}]}, **({"stop_reason": why} if why else {}))
+    return {"choices": [dict({"message": {"content": text}}, **({"finish_reason": why} if why else {}))]}
+
+
+def _ask(provider, answer):
+    return llm.complete_json(provider, "sk-NOTAREALKEY000000", "model-x", "s", "u", transport=lambda *a: answer,
+                             base_url="http://127.0.0.1:11434/v1" if provider == "local" else None)
+
+
+class StoppedAndCutOffAnswersTest(unittest.TestCase):
+    """An answer that was cut off or declined is never read as JSON, and never comes back as a part of itself.
+
+    The fields that say why an answer stopped are from memory (``llm.GEMINI_UNCHECKED``, ``llm.OPENAI_UNCHECKED``):
+    these tests show what the code does with such an answer, not that a service sends one.
+    """
+
+    CUT = {"gemini": "MAX_TOKENS", "openai": "length", "local": "length", "anthropic": "max_tokens"}
+
+    def assert_said(self, error, code):
+        self.assertEqual(error.code, code, str(error))
+        self.assertTrue(re.search(r"[\u4e00-\u9fff]", error.message_zh), "no Chinese message")
+        for advice in PASTE_ADVICE:                     # nothing was pasted: no advice to copy it again
+            self.assertNotIn(advice, str(error) + error.message_zh)
+
+    def test_an_answer_the_service_says_it_cut_off_is_refused_in_two_languages_whatever_arrived(self) -> None:
+        for provider, why in self.CUT.items():
+            for text in (CUT_DRAFT, json.dumps(WHOLE, ensure_ascii=False), "{"):
+                with self.subTest(provider=provider, text=text[:20]), self.assertRaises(llm.LLMError) as caught:
+                    _ask(provider, _answer(provider, text, why))
+                self.assert_said(caught.exception, "cut_off")
+
+    def test_a_cut_off_answer_whose_service_did_not_say_so_is_still_never_taken_for_its_first_line(self) -> None:
+        for provider in ("gemini", "openai", "local", "anthropic"):
+            for why in (None, {"gemini": "STOP", "anthropic": "end_turn"}.get(provider, "stop")):
+                with self.subTest(provider=provider, why=why), self.assertRaises(llm.LLMError) as caught:
+                    _ask(provider, _answer(provider, CUT_DRAFT, why))
+                self.assert_said(caught.exception, "cut_off")
+        with self.assertRaises(llm.LLMError) as caught:      # the web lookup reads its answer the same way
+            llm.search_json("openai", "sk-NOTAREALKEY000000", "model-x", "p", transport=lambda *a: {
+                "output": [{"type": "message", "content": [{"type": "output_text", "text": CUT_DRAFT}]}]})
+        self.assert_said(caught.exception, "cut_off")
+
+    def test_an_answer_the_service_declined_is_refused_in_two_languages(self) -> None:
+        declined = [("gemini", {"candidates": [{"finishReason": reason}]}) for reason in ("SAFETY", "RECITATION", "BLOCKLIST", "PROHIBITED_CONTENT", "SPII")]
+        declined += [("gemini", {"promptFeedback": {"blockReason": "SAFETY"}}), ("gemini", {"candidates": [], "promptFeedback": {"blockReason": "OTHER"}}),
+                     ("openai", _answer("openai", "", "content_filter")), ("local", _answer("local", "", "content_filter")),
+                     ("openai", {"choices": [{"message": {"content": None, "refusal": "I can't."}, "finish_reason": "stop"}]}),
+                     ("anthropic", _answer("anthropic", "I can't help with that.", "refusal"))]
+        for provider, answer in declined:
+            with self.subTest(provider=provider, answer=answer), self.assertRaises(llm.LLMError) as caught:
+                _ask(provider, answer)
+            self.assert_said(caught.exception, "refused")
+
+    def test_a_whole_answer_is_read_as_before_also_with_words_or_a_fence_around_it(self) -> None:
+        whole = json.dumps(WHOLE, ensure_ascii=False)
+        for provider, why in (("gemini", "STOP"), ("gemini", None), ("openai", "stop"), ("openai", None), ("local", None), ("anthropic", "end_turn")):
+            for text in (whole, "Here is the JSON:\n" + whole + "\nHope this helps!", "```json\n" + whole + "\n```"):
+                with self.subTest(provider=provider, text=text[:12]):
+                    self.assertEqual(_ask(provider, _answer(provider, text, why)), WHOLE)
+        for shape in ({}, [], None, {"candidates": "x"}, {"choices": [{}]}, {"choices": [{"message": {"content": 5}}]}, {"finishReason": {"a": 1}}):
+            for provider in ("gemini", "openai", "local"):
+                with self.subTest(provider=provider, shape=shape), self.assertRaises(llm.LLMError) as caught:
+                    _ask(provider, shape)
+                self.assertEqual(caught.exception.code, "bad_response")
+
+    def test_a_pasted_reply_that_was_copied_incompletely_is_refused_with_the_advice_to_copy_it_again(self) -> None:
+        fenced = "```json\n" + CUT_DRAFT
+        ideas = '{"ideas": [{"title_zh": "第一个"}, {"title_zh": "第二'
+        for read in (lambda: llm.parse_manual_reply(CUT_DRAFT, "draft"), lambda: llm.parse_json_text(CUT_DRAFT),
+                     lambda: llm.parse_manual_reply(fenced, "draft"), lambda: llm.parse_manual_reply("好的，脚本如下：\n" + CUT_DRAFT, "draft"),
+                     lambda: llm.parse_manual_reply(ideas, "ideas"), lambda: llm.parse_json_any(ideas, allow_array=True)):
+            with self.assertRaises(llm.LLMError) as caught:
+                read()
+            self.assertEqual(caught.exception.code, "bad_json")
+            self.assertIn("Copy the full reply again", str(caught.exception))
+            self.assertIn("重新完整复制", caught.exception.message_zh)
+
+    def test_only_what_stands_inside_something_that_never_closes_is_left_and_a_stray_bracket_in_the_words_around_changes_nothing(self) -> None:
+        whole = json.dumps(WHOLE, ensure_ascii=False)
+        for text in ("See [draft {v2) and :-{ below.\n" + whole,              # brackets in prose that never close
+                     "note [1: " + whole, whole + '\n{"more": [{"a": 1}, {"b',  # a whole reply, then something cut off
+                     'He said "use { here" then:\n' + whole, whole + " }]"):
+            with self.subTest(text=text[:24]):
+                self.assertEqual(llm.parse_manual_reply(text, "draft"), WHOLE)
+        self.assertEqual(llm._unclosed_from(CUT_DRAFT), 0)
+        self.assertEqual(llm._unclosed_from('words {"a": [1, 2'), 6)
+        for closed_or_prose in (whole, "[see note", ":-{", '"{" in quotes', "", '{"a": 1} [x'):
+            self.assertIsNone(llm._unclosed_from(closed_or_prose), closed_or_prose)
+
+    def test_a_video_reply_and_a_screenshot_reply_are_read_the_same_way(self) -> None:
+        tmp = Path(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, str(tmp), True)
+        store = Store(tmp / "data")
+        store.update_config(lambda c: (c.update(provider="gemini", model="gemini-x"), c["keys"].update(gemini="AIzaNOTAREALKEY000000")))
+        cut_video = '{"beats": [{"beat_index": 1, "beat_type": "HOOK", "audio_mode": "VOICEOVER", "verbatim_transcript_zh_en": "开头"}, {"beat_index": 2, "verb'
+        for answer, code in ((_answer("gemini", cut_video, "MAX_TOKENS"), "cut_off"), (_answer("gemini", cut_video, "STOP"), "cut_off"),
+                             ({"promptFeedback": {"blockReason": "SAFETY"}}, "refused")):
+            clip = tmp / "clip.mp4"
+            clip.write_bytes(b"\x00\x00\x00\x18ftypmp42")
+            with self.subTest(code=code), self.assertRaises(JobError) as caught:
+                video_ingest.transcribe_via_ai(store, {"path": str(clip), "name": "clip.mp4"}, transport=lambda *a: answer)
+            self.assertEqual(caught.exception.code, code)
+            self.assertTrue(caught.exception.message_zh)
+        self.assertEqual(store.list_samples(), [])              # the first beat alone was not stored as the video
+        picture = [("aGVsbG8=", "image/png")]
+        for provider, why in self.CUT.items():
+            with self.subTest(provider=provider), self.assertRaises(llm.LLMError) as caught:
+                rednote_analytics._vision_json(provider, "k", "model-x", picture, transport=lambda *a: _answer(provider, CUT_DRAFT, why),
+                                               base_url="http://127.0.0.1:11434/v1" if provider == "local" else None)
+            self.assert_said(caught.exception, "cut_off")
+
+    def test_the_fields_these_rest_on_are_listed_as_never_checked(self) -> None:
+        for listed, names in ((llm.GEMINI_UNCHECKED, ("finishReason", "MAX_TOKENS", "promptFeedback.blockReason")),
+                              (llm.OPENAI_UNCHECKED, ("finish_reason", "'length'", "content_filter", "message.refusal"))):
+            for name in names:
+                self.assertIn(name, " ".join(listed))
 
 
 if __name__ == "__main__":
