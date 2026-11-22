@@ -54,6 +54,7 @@ PROBLEM_FILE = "desktop-problem.txt"                               # as in src-t
 START_TIMEOUT_SEC = 180
 WINDOW_CHECK_ENV = "LEARN_MY_VOICE_WINDOW_CHECK"                   # as in studio/server.py
 NO_UPDATE_CHECK_ENV = "LEARN_MY_VOICE_NO_UPDATE_CHECK"             # as in studio/server.py and tools/try_release.py
+NO_AUTOPILOT_ENV = "LEARN_MY_VOICE_NO_AUTOPILOT"                   # likewise
 # How long the page in the window has for its check. Each of its steps gives up after 30 seconds
 # (STEP_MS in studio/web/windowcheck.js), so within this time even a check in which every step waited in vain
 # has reported.
@@ -380,6 +381,7 @@ def start(program: Path, data: Optional[Path], log: Path, window_check: bool = F
     # otherwise ask GitHub for the list of releases as soon as it has loaded. The shell hands its environment on
     # to the core (src-tauri/src/main.rs adds one variable and clears none), which reads this.
     env[NO_UPDATE_CHECK_ENV] = "1"
+    env[NO_AUTOPILOT_ENV] = "1"                 # nor does the app run a task by itself: it is found as it was started
     if data is not None:
         env["LEARN_MY_VOICE_DATA_DIR"] = str(data)
     if window_check:
@@ -491,6 +493,11 @@ def try_installer(installer: Path, shots: Optional[Path], label: str) -> Dict[st
             raise Failed("started by this trial, the app should not look for updates and should say so (it answered %s: %r)"
                          % (status, updates if not isinstance(updates, dict) else updates.get("checks")))
         checks.append("started by this trial, it does not look for updates and says so")
+        status, pilot, _ = trial.ask(str(note["url"]).rstrip("/"), "GET", "/api/autopilot")
+        if status != 200 or not isinstance(pilot, dict) or pilot.get("on") is not False:
+            raise Failed("started by this trial, the app should run no task by itself and should say so (it answered %s: %r)"
+                         % (status, pilot if not isinstance(pilot, dict) else pilot.get("on")))
+        checks.append("started by this trial, it runs no task by itself and says so")
         checks.append("started again without a folder named, it keeps its data in the system's folder for application data")
         end_abruptly(int(note["shell_pid"]))
         process.wait(timeout=30)
