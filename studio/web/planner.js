@@ -11,8 +11,9 @@
    questions it answers in it. In copy-and-paste mode the same prompt is shown through /api/manual/prompt and
    nothing is sent; pasting the reply into /api/manual/reply creates the script and links it back to the plan.
 
-   Everything can be done with the keyboard: a plan in the calendar is a button, a day is a button, and a plan's
-   day is also an ordinary date field on its card and inside its edit form.
+   Built to be used with the keyboard: a plan in the calendar is a button, a day is a button, and a plan's
+   day is also an ordinary date field on its card and inside its edit form. No test presses a key, so that
+   everything can be done that way is not shown.
 
    plFileToBase64 and the words pl_import_btn, pl_import_done, pl_stat_save, pl_add_btn and pl_added_toast are
    also used by rednote.js, pages.js and discover.js. */

@@ -180,7 +180,8 @@ be read again then.
   leading commenter nicknames stripped and never stored, counted locally with negation-aware word lists
   (`overall_sentiment: "not_judged"`), or summarized via XML-fenced `prompts/09_sentiment_analyzer.md`.
 - **Upcoming video planner and calendar (`#/plan`).** Creators can plan upcoming videos across list, week and
-  month calendar views (with unscheduled items, today marked and keyboard date rescheduling), edit title, notes,
+  month calendar views (with unscheduled items, today marked, and rescheduling by choosing a plan and then a day:
+  both are buttons, but no test presses a key, so use by keyboard alone is not shown), edit title, notes,
   date, duration and format in place, batch-add multiple viewer questions or saved ideas in one step, and turn
   any plan into a linked script via Settings AI, copy & paste or an empty script (`GET /api/plans` is strictly
   read-only and derives `SCRIPTING` / `READY` / `POSTED` from stored scripts and posted library items). Stage 6
