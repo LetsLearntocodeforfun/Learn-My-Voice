@@ -50,6 +50,82 @@ _BOOTED = ("typeof appState !== 'undefined' && Boolean(appState && appState.sett
            " && Boolean(document.getElementById('view')) && document.getElementById('view').innerHTML.length > 20")
 
 
+MOD_ALT, MOD_CTRL, MOD_META, MOD_SHIFT = 1, 2, 4, 8
+
+_NAMED_KEYS: Dict[str, tuple] = {
+    "Enter": ("Enter", "Enter", 13, "\r"),
+    "Escape": ("Escape", "Escape", 27, ""),
+    "Tab": ("Tab", "Tab", 9, ""),
+    "Space": (" ", "Space", 32, " "),
+    " ": (" ", "Space", 32, " "),
+    "Backspace": ("Backspace", "Backspace", 8, ""),
+    "Delete": ("Delete", "Delete", 46, ""),
+    "ArrowUp": ("ArrowUp", "ArrowUp", 38, ""),
+    "ArrowDown": ("ArrowDown", "ArrowDown", 40, ""),
+    "ArrowLeft": ("ArrowLeft", "ArrowLeft", 37, ""),
+    "ArrowRight": ("ArrowRight", "ArrowRight", 39, ""),
+    "Home": ("Home", "Home", 36, ""),
+    "End": ("End", "End", 35, ""),
+    "PageUp": ("PageUp", "PageUp", 33, ""),
+    "PageDown": ("PageDown", "PageDown", 34, ""),
+}
+
+_SYMBOL_KEYS: Dict[str, tuple] = {
+    "/": ("Slash", 191, False),
+    "?": ("Slash", 191, True),
+    "-": ("Minus", 189, False),
+    "_": ("Minus", 189, True),
+    "=": ("Equal", 187, False),
+    "+": ("Equal", 187, True),
+    "[": ("BracketLeft", 219, False),
+    "{": ("BracketLeft", 219, True),
+    "]": ("BracketRight", 221, False),
+    "}": ("BracketRight", 221, True),
+    "\\": ("Backslash", 220, False),
+    "|": ("Backslash", 220, True),
+    ";": ("Semicolon", 186, False),
+    ":": ("Semicolon", 186, True),
+    "'": ("Quote", 222, False),
+    '"': ("Quote", 222, True),
+    ",": ("Comma", 188, False),
+    "<": ("Comma", 188, True),
+    ".": ("Period", 190, False),
+    ">": ("Period", 190, True),
+    "`": ("Backquote", 192, False),
+    "~": ("Backquote", 192, True),
+    "!": ("Digit1", 49, True),
+    "@": ("Digit2", 50, True),
+    "#": ("Digit3", 51, True),
+    "$": ("Digit4", 52, True),
+    "%": ("Digit5", 53, True),
+    "^": ("Digit6", 54, True),
+    "&": ("Digit7", 55, True),
+    "*": ("Digit8", 56, True),
+    "(": ("Digit9", 57, True),
+    ")": ("Digit0", 48, True),
+}
+
+
+def _resolve_key_event(key: str, mods: int) -> tuple:
+    """Return ``(dom_key, code, virtual_key_code, text, effective_mods)`` for CDP ``Input.dispatchKeyEvent``."""
+    if key in _NAMED_KEYS:
+        dom_key, code, vk, text = _NAMED_KEYS[key]
+        return dom_key, code, vk, text, mods
+    if len(key) == 1 and "a" <= key.lower() <= "z":
+        upper = key.upper()
+        shifted = bool(mods & MOD_SHIFT) or ("A" <= key <= "Z")
+        dom_key = upper if shifted else key.lower()
+        eff_mods = (mods | MOD_SHIFT) if ("A" <= key <= "Z" and not (mods & (MOD_CTRL | MOD_META | MOD_ALT))) else mods
+        return dom_key, "Key" + upper, ord(upper), dom_key, eff_mods
+    if len(key) == 1 and "0" <= key <= "9":
+        return key, "Digit" + key, ord(key), key, mods
+    if key in _SYMBOL_KEYS:
+        code, vk, needs_shift = _SYMBOL_KEYS[key]
+        eff_mods = (mods | MOD_SHIFT) if (needs_shift and not (mods & (MOD_CTRL | MOD_META | MOD_ALT))) else mods
+        return key, code, vk, key, eff_mods
+    raise ValueError("Unsupported key for CDP hardware dispatch: %r" % (key,))
+
+
 class Page(_CdpSession):
     """One page of Chrome. Besides what ``_CdpSession`` does, it keeps what the page reported as wrong."""
 
@@ -83,6 +159,83 @@ class Page(_CdpSession):
                     raise RuntimeError("CDP error on %s: %s" % (method, frame["error"]))
                 return frame.get("result", {})
             self._note(frame)
+
+    def press(
+        self,
+        key: str,
+        modifiers: int = 0,
+        *,
+        meta: bool = False,
+        ctrl: bool = False,
+        alt: bool = False,
+        shift: bool = False,
+    ) -> None:
+        """Dispatch a real hardware keyDown + keyUp pair over CDP ``Input.dispatchKeyEvent`` and settle microtasks."""
+        mods = (
+            int(modifiers)
+            | (MOD_ALT if alt else 0)
+            | (MOD_CTRL if ctrl else 0)
+            | (MOD_META if meta else 0)
+            | (MOD_SHIFT if shift else 0)
+        )
+        dom_key, code, vk, text, eff_mods = _resolve_key_event(key, mods)
+        down: Dict[str, Any] = {
+            "type": "keyDown",
+            "modifiers": eff_mods,
+            "key": dom_key,
+            "code": code,
+            "windowsVirtualKeyCode": vk,
+            "nativeVirtualKeyCode": vk,
+        }
+        if text and not (eff_mods & (MOD_CTRL | MOD_META | MOD_ALT)):
+            down["text"] = text
+            down["unmodifiedText"] = text.lower() if len(text) == 1 else text
+        up: Dict[str, Any] = {
+            "type": "keyUp",
+            "modifiers": eff_mods,
+            "key": dom_key,
+            "code": code,
+            "windowsVirtualKeyCode": vk,
+            "nativeVirtualKeyCode": vk,
+        }
+        self.call("Input.dispatchKeyEvent", down)
+        self.call("Input.dispatchKeyEvent", up)
+        self.eval_js("new Promise((resolve) => setTimeout(resolve, 25))")
+
+    def type_text(self, text: str) -> None:
+        """Type ``text`` into ``document.activeElement`` via real CDP keyboard / ``Input.insertText`` events."""
+        for ch in text:
+            if ch == "\n":
+                self.press("Enter")
+            elif ch == "\t":
+                self.press("Tab")
+            elif 32 <= ord(ch) < 127 and (ch.isalnum() or ch in _SYMBOL_KEYS or ch == " "):
+                self.press(ch)
+            else:
+                self.call("Input.insertText", {"text": ch})
+        self.eval_js("new Promise((resolve) => setTimeout(resolve, 25))")
+
+    def active_selector_info(self) -> Dict[str, Any]:
+        """Return structured metadata describing ``document.activeElement`` for keyboard focus assertions."""
+        return self.eval_js("""(() => {
+            const el = document.activeElement;
+            if (!el) return { tag: '', id: '', className: '', role: '', ariaSelected: '', ariaActiveDescendant: '', href: '', text: '', dataset: {} };
+            const ds = {};
+            if (el.dataset) {
+                Object.keys(el.dataset).forEach((k) => { ds[k] = el.dataset[k]; });
+            }
+            return {
+                tag: (el.tagName || '').toLowerCase(),
+                id: el.id || '',
+                className: typeof el.className === 'string' ? el.className : '',
+                role: el.getAttribute ? (el.getAttribute('role') || '') : '',
+                ariaSelected: el.getAttribute ? (el.getAttribute('aria-selected') || '') : '',
+                ariaActiveDescendant: el.getAttribute ? (el.getAttribute('aria-activedescendant') || '') : '',
+                href: el.getAttribute ? (el.getAttribute('href') || '') : '',
+                text: (el.textContent || '').trim().slice(0, 120),
+                dataset: ds,
+            };
+        })()""")
 
     def go(self, hash_route: str, settle: str = "true") -> None:
         """Open a page of the app by its ``#/...`` address and wait until the app has drawn it (and ``settle`` holds)."""

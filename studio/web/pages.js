@@ -251,6 +251,7 @@ async function copyText(text, fallbackEl) {
    prompt when the creator already has the .json file or reply from ChatGPT. */
 async function manualBridge(task, payload, options) {
   const o = options || {};
+  const triggerEl = document.activeElement;
   let prompt = '';
   let briefId = null;
   if (!o.replyOnly) {
@@ -258,8 +259,8 @@ async function manualBridge(task, payload, options) {
     prompt = built.prompt;
     briefId = built.brief_id || null;
   }
-  const $modal = document.getElementById('modal');
   return new Promise((resolve) => {
+    const close = (value) => { closeModal(); resolve(value); };
     const step1Html = o.replyOnly ? '' : `
       <label class="field" for="mb-prompt">${esc(o.step1 || t('mb_step1'))}</label>
       <textarea id="mb-prompt" class="mono" rows="5" readonly></textarea>
@@ -268,7 +269,7 @@ async function manualBridge(task, payload, options) {
         ${task === 'video_ingest' ? `<button type="button" class="btn" data-open-url="https://gemini.google.com/" id="mb-open-gemini">${esc(t('mb_open_gemini'))}</button>` : ''}
         <button type="button" class="btn" data-open-url="https://chatgpt.com/" id="mb-open">${esc(t('mb_open'))}</button>
         <span class="meta">${esc(tf('mb_size', { n: prompt.length.toLocaleString() }))}</span></div>`;
-    $modal.innerHTML = `<div class="sheet" role="dialog" aria-modal="true">
+    openModal(`<div class="sheet" role="dialog" aria-modal="true">
       <h2>${esc(o.title || t('mb_title'))}</h2>
       <p class="hint">${esc(o.intro || t(task === 'trends' ? 'mb_intro_trends' : 'mb_intro'))}</p>${step1Html}
       <label class="field" for="mb-reply">${esc(t(o.replyOnly ? 'mb_reply_only_label' : 'mb_step2'))}</label>
@@ -283,8 +284,7 @@ async function manualBridge(task, payload, options) {
         <button type="button" class="btn primary big" id="mb-done">${esc(t('mb_done'))}</button>
         ${o.skip ? `<button type="button" class="btn" id="mb-skip">${esc(o.skip)}</button>` : ''}
         <button type="button" class="btn" id="mb-cancel">${esc(t('mb_cancel'))}</button></div>
-    </div>`;
-    $modal.hidden = false;
+    </div>`, () => close(undefined), triggerEl);
     const $sheet = $modal.querySelector('.sheet');
     const $reply = document.getElementById('mb-reply');
     const $file = document.getElementById('mb-file');
@@ -312,12 +312,14 @@ async function manualBridge(task, payload, options) {
     if (!o.replyOnly) {
       const $prompt = document.getElementById('mb-prompt');
       $prompt.value = prompt;
-      document.getElementById('mb-copy').onclick = async () => {
+      const $copy = document.getElementById('mb-copy');
+      $copy.onclick = async () => {
         toast(t((await copyText(prompt, $prompt)) ? 'mb_copied' : 'mb_copy_failed'));
       };
       $modal.querySelectorAll('[data-open-url]').forEach((b) => {
         b.onclick = () => openOutside(b.dataset.openUrl);
       });
+      $copy.focus();
     } else {
       $reply.focus();
     }
@@ -335,7 +337,6 @@ async function manualBridge(task, payload, options) {
       if (e.dataTransfer && e.dataTransfer.files && e.dataTransfer.files[0]) loadReplyFile(e.dataTransfer.files[0]);
     });
     $reply.oninput = () => { setErr(''); $done.disabled = false; };
-    const close = (value) => { $modal.hidden = true; $modal.innerHTML = ''; resolve(value); };
     document.getElementById('mb-cancel').onclick = () => close(undefined);
     if (o.skip) document.getElementById('mb-skip').onclick = () => close({ skipped: true });
     $done.onclick = async (e) => {
@@ -1068,6 +1069,48 @@ async function renderTrends(data) {
     }
   };
 }
+
+/* Script editor keyboard shortcuts (#/s/<id> and #/script/<id>):
+   - Alt+ArrowUp / Alt+ArrowDown inside a line field jumps focus to the same field on the previous/next line card.
+   - Cmd+Enter / Ctrl+Enter inside a spoken script textarea inserts a new line below and focuses it. */
+$view.addEventListener('keydown', (e) => {
+  if (e.isComposing || e.keyCode === 229 || !cur || !cur.script) return;
+  const fieldEl = e.target && e.target.closest ? e.target.closest('#lines [data-f]') : null;
+  if (!fieldEl) return;
+  const card = fieldEl.closest('.line');
+  if (!card) return;
+  const idx = Number(card.dataset.i);
+  const fieldName = fieldEl.dataset.f;
+  if (e.altKey && !e.ctrlKey && !e.metaKey && !e.shiftKey && (e.key === 'ArrowUp' || e.key === 'ArrowDown')) {
+    e.preventDefault();
+    const nextIdx = e.key === 'ArrowUp' ? idx - 1 : idx + 1;
+    if (nextIdx < 0 || nextIdx >= cur.script.lines.length) return;
+    const target = document.querySelector(`#lines .line[data-i="${nextIdx}"] [data-f="${fieldName}"]`);
+    if (target) {
+      target.focus();
+      try {
+        const end = target.value.length;
+        target.setSelectionRange(end, end);
+      } catch (err) { /* non-text selection unsupported */ }
+    }
+  } else if ((e.metaKey || e.ctrlKey) && !e.altKey && !e.shiftKey && e.key === 'Enter' && fieldName === 'spoken_script_zh') {
+    e.preventDefault();
+    const insertAt = idx + 1;
+    cur.script.lines.splice(insertAt, 0, {
+      audio_mode: 'VOICEOVER',
+      spoken_script_zh: '',
+      visual_broll_en_zh: '',
+      onscreen_flower_text_zh: '',
+      english_partner_translation: '',
+    });
+    cur.findings = [];
+    cur.leftOut = 0;
+    paintScript();
+    scheduleSave();
+    const created = document.querySelector(`#lines .line[data-i="${insertAt}"] [data-f="spoken_script_zh"]`);
+    if (created) created.focus();
+  }
+});
 
 window.addEventListener('hashchange', router);
 window.addEventListener('beforeunload', () => { if (dirty) saveNow({ keepalive: true }); });

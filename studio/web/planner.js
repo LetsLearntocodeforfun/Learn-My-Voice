@@ -11,9 +11,9 @@
    questions it answers in it. In copy-and-paste mode the same prompt is shown through /api/manual/prompt and
    nothing is sent; pasting the reply into /api/manual/reply creates the script and links it back to the plan.
 
-   Built to be used with the keyboard: a plan in the calendar is a button, a day is a button, and a plan's
-   day is also an ordinary date field on its card and inside its edit form. No test presses a key, so that
-   everything can be done that way is not shown.
+   Built to be used with the keyboard: a plan in the calendar is a button, a day is a button, 1/2/3 switch
+   between List, Week and Month views, arrow keys move across calendar day buttons, and tests/test_keyboard.py
+   exercises these flows with real hardware key events in headless Chrome.
 
    plFileToBase64 and the words pl_import_btn, pl_import_done, pl_stat_save, pl_add_btn and pl_added_toast are
    also used by rednote.js, pages.js and discover.js. */
@@ -453,8 +453,8 @@ function plPaint(focus) {
   const today = plIsDay(data.today) ? data.today : new Date().toISOString().slice(0, 10);
   const lim = data.limits || {};
   const stat = (key, value) => `<div><div class="meta">${esc(t(key))}</div><strong>${value}</strong></div>`;
-  const views = ['list', 'week', 'month'].map((v) =>
-    `<button type="button" class="${plUi.view === v ? 'on' : ''}" data-pl-view="${v}" aria-pressed="${plUi.view === v ? 'true' : 'false'}">${esc(t('pl_view_' + v))}</button>`).join('');
+  const views = ['list', 'week', 'month'].map((v, idx) =>
+    `<button type="button" class="${plUi.view === v ? 'on' : ''}" data-pl-view="${v}" aria-keyshortcuts="${idx + 1}" aria-pressed="${plUi.view === v ? 'true' : 'false'}">${esc(t('pl_view_' + v))}</button>`).join('');
   const canDraft = appState.settings.configured && !appState.settings.manual && plans.some((p) => !p.script_id);
   $view.innerHTML = `<div class="wrap" id="pl-root">
     <h1>${esc(t('pl_title'))}</h1><p class="sub">${esc(t('pl_sub'))}</p>
@@ -755,3 +755,39 @@ async function renderPlan() {
   plUi.ticked = {};
   plPaint();
 }
+
+document.addEventListener('keydown', (e) => {
+  if (location.hash !== '#/plan' || !document.getElementById('pl-root')) return;
+  if (e.ctrlKey || e.metaKey || e.altKey || e.isComposing || e.keyCode === 229) return;
+  for (const overlayId of ['palette', 'ask', 'modal', 'prompter']) {
+    const ov = document.getElementById(overlayId);
+    if (ov && !ov.hidden) return;
+  }
+  const tag = e.target && e.target.tagName ? e.target.tagName.toUpperCase() : '';
+  if (tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT' || (e.target && e.target.isContentEditable)) return;
+
+  const viewMap = { '1': 'list', '2': 'week', '3': 'month' };
+  if (Object.prototype.hasOwnProperty.call(viewMap, e.key)) {
+    const nextView = viewMap[e.key];
+    e.preventDefault();
+    plUi.view = nextView;
+    plUi.editing = null;
+    plUi.editDraft = null;
+    plPaint(`[data-pl-view="${nextView}"]`);
+    return;
+  }
+
+  const dayBtn = e.target && e.target.closest ? e.target.closest('#pl-cal [data-pl-daybtn]') : null;
+  if (dayBtn && ['ArrowLeft', 'ArrowRight', 'ArrowUp', 'ArrowDown'].includes(e.key)) {
+    const cells = Array.from(document.querySelectorAll('#pl-cal [data-pl-daybtn]'));
+    const idx = cells.indexOf(dayBtn);
+    if (idx < 0) return;
+    if (e.key === 'ArrowDown' && plUi.view === 'week') {
+      const chip = dayBtn.parentElement && dayBtn.parentElement.querySelector('[data-pl-chip]');
+      if (chip) { e.preventDefault(); chip.focus(); return; }
+    }
+    const delta = e.key === 'ArrowLeft' ? -1 : (e.key === 'ArrowRight' ? 1 : (e.key === 'ArrowUp' ? -7 : 7));
+    const nextCell = cells[idx + delta];
+    if (nextCell) { e.preventDefault(); nextCell.focus(); }
+  }
+});
