@@ -79,7 +79,7 @@ import zlib
 from pathlib import Path
 from typing import Any, Callable, Dict, Iterator, List, Optional, Tuple
 
-from . import autopilot, autosuggest, autovoice, buildinfo, creator, llm, pipeline, planner, posted, trends, wordlist
+from . import autopilot, autosuggest, autovoice, buildinfo, creator, llm, pipeline, planner, posted, revisions, trends, wordlist
 from . import setup as setup_status
 from . import store as store_module
 from .store import Store, loads_stored
@@ -89,7 +89,7 @@ FORMAT = 1                              # how a backup file is laid out; a file 
 # The version of the data: of the tables in studio.db and of the files beside it. Raise it by one whenever a
 # table or a column is added or what a stored value means changes (tests/test_backup.py holds the layout this
 # number stands for, and fails when the layout moves without it). A backup that names a later one is refused.
-DATA_VERSION = 4
+DATA_VERSION = 5
 EXTENSION = "lmvbackup"
 EPOCH_HEADER = "X-Data-Epoch"           # with every answer: which data this is; with a change: which data the page means
 FIRST_EPOCH = "0"                       # the name of the data in a folder nothing was ever restored into
@@ -628,6 +628,20 @@ def _check_scripts(store: Store) -> None:
                         raise _bad_database("script_lines")
             if not isinstance(post, dict) or not isinstance(keywords, list) or not all(isinstance(k, str) for k in keywords):
                 raise _bad_database("script_fields")
+        for row in db.execute("SELECT lines_json, post_json, keywords_json FROM script_revisions"):
+            try:
+                rev_lines = loads_stored(row["lines_json"])
+                rev_post = loads_stored(row["post_json"])
+                rev_keywords = loads_stored(row["keywords_json"] or "[]")
+            except (ValueError, RecursionError):
+                raise _bad_database("revision_not_json")
+            if not isinstance(rev_lines, list) or not all(isinstance(line, dict) for line in rev_lines):
+                raise _bad_database("revision_lines")
+            for line in rev_lines:
+                if not all(isinstance(line.get(field, ""), str) for field in store_module.LINE_FIELDS):
+                    raise _bad_database("revision_lines")
+            if not isinstance(rev_post, dict) or not isinstance(rev_keywords, list) or not all(isinstance(k, str) for k in rev_keywords):
+                raise _bad_database("revision_fields")
 
 
 def _try_out(store: Store) -> None:
@@ -652,6 +666,7 @@ def _try_out(store: Store) -> None:
             trends.sightings(store),
             autovoice.voice_payload(store),
             autosuggest.for_plans(store, planner.plans(store)), autosuggest.ideas_state(store),
+            [revisions.list_revisions(store, s["id"]) for s in store.list_scripts()],
         ]
         json.dumps(answers, ensure_ascii=False)
     except Exception as exc:  # noqa: BLE001 - whatever a reader trips over, the file is not used

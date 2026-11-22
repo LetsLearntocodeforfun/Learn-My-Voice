@@ -526,6 +526,8 @@ def apply_suggest(store: Store, result: Any, script_id: Any, kind: Any, line_ind
     answer: Dict[str, Any] = {"kind": kind, "line_index": index, "suggestions": suggestions,
                               "voice_match_now": _match_score(now), "left_out": left_out}
     if kind == CRITIC:
+        from . import revisions
+        revisions.snapshot_script(store, script["id"], kind="before_critic")
         suggestions.sort(key=lambda item: item["line_index"])
         answer["looked_in"] = _with_reasons(store, script, suggestions, [reasons[item["line_index"]] for item in suggestions],
                                             reference, now)

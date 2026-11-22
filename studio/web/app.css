@@ -562,6 +562,39 @@ table.bk-table td, table.bk-table th { text-align: left; overflow-wrap: anywhere
 .pl-pick { display: flex; gap: 10px; align-items: flex-start; padding: 7px 0; cursor: pointer; }
 .pl-pick input { flex: none; margin-top: 5px; }
 
+/* ---- home search/filter, bilingual partner mode & script revisions (revisions.js) ---- */
+.home-bar { display: flex; flex-direction: column; gap: 10px; margin: 14px 0 12px; }
+.script-card { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
+.script-card-main { flex: 1; min-width: 0; color: inherit; text-decoration: none; display: block; }
+.script-card-main:hover { text-decoration: none; }
+.script-card-side { flex: none; display: flex; align-items: center; }
+.bi-badge { margin: 0 0 10px; }
+.bi-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 14px; align-items: start; }
+.bi-col { display: flex; flex-direction: column; gap: 8px; min-width: 0; }
+.bi-label { font-size: 12.5px; }
+textarea.en-gloss { width: 100%; font-size: 15px; line-height: 1.5; resize: vertical; }
+#rv-box { margin: 0 0 12px; }
+.rv-panel { display: flex; flex-direction: column; gap: 10px; }
+.rv-save-row { gap: 8px; }
+.rv-save-row input[type=text] { flex: 1; min-width: 180px; }
+.rv-list { display: flex; flex-direction: column; gap: 6px; max-height: 240px; overflow-y: auto; }
+.rv-item { width: 100%; text-align: left; border: 1px solid var(--line); border-radius: 10px; padding: 8px 12px;
+  background: var(--bg); color: var(--ink); font: inherit; cursor: pointer; }
+.rv-item:hover { background: var(--fill); }
+.rv-item.on { border-color: var(--accent); box-shadow: 0 0 0 1px var(--accent); }
+.rv-diff { padding-top: 10px; border-top: 1px solid var(--line); display: flex; flex-direction: column; gap: 8px; }
+.rv-meta-tags { display: flex; flex-wrap: wrap; gap: 6px; }
+.rv-diff-row { padding: 8px 10px; border-radius: 10px; background: var(--fill-2); display: flex; flex-direction: column; gap: 6px; }
+.rv-breaths { display: flex; flex-wrap: wrap; gap: 6px; }
+.rv-breath { display: inline-block; padding: 2px 8px; border-radius: 7px; font-size: 14px; line-height: 1.45; }
+.rv-breath.eq { background: var(--fill-2); color: var(--ink); }
+.rv-breath.add { background: var(--ok-soft); color: var(--ok); }
+.rv-breath.del { background: var(--bad-soft); color: var(--bad); text-decoration: line-through; }
+@media (max-width: 720px) {
+  .bi-grid { grid-template-columns: 1fr; }
+  .script-card { flex-direction: column; align-items: stretch; }
+}
+
 /* ---- references beside the script editor (refs.js): the creator's own material, pinned or found by plain rules ----
    Every colour in this block is one of the variables at the top of this sheet, so that a change of those (another
    look, a dark mode) reaches the panel without a change here. */

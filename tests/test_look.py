@@ -45,7 +45,7 @@ class KeptValueTest(unittest.TestCase):
         for name, words in store.PAGE_WORDS.items():
             for word in words:
                 self.assertEqual(store.kept_value(name, word), word, name)
-        self.assertEqual(sorted(store.PAGE_WORDS), ["accent", "lang", "rf-open", "theme"])
+        self.assertEqual(sorted(store.PAGE_WORDS), ["accent", "bilingual", "lang", "rf-open", "theme"])
         self.assertEqual(store.PAGE_WORDS["lang"], ("zh", "en"))
         self.assertEqual(store.PAGE_WORDS["theme"], ("auto", "light", "dark"))
 

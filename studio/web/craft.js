@@ -293,6 +293,7 @@ function craftUse(n) {
   line.english_partner_translation = item.english || '';
   if (tool.kind === 'critic') item.used = { before };
   else { tool.result = null; tool.applied = { line: item.line_index, text: item.text, before }; }
+  cur.beforeCritic = true;
   cur.findings = cur.findings.filter((f) => f.line_no !== item.line_index + 1);   // the old line's; fresh ones come after the save
   paintScript();
   scheduleSave();

@@ -58,7 +58,7 @@ OWN = [
 MARKUP = "<img src=x onerror=alert(1)>"
 ASSUMES = re.compile(r"\b(she|her|hers|herself|husband|wife|couple)\b", re.I)
 # The layout of the database this version of the data stands for (backup.layout_fingerprint()).
-LAYOUT_OF_DATA_VERSION = {1: "dc489db00a5395ce", 2: "b0612eef1d02873d", 3: "d5c2a68c0ed818d4", 4: "f50b877672cb8876"}
+LAYOUT_OF_DATA_VERSION = {1: "dc489db00a5395ce", 2: "b0612eef1d02873d", 3: "d5c2a68c0ed818d4", 4: "f50b877672cb8876", 5: "57906e2c4804de35"}
 
 # The tables as the code at 3fdd3a6 creates them: the commit this feature was built on.
 SCHEMA_AT_3FDD3A6 = """
@@ -462,7 +462,7 @@ class ContentsTest(Case):
         self.assertEqual(rows(inside), rows(self.store.db_path))
         self.assertEqual(sorted(rows(inside)), ["ai_suggestions", "autopilot_runs", "briefs", "idea_sets", "lessons",
                                                 "metric_snapshots", "plan_suggestions", "sample_beats", "sample_comments",
-                                                "sample_sentiments", "samples", "script_pins", "scripts",
+                                                "sample_sentiments", "samples", "script_pins", "script_revisions", "scripts",
                                                 "sponsor_briefs", "trend_observations", "trends", "video_plans",
                                                 "watched_files"])
         for table, found in rows(inside).items():
@@ -655,12 +655,13 @@ class RoundTripTest(Case):
         layout = backup.reference_layout()
         self.assertEqual(sorted(layout["tables"]), ["ai_suggestions", "autopilot_runs", "briefs", "idea_sets", "lessons",
                                                     "metric_snapshots", "plan_suggestions", "sample_beats", "sample_comments",
-                                                    "sample_sentiments", "samples", "script_pins", "scripts",
+                                                    "sample_sentiments", "samples", "script_pins", "script_revisions", "scripts",
                                                     "sponsor_briefs", "trend_observations", "trends", "video_plans",
                                                     "watched_files"])
         self.assertEqual(sorted(layout["indexes"]), ["ai_suggestions_by_script", "metric_snapshots_by_sample",
                                                      "sample_beats_by_sample", "sample_comments_by_sample",
-                                                     "samples_by_script", "trend_observations_by_key"])
+                                                     "samples_by_script", "script_revisions_by_script",
+                                                     "trend_observations_by_key"])
         columns = {name: [column for column, _kind, _written in found if column] for name, found in layout["tables"].items()}
         self.assertEqual(columns["scripts"][:3], ["id", "title", "mode"])
         self.assertEqual(columns["ai_suggestions"], ["script_id", "text", "created_at"])

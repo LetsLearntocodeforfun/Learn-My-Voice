@@ -85,6 +85,7 @@ PAGE_WORDS = {
     "lang": ("zh", "en"),
     "theme": ("auto", "light", "dark"),
     "accent": ("blue", "purple", "pink", "orange", "green", "graphite"),
+    "bilingual": ("0", "1"),    # side-by-side Chinese + English partner mode in the script editor
     "rf-open": ("0", "1"),      # the references beside the script editor (studio/web/refs.js): closed or open when last chosen
 }
 PAGE_NUMBERS = ("tp-pace", "tp-size", "tp-mirror")
@@ -441,6 +442,20 @@ CREATE TABLE IF NOT EXISTS idea_sets (
     created_at REAL NOT NULL,
     decided_at REAL
 );
+CREATE TABLE IF NOT EXISTS script_revisions (
+    id INTEGER PRIMARY KEY,
+    script_id TEXT NOT NULL DEFAULT '',
+    kind TEXT NOT NULL DEFAULT '',
+    label TEXT NOT NULL DEFAULT '',
+    title TEXT NOT NULL DEFAULT '',
+    lines_json TEXT NOT NULL DEFAULT '[]',
+    post_json TEXT NOT NULL DEFAULT '{}',
+    keywords_json TEXT NOT NULL DEFAULT '[]',
+    target_sec INTEGER NOT NULL DEFAULT 60,
+    video_format TEXT NOT NULL DEFAULT '',
+    created_at TEXT NOT NULL DEFAULT ''
+);
+CREATE INDEX IF NOT EXISTS script_revisions_by_script ON script_revisions (script_id);
 """
 
 # Columns added after a table first shipped: (table, column, definition). A database created by an
@@ -1704,20 +1719,29 @@ class Store:
     def list_scripts(self) -> List[Dict[str, Any]]:
         with self._db() as db:
             rows = db.execute(
-                "SELECT id, title, target_sec, status, updated_at, line_count, preview,"
-                " CASE WHEN line_count IS NULL OR preview IS NULL THEN lines_json END AS legacy_lines_json"
+                "SELECT id, title, mode, keywords_json, lines_json, target_sec, status, updated_at, line_count, preview"
                 " FROM scripts ORDER BY updated_at DESC"
             ).fetchall()
         out = []
         for row in rows:
+            parsed_lines = loads_stored(row["lines_json"] or "[]")
+            lines_list = [l for l in parsed_lines if isinstance(l, dict)] if isinstance(parsed_lines, list) else []
             if row["line_count"] is not None and row["preview"] is not None:
                 line_count, preview = int(row["line_count"]), str(row["preview"])
             else:
-                line_count, preview = _script_summary(loads_stored(row["legacy_lines_json"] or "[]"))
+                line_count, preview = _script_summary(lines_list)
+            spoken_text = " ".join(
+                str(l.get("spoken_script_zh") or "").strip()
+                for l in lines_list
+                if str(l.get("spoken_script_zh") or "").strip()
+            )[:2000]
+            parsed_kw = loads_stored(row["keywords_json"] or "[]")
+            keywords = [k for k in parsed_kw if isinstance(k, str)] if isinstance(parsed_kw, list) else []
             out.append({
-                "id": row["id"], "title": row["title"], "target_sec": row["target_sec"],
-                "status": row["status"], "updated_at": row["updated_at"],
-                "line_count": line_count, "preview": preview,
+                "id": row["id"], "title": row["title"], "mode": row["mode"],
+                "target_sec": row["target_sec"], "status": row["status"],
+                "updated_at": row["updated_at"], "line_count": line_count,
+                "preview": preview, "keywords": keywords, "spoken_text": spoken_text,
             })
         return out
 
@@ -1792,7 +1816,11 @@ class Store:
                  post_json, lines_json if from_ai else None,
                  _dumps(normalize_keywords(keywords)), basis_json, now, now),
             )
-        return self.get_script(script_id)  # type: ignore[return-value]
+        created = self.get_script(script_id)
+        if from_ai and created is not None:
+            from . import revisions
+            revisions.snapshot_script(self, script_id, kind="ai_draft")
+        return created  # type: ignore[return-value]
 
     def update_script(self, script_id: str, changes: Dict[str, Any], by_ai: bool = False,
                       base_updated_at: Any = None) -> Optional[Dict[str, Any]]:
@@ -1910,6 +1938,7 @@ class Store:
         it was drafted from stays too, until the creator deletes it; it stops pointing here, and the ticks set
         on this script's list go with the script."""
         with self._db() as db:
+            db.execute("DELETE FROM script_revisions WHERE script_id = ?", (script_id,))
             db.execute("DELETE FROM ai_suggestions WHERE script_id = ?", (script_id,))
             db.execute("DELETE FROM script_pins WHERE script_id = ?", (script_id,))      # its pins are about this script only
             db.execute("UPDATE sponsor_briefs SET script_id = NULL, ticks_json = '{}' WHERE script_id = ?", (script_id,))

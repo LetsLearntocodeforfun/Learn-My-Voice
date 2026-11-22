@@ -20,7 +20,7 @@ const THEMES = ['auto', 'light', 'dark'];
 const ACCENTS = ['blue', 'purple', 'pink', 'orange', 'green', 'graphite'];
 /* Each name with the words it may be; null for a whole number (the teleprompter's, which it checks itself).
    Must match PAGE_WORDS and PAGE_NUMBERS in studio/store.py: the core refuses anything else. */
-const KEPT = { lang: ['zh', 'en'], theme: THEMES, accent: ACCENTS, 'rf-open': ['0', '1'], 'tp-pace': null, 'tp-size': null, 'tp-mirror': null };
+const KEPT = { lang: ['zh', 'en'], theme: THEMES, accent: ACCENTS, bilingual: ['0', '1'], 'rf-open': ['0', '1'], 'tp-pace': null, 'tp-size': null, 'tp-mirror': null };
 const KEPT_NAMES = Object.keys(KEPT);
 const keepable = (name, value) => (KEPT[name] ? KEPT[name].includes(value) : /^-?[0-9]{1,4}$/.test(value));
 const keptByCore = {};          // what the core is known to hold
@@ -491,12 +491,17 @@ async function router() {
 /* ---------- home ---------- */
 async function renderHome() {
   const { scripts } = await api('GET', '/api/scripts');
-  const cards = scripts.map((s) => `
-    <a class="card" href="#/s/${esc(s.id)}">
-      <h3>${esc(s.title)}</h3>
-      <div>${esc(s.preview)}</div>
-      <div class="meta">${esc(fmtDate(s.updated_at))} · ${s.line_count} ${esc(t('lines_n'))} · ${s.target_sec}${esc(t('sec'))}${poCardTag(s)}</div>
-    </a>`).join('');
+  const cardHtml = (s) => `
+    <div class="card script-card" data-script-card="${esc(s.id)}">
+      <a class="script-card-main" href="#/s/${esc(s.id)}">
+        <h3>${esc(s.title)}</h3>
+        <div>${esc(s.preview)}</div>
+        <div class="meta">${esc(fmtDate(s.updated_at))} · ${s.line_count} ${esc(t('lines_n'))} · ${s.target_sec}${esc(t('sec'))}${s.mode === 'SPONSORED' ? ` · <span class="tag">${esc(t('hm_filter_sponsored'))}</span>` : ''}${poCardTag(s)}</div>
+      </a>
+      <div class="script-card-side">
+        <button type="button" class="btn ghost" data-dup-script="${esc(s.id)}">${esc(t('dup_btn'))}</button>
+      </div>
+    </div>`;
   const next = appState.setup_next;
   const setupBanner = next && next !== 'done'
     ? `<div class="banner">${esc(t('st_home_next'))}${esc(t('st_step_' + next))} <a href="#/start">${esc(t('st_home_go'))}</a></div>` : '';
@@ -505,7 +510,8 @@ async function renderHome() {
   $view.innerHTML = `<div class="wrap">
     <div class="row"><div><h1>${esc(t('home_title'))}</h1><p class="sub">${esc(t('home_sub'))}</p></div>
       <div class="spacer"></div><a class="btn primary big" href="#/new">${esc(t('new_script'))}</a></div>
-    ${banner}<div id="dv-box"></div>${cards || `<div class="empty">${esc(t('empty'))}</div>`}</div>`;
+    ${banner}<div id="dv-box"></div>${rvHomeListHtml(scripts)}</div>`;
+  rvAttachHome(cardHtml);
   /* One line, typed or spoken, to topic ideas (discover.js). Offered here once an AI is connected. */
   if (appState.settings.configured) dvPaintBox(document.getElementById('dv-box'), true);
 }
@@ -569,6 +575,7 @@ function renderNew() {
 /* ---------- script workspace ---------- */
 let cur = null;          // { script, findings, leftOut, stats, coverage, voice, wordlist }
 let saveTimer = null;
+let saveInFlight = null;
 let dirty = false;
 let lintSeq = 0;
 
@@ -581,17 +588,27 @@ function scheduleSave() {
 
 async function flushSave() {
   clearTimeout(saveTimer);
+  if (saveInFlight) await saveInFlight;
   if (dirty) await saveNow();
 }
 
 const lintBody = (s) => ({ lines: s.lines, target_sec: s.target_sec, keywords: s.keywords || [], post: s.post });
 
-async function saveNow(opts) {
+function saveNow(opts) {
+  const run = saveNowInner(opts);
+  const tracked = run.finally(() => { if (saveInFlight === tracked) saveInFlight = null; });
+  saveInFlight = tracked;
+  return tracked;
+}
+
+async function saveNowInner(opts) {
   if (!cur) return;
   dirty = false;
   const s = cur.script;
   const seq = ++lintSeq;
   const payload = { title: s.title, target_sec: s.target_sec, lines: s.lines, keywords: s.keywords || [] };
+  const hadBeforeCritic = !!cur.beforeCritic;
+  if (hadBeforeCritic) { payload.before_critic = true; cur.beforeCritic = false; }
   if (s.post && typeof s.post === 'object') payload.post = s.post;
   if (typeof s.updated_at === 'number') payload.base_updated_at = s.updated_at;
   try {
@@ -610,8 +627,10 @@ async function saveNow(opts) {
     poAfterSave(s);     // posted.js: a posted script that was edited says so
     rfAfterSave(s);     // refs.js: a new title or keyword changes which of the creator's material is on the same topic
     spAfterSave(s);     // sponsored.js: re-check required mentions, forbidden wording and tags on the saved script
+    if (typeof rvAfterSave === 'function') rvAfterSave(s);
     if (!dirty) setSaved('saved');
   } catch (e) {
+    if (hadBeforeCritic && cur) cur.beforeCritic = true;
     dirty = true;
     setSaved('save_failed');
     if (opts && opts.keepalive) return;
@@ -622,14 +641,55 @@ async function saveNow(opts) {
 
 function setSaved(key) { const el = document.getElementById('saved'); if (el) el.textContent = t(key); }
 
-function lineHtml(line, i) {
+function isBilingual() { return recall('bilingual') === '1'; }
+
+function toggleBilingual() {
+  remember('bilingual', isBilingual() ? '0' : '1');
+  keepWithCore();
+  if (cur) paintScript();
+}
+
+function lineClauses(text) {
+  return String(text || '').split('/').map((c) => c.trim()).filter(Boolean);
+}
+
+function missingEnglishGlossCount(lines) {
+  return (lines || []).filter((l) => l && l.audio_mode !== 'LIVE_CLIP'
+    && String(l.spoken_script_zh || '').trim()
+    && !String(l.english_partner_translation || '').trim()).length;
+}
+
+function lineHtml(line, i, all) {
+  const total = Array.isArray(all) ? all.length : (cur && cur.script ? cur.script.lines.length : 1);
+  const canSplit = lineClauses(line.spoken_script_zh).length >= 2;
+  const canMerge = i < total - 1;
+  const head = `<div class="line-head"><span class="no">${i + 1}</span><span class="meta" data-count></span><span class="spacer"></span>
+      <button type="button" class="btn ghost" data-act="split" ${canSplit ? '' : 'hidden'}>${esc(t('ln_split'))}</button>
+      ${canMerge ? `<button type="button" class="btn ghost" data-act="merge">${esc(t('ln_merge'))}</button>` : ''}
+      <button type="button" class="btn ghost" data-act="up" aria-label="up" ${i === 0 ? 'disabled' : ''}>↑</button>
+      <button type="button" class="btn ghost" data-act="down" aria-label="down" ${i === total - 1 ? 'disabled' : ''}>↓</button>
+      <button type="button" class="btn ghost" data-act="del" aria-label="${esc(t('delete'))}">✕</button></div>`;
+  if (isBilingual()) {
+    return `<div class="card line bilingual" data-i="${i}">
+      ${head}
+      <div class="bi-grid">
+        <div class="bi-col" data-bi-col="zh">
+          <div class="meta bi-label">${esc(t('bi_col_zh'))}</div>
+          <textarea class="spoken" rows="1" data-f="spoken_script_zh" placeholder="${esc(t('spoken_ph'))}">${esc(line.spoken_script_zh)}</textarea>
+          <input type="text" data-f="onscreen_flower_text_zh" placeholder="${esc(t('flower_ph'))}" value="${esc(line.onscreen_flower_text_zh)}">
+          <div class="issues" data-issues></div>
+        </div>
+        <div class="bi-col" data-bi-col="en">
+          <div class="meta bi-label">${esc(t('bi_col_en'))}</div>
+          <textarea class="en-gloss" rows="2" data-f="english_partner_translation" data-english-gloss placeholder="${esc(t('english_ph'))}">${esc(line.english_partner_translation)}</textarea>
+          <input type="text" data-f="visual_broll_en_zh" placeholder="${esc(t('shot_ph'))}" value="${esc(line.visual_broll_en_zh)}">
+        </div>
+      </div></div>`;
+  }
   const en = lang === 'en' ? `<div class="en"><input type="text" data-f="english_partner_translation"
       placeholder="${esc(t('english_ph'))}" value="${esc(line.english_partner_translation)}"></div>` : '';
   return `<div class="card line" data-i="${i}">
-    <div class="line-head"><span class="no">${i + 1}</span><span class="meta" data-count></span><span class="spacer"></span>
-      <button class="btn ghost" data-act="up" aria-label="up">↑</button>
-      <button class="btn ghost" data-act="down" aria-label="down">↓</button>
-      <button class="btn ghost" data-act="del" aria-label="${esc(t('delete'))}">✕</button></div>
+    ${head}
     <textarea class="spoken" rows="1" data-f="spoken_script_zh" placeholder="${esc(t('spoken_ph'))}">${esc(line.spoken_script_zh)}</textarea>
     <div class="issues" data-issues></div>
     <div class="extras">
@@ -638,13 +698,31 @@ function lineHtml(line, i) {
     </div>${en}</div>`;
 }
 
+function paintBilingualBadge() {
+  const el = document.getElementById('bi-badge');
+  if (!el || !cur || !cur.script) return;
+  if (!isBilingual()) { el.innerHTML = ''; return; }
+  const missing = missingEnglishGlossCount(cur.script.lines);
+  if (missing > 0) {
+    const label = missing === 1 ? t('bi_missing_one') : t('bi_missing').replace('{n}', String(missing));
+    el.innerHTML = `<span class="tag warn" data-bi-missing="${missing}">${esc(label)}</span>`;
+  } else {
+    el.innerHTML = `<span class="tag ok" data-bi-missing="0">${esc(t('bi_complete'))}</span>`;
+  }
+}
+
 function paintCounts() {
   const cpm = cur.stats && cur.stats.speaking_rate_cpm;
   $view.querySelectorAll('.line').forEach((el) => {
-    const units = spokenUnits(cur.script.lines[Number(el.dataset.i)].spoken_script_zh);
+    const line = cur.script.lines[Number(el.dataset.i)];
+    if (!line) return;
+    const units = spokenUnits(line.spoken_script_zh);
     const secs = cpm ? ` · ${t('about')}${Math.max(1, Math.round(units / cpm * 60))}${t('sec')}` : '';
     el.querySelector('[data-count]').textContent = units ? `${units}${lang === 'zh' ? '' : ' '}${t('chars')}${secs}` : '';
+    const splitBtn = el.querySelector('[data-act="split"]');
+    if (splitBtn) splitBtn.hidden = lineClauses(line.spoken_script_zh).length < 2;
   });
+  paintBilingualBadge();
 }
 
 function paintChecks() {
@@ -684,6 +762,10 @@ function paintScript() {
   $view.innerHTML = `<div class="wrap">
     <div class="row"><a href="#/" class="meta">${esc(t('back'))}</a><span class="spacer"></span>
       <span class="saved" id="saved">${esc(t('saved'))}</span>
+      <button type="button" class="btn ${isBilingual() ? 'primary' : ''}" id="bilingual-btn" data-bilingual-toggle aria-pressed="${isBilingual() ? 'true' : 'false'}">${esc(t('bi_btn'))}</button>
+      <button type="button" class="btn" id="rev-open-btn" data-rv-toggle>${esc(t('rv_btn'))}</button>
+      <button type="button" class="btn" id="rev-save-btn" data-rv-quick-save>${esc(t('rv_save_btn'))}</button>
+      <button type="button" class="btn" id="dup-script-btn" data-dup-current>${esc(t('dup_btn'))}</button>
       <button class="btn" id="prompter-btn">${esc(t('prompter'))}</button>
       <div class="menu"><button class="btn" id="export-btn">${esc(t('export'))} ▾</button>
         <div class="pop" id="export-pop" hidden>
@@ -704,7 +786,9 @@ function paintScript() {
     <div id="vm-box"></div>
     <div id="sp-box"></div>
     <div id="craft-bar"></div>
+    <div id="rv-box"></div>
     <div id="rf-box"></div>
+    <div id="bi-badge" class="bi-badge"></div>
     <div id="lines">${s.lines.map(lineHtml).join('')}</div>
     <button class="btn" id="add-line">${esc(t('add_line'))}</button>
     <div id="post-box"></div><div id="po-box"></div><div id="basis-box"></div><div id="edits-box"></div></div>`;
@@ -732,15 +816,49 @@ function paintScript() {
     paintCounts(); scheduleSave();
   };
   $lines.onclick = (e) => {
-    const act = e.target.dataset.act;
-    if (!act) return;
-    const i = Number(e.target.closest('.line').dataset.i);
-    if (act === 'del') { s.lines.splice(i, 1); if (!s.lines.length) s.lines.push({ audio_mode: 'VOICEOVER', spoken_script_zh: '' }); }
-    else {
+    const btn = e.target.closest('[data-act]');
+    if (!btn) return;
+    const act = btn.dataset.act;
+    const i = Number(btn.closest('.line').dataset.i);
+    const joinField = (a, b, sep) => {
+      const ta = String(a || '').trim();
+      const tb = String(b || '').trim();
+      return ta && tb ? `${ta}${sep}${tb}` : (ta || tb);
+    };
+    if (act === 'del') {
+      s.lines.splice(i, 1);
+      if (!s.lines.length) s.lines.push({ audio_mode: 'VOICEOVER', spoken_script_zh: '' });
+    } else if (act === 'split') {
+      const clauses = lineClauses(s.lines[i].spoken_script_zh);
+      if (clauses.length < 2) return;
+      const mid = Math.ceil(clauses.length / 2);
+      const orig = s.lines[i];
+      orig.spoken_script_zh = clauses.slice(0, mid).join(' / ');
+      s.lines.splice(i + 1, 0, {
+        audio_mode: orig.audio_mode || 'VOICEOVER',
+        beat_type: orig.beat_type || '',
+        time_range_sec: '',
+        spoken_script_zh: clauses.slice(mid).join(' / '),
+        delivery_cue: orig.delivery_cue || '',
+        english_partner_translation: '',
+        visual_broll_en_zh: '',
+        onscreen_flower_text_zh: '',
+      });
+    } else if (act === 'merge') {
+      if (i < 0 || i >= s.lines.length - 1) return;
+      const curLine = s.lines[i];
+      const nextLine = s.lines[i + 1];
+      curLine.spoken_script_zh = joinField(curLine.spoken_script_zh, nextLine.spoken_script_zh, ' / ');
+      curLine.english_partner_translation = joinField(curLine.english_partner_translation, nextLine.english_partner_translation, ' / ');
+      curLine.visual_broll_en_zh = joinField(curLine.visual_broll_en_zh, nextLine.visual_broll_en_zh, ' · ');
+      curLine.onscreen_flower_text_zh = joinField(curLine.onscreen_flower_text_zh, nextLine.onscreen_flower_text_zh, ' / ');
+      s.lines.splice(i + 1, 1);
+    } else {
       const j = act === 'up' ? i - 1 : i + 1;
       if (j < 0 || j >= s.lines.length) return;
       const tmp = s.lines[i]; s.lines[i] = s.lines[j]; s.lines[j] = tmp;
     }
+    s.lines.forEach((l, idx) => { l.line_no = idx + 1; });
     cur.findings = [];  // line numbers changed; fresh results arrive after save
     cur.leftOut = 0;
     paintScript(); scheduleSave();
@@ -762,8 +880,10 @@ function paintScript() {
       cur = null; location.hash = '#/';
     } catch (e) { showError(e); }
   };
+  document.getElementById('bilingual-btn').onclick = toggleBilingual;
   document.getElementById('prompter-btn').onclick = openPrompter;   // in prompter.js
   craftAttach();    // craft.js: the per-line writing tools and whichever of them is open
+  rvAttach();       // revisions.js: version checkpoints, breath-by-breath diffs, safe restore & duplicate
   rfAttach();       // refs.js: the creator's own material beside the lines, put back as it was before this redraw
   spAttach();       // sponsored.js: the brand-brief checklist beside a sponsored script
 }

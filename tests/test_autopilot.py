@@ -1966,10 +1966,10 @@ class DataVersionTest(RestoreCase):
                 mock.patch.object(store_module, "_ADDED_COLUMNS", self.ADDED_AT_309D9F4):
             self.assertEqual(backup.layout_fingerprint(), LAYOUT_OF_DATA_VERSION_3)
         self.assertNotIn("autopilot_runs", SCHEMA_AT_309D9F4)
-        self.assertEqual(backup.DATA_VERSION, 4)
+        self.assertEqual(backup.DATA_VERSION, 5)
         self.assertNotEqual(backup.layout_fingerprint(), LAYOUT_OF_DATA_VERSION_3)
         self.assertEqual(sorted(set(backup.reference_layout()["tables"]) - set(rows(self.version_3_folder().db_path))),
-                         ["autopilot_runs", "idea_sets", "plan_suggestions", "trend_observations", "watched_files"])
+                         ["autopilot_runs", "idea_sets", "plan_suggestions", "script_revisions", "trend_observations", "watched_files"])
 
     def version_3_folder(self):
         """A data folder as the app at data version 3 makes it, with something in it."""
@@ -2006,7 +2006,7 @@ class DataVersionTest(RestoreCase):
                           preview["file"]["holds"]["samples"], preview["now"]["scripts"]), (3, True, 1, 1, 1))
         self.assertTrue(self.backups.restore(preview["restore_id"])["restored"])
         now = rows(self.store.db_path)
-        for added_table in ("autopilot_runs", "idea_sets", "plan_suggestions", "trend_observations", "watched_files"):
+        for added_table in ("autopilot_runs", "idea_sets", "plan_suggestions", "script_revisions", "trend_observations", "watched_files"):
             self.assertEqual(now.pop(added_table), [])                       # the tables this version adds are there, empty
         self.assertEqual([r[:-1] for r in now["video_plans"]], was.pop("video_plans"))
         self.assertEqual([r[-1] for r in now.pop("video_plans")], [""])      # video_plans gained basis = ''
@@ -2018,9 +2018,9 @@ class DataVersionTest(RestoreCase):
         self.assertEqual(self.look(), [("trends.refresh", "done")])
         again = self.backup_of(self.store)
         with zipfile.ZipFile(str(again)) as archive:
-            self.assertEqual(json.loads(archive.read(backup.MANIFEST).decode("utf-8"))["data_version"], 4)
+            self.assertEqual(json.loads(archive.read(backup.MANIFEST).decode("utf-8"))["data_version"], 5)
         preview = self.staged(again)
-        self.assertEqual((preview["file"]["data_version"], preview["file"]["older"]), (4, False))
+        self.assertEqual((preview["file"]["data_version"], preview["file"]["older"]), (5, False))
         self.backups.restore(preview["restore_id"])
         self.assertEqual([(line["task"], line["status"]) for line in self.lines()], [("trends.refresh", "done")])
 

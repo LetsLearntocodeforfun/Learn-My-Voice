@@ -20,7 +20,7 @@ import traceback
 from pathlib import Path
 from typing import Any, BinaryIO, Callable, Dict, List, Optional
 
-from . import autopilot, autosuggest, checks, corpus, creator, exports, llm, outside, pipeline, planner, rednote_analytics, tone_analyzer, trends
+from . import autopilot, autosuggest, checks, corpus, creator, exports, llm, outside, pipeline, planner, rednote_analytics, revisions, tone_analyzer, trends
 from .store import EXTRA_METRIC_FIELDS, METRIC_FIELDS, StaleScript, Store, TextTooLong, _owner_only
 
 PROTOCOL_VERSIONS = ("2025-06-18", "2025-03-26", "2024-11-05")
@@ -213,6 +213,8 @@ def t_update_script(store: Store, args: Dict[str, Any]) -> Dict[str, Any]:
     except StaleScript:
         raise ToolError("The script was changed in the app a moment ago, so update_script did not replace it. "
                         "Nothing was changed. Call get_script to read it as it is now.")
+    if updated is not None:
+        revisions.snapshot_script(store, updated["id"], kind="ai_draft")
     return _checked(store, updated)  # type: ignore[arg-type]
 
 
@@ -228,6 +230,26 @@ def t_get_script(store: Store, args: Dict[str, Any]) -> Dict[str, Any]:
     script = _script(store, args)
     return {"script": script, "check": checks.lint_payload(store, script["lines"], script["target_sec"],
                                                            script.get("keywords"), script.get("post"))}
+
+
+def t_list_script_revisions(store: Store, args: Dict[str, Any]) -> Dict[str, Any]:
+    raw_sid = args.get("script_id")
+    sid = str(raw_sid).strip() if isinstance(raw_sid, (str, int)) and not isinstance(raw_sid, bool) else ""
+    script = store.get_script(sid)
+    if script is None:
+        raise ToolError("No script with id '%s' — call list_scripts to see saved scripts." % sid)
+    items = revisions.list_revisions(store, script["id"])
+    raw_rev = args.get("revision_id")
+    if raw_rev is None:
+        return {"script_id": script["id"], "title": script["title"], "revisions": items}
+    if isinstance(raw_rev, bool) or not isinstance(raw_rev, int) or raw_rev <= 0:
+        raise ToolError("revision_id must be a positive integer from list_script_revisions.")
+    try:
+        rev = revisions.get_revision(store, script["id"], raw_rev)
+        diff = revisions.diff_revision(store, script["id"], raw_rev)
+    except revisions.RevisionError as exc:
+        raise ToolError(exc.message)
+    return {"script_id": script["id"], "revision": rev, "diff": diff, "revisions": items}
 
 
 def t_get_voice_profile(store: Store, args: Dict[str, Any]) -> Dict[str, Any]:
@@ -722,6 +744,13 @@ TOOLS: Dict[str, Dict[str, Any]] = {t["public"]["name"]: t for t in [
           {}, [], read_only=True),
     _tool("get_script", t_get_script, "Use this to read one saved script in full, with its current checks.",
           {"script_id": _ID_PROP}, ["script_id"], read_only=True),
+    _tool("list_script_revisions", t_list_script_revisions,
+          "Use this to list saved checkpoints and automatic snapshots of one script, or pass revision_id to inspect "
+          "one revision's full snapshot and breath-by-breath diff against the live script. "
+          "Limits: strictly read-only; restoring revisions or duplicating scripts happens in the app.",
+          {"script_id": _ID_PROP,
+           "revision_id": {"type": "integer", "description": "Optional revision id from list_script_revisions."}},
+          ["script_id"], read_only=True),
     _tool("get_voice_profile", t_get_voice_profile,
           "Use this to read the creator's current voice profile (how the creator talks, what the creator never says) "
           "and the creator profile from setup. Says whether the voice profile is still the bundled example, and "
@@ -847,7 +876,7 @@ def call_tool(store: Store, name: str, arguments: Dict[str, Any]) -> Dict[str, A
         output = TOOLS[name]["fn"](store, arguments)
         text = output if isinstance(output, str) else json.dumps(output, ensure_ascii=False, indent=1)
         return {"content": [{"type": "text", "text": text}], "isError": False}
-    except (ToolError, llm.LLMError, pipeline.PromptError, planner.PlannerError, rednote_analytics.AnalyticsError) as exc:
+    except (ToolError, llm.LLMError, pipeline.PromptError, planner.PlannerError, rednote_analytics.AnalyticsError, revisions.RevisionError) as exc:
         return {"content": [{"type": "text", "text": "Error: %s" % exc}], "isError": True}
     except TextTooLong as exc:
         # The length limit on library text is enforced in Store for every route. No tool adds or edits library text
