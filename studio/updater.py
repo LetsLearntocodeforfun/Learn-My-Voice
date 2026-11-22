@@ -35,8 +35,10 @@ How data stays across versions:
   - ``migrate_from_previous_folder`` copies an earlier sibling folder's ``data/`` into the current folder ONLY
     when the current data folder is empty (no script, no library item, no creator profile, no custom voice profile,
     no tracked keyword, no plan, no sponsor brief, no remembered edit or topic ideas), and never while a background
-    job or another write runs. Incoming JSON files are checked as strict JSON, ``studio.db`` is rebuilt and checked
-    through ``studio.backup`` (plain tables only, integrity check, column types, script shapes, ``_try_out``), and
+    job or another write runs. The small files beside the database are read the way the app reads its own (a
+    ``NaN`` from before 0.2.0 comes out as ``null``; one the app cannot read is carried as it is, as a backup
+    carries it), ``studio.db`` is rebuilt and checked through ``studio.backup`` (plain tables only, integrity
+    check, column types, script shapes, ``_try_out``), and
     ``Backups``'s data epoch advances so any page opened before migration is refused if it tries to save over what
     arrived. When the current folder already holds work, migration is refused and points to Backup and restore in
     Settings.
@@ -1545,21 +1547,40 @@ def _settings_to_carry(theirs: Optional[Dict[str, Any]], ours: Dict[str, Any]) -
     return out, told
 
 
-def _read_checked_json_dict(path: Path, label: str) -> Dict[str, Any]:
+def _small_file_to_carry(path: Path, label: str) -> bytes:
+    """What a copy puts in place for one of the other folder's small files: a profile, the ideas, an earlier profile.
+
+    Refused: a link or anything else that is no file of its own, and a file larger than a small file of this
+    app may be (``backup.MAX_SMALL_FILE_BYTES``).
+
+    Apart from that the file is read the way the app reads its own (``store.loads_stored``) and written out
+    afresh. A number no JSON has (``NaN``, which a version before 0.2.0 could store from a model's reply)
+    comes out as ``null``, as it does wherever the app reads it. A file the app cannot read at all is carried
+    as it is, the way a backup carries it: the app then goes on without it in the new folder as it did in the
+    old one and says so where it would show it, and nothing of the creator's is dropped on the way.
+    ``backup._try_out`` reads the whole copy as the pages will before any of it is put in place.
+    """
     if not backup._is_plain_file(path):
         raise _bad_source_data_error("%s is not a plain file" % label, "%s 不是普通文件" % label)
     try:
-        size = os.lstat(str(path)).st_size
-        if size > backup.MAX_SMALL_FILE_BYTES:
-            raise _bad_source_data_error("%s exceeds size limit" % label, "%s 超过大小上限" % label)
-        parsed = llm.loads_strict(path.read_bytes().decode("utf-8"))
-    except UpdateError:
-        raise
-    except (OSError, UnicodeDecodeError, ValueError, RecursionError):
-        raise _bad_source_data_error("%s is not readable JSON" % label, "%s 不是有效的 JSON" % label)
-    if not isinstance(parsed, dict):
-        raise _bad_source_data_error("%s is not a JSON object" % label, "%s 格式无效" % label)
-    return parsed
+        with open(str(path), "rb") as handle:
+            raw = handle.read(backup.MAX_SMALL_FILE_BYTES + 1)
+    except OSError as exc:
+        raise _bad_source_data_error("%s cannot be read: %s" % (label, str(exc)[:80]),
+                                     "%s 读不出来：%s" % (label, str(exc)[:80]))
+    if len(raw) > backup.MAX_SMALL_FILE_BYTES:
+        limit = backup.MAX_SMALL_FILE_BYTES // (1024 * 1024)
+        raise _bad_source_data_error("%s is larger than such a file of this app may be (%d MB)" % (label, limit),
+                                     "%s 超过了这类文件的大小上限（%d MB）" % (label, limit))
+    try:
+        return Store._encode(store_module.loads_stored(raw.decode("utf-8")))
+    except (ValueError, RecursionError):        # not text, not JSON, nested too deeply, or text that cannot be written out
+        return raw
+
+
+def _not_the_datas_fault(exc: BaseException) -> bool:
+    """Whether what stopped a copy is for the creator to put right, not a sign of bad data: a full disk, a database in use."""
+    return _why(exc)[2] in (507, 409)
 
 
 def _stage_folder_migration(src_data: Path, work: Path, target_existing_cfg: Dict[str, Any]
@@ -1597,8 +1618,7 @@ def _stage_folder_migration(src_data: Path, work: Path, target_existing_cfg: Dic
     for name in backup.PLAIN_FILES:
         src_f = src_data / name
         if os.path.lexists(str(src_f)):
-            parsed_obj = _read_checked_json_dict(src_f, name)
-            Store._write_bytes(new_dir / name, Store._encode(parsed_obj), mode=0o600)
+            Store._write_bytes(new_dir / name, _small_file_to_carry(src_f, name), mode=0o600)
             copied.append(name)
 
     # 3. Check and stage Voice DNA history.
@@ -1616,8 +1636,7 @@ def _stage_folder_migration(src_data: Path, work: Path, target_existing_cfg: Dic
             for hname in names:
                 hpath = src_hist / hname
                 if hname.endswith(".json"):
-                    parsed_hist = _read_checked_json_dict(hpath, hname)
-                    Store._write_bytes(dst_hist / hname, Store._encode(parsed_hist), mode=0o600)
+                    Store._write_bytes(dst_hist / hname, _small_file_to_carry(hpath, hname), mode=0o600)
                 else:
                     if os.lstat(str(hpath)).st_size <= backup.MAX_SMALL_FILE_BYTES:
                         Store._write_bytes(dst_hist / hname, hpath.read_bytes(), mode=0o600)
@@ -1651,6 +1670,10 @@ def _stage_folder_migration(src_data: Path, work: Path, target_existing_cfg: Dic
         except backup.Refused as exc:
             raise _bad_source_data_error(exc.message, exc.message_zh)
         except (OSError, sqlite3.Error, TimeoutError) as exc:
+            if _not_the_datas_fault(exc):
+                # The disk the copy is being made on is full, or the other folder's database is held by another
+                # program (the earlier copy of the app still running, say). Nothing is wrong with the data.
+                raise _move_failed_error(exc)
             raise _bad_source_data_error("database could not be read: %s" % str(exc)[:80],
                                          "数据库无法安全读取：%s" % str(exc)[:80])
         copied.append(backup.DATABASE)
@@ -1663,6 +1686,8 @@ def _stage_folder_migration(src_data: Path, work: Path, target_existing_cfg: Dic
     except backup.Refused as exc:
         raise _bad_source_data_error(exc.message, exc.message_zh)
     except (OSError, sqlite3.Error, ValueError) as exc:
+        if _not_the_datas_fault(exc):
+            raise _move_failed_error(exc)
         raise _bad_source_data_error("staged data failed verification: %s" % str(exc)[:80],
                                      "迁移后的数据未通过读取检查：%s" % str(exc)[:80])
 

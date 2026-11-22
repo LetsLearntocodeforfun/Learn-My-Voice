@@ -1506,6 +1506,104 @@ class SettingsFromOutsideTest(ServerCase):
         self.assertNotIn("autopilot", updater._settings_to_carry({"autopilot": {"on": True}}, {})[0])
 
 
+# ---------------------------------------------------------------------------------------------- 5d. an earlier version's own files, and a full disk
+class OlderFilesTest(ServerCase):
+    """A copy reads the earlier folder's files the way the app reads its own, and blames the data only for the data."""
+
+    def setUp(self):
+        super().setUp()
+        self.packaged("0.2.0")
+        self.folder = self.tmp / "learn-my-voice-0.1.1"
+        self.there = Store(self.folder / "data")
+        self.there.create_script(title="旧版脚本")
+
+    def copy(self):
+        return self.send("POST", "/api/update/migrate", {"source_path": str(self.folder)})
+
+    def test_a_number_no_json_has_from_before_0_2_0_does_not_stop_the_copy(self):
+        own = dict(EXAMPLE_DNA, persona_summary=dict(EXAMPLE_DNA["persona_summary"], one_line_essence_en="Mine"))
+        self.there.save_dna(own)
+        self.there.save_dna(dict(own, persona_summary=dict(own["persona_summary"], one_line_essence_en="Mine, later")))
+        self.there.save_creator({"name": "小林", "pronoun": "they"})
+        # As a version before 0.2.0 could leave them: a model's NaN stored as it came.
+        for path in [self.there.dna_path, self.there.creator_path] + sorted(self.there.dna_history_dir.glob("*.json")):
+            held = path.read_text(encoding="utf-8")
+            path.write_text(held[:held.rindex("}")] + ', "score": NaN, "more": -Infinity}', encoding="utf-8")
+        self.assertFalse(self.there.dna_unreadable())               # the app reads these files, there
+        status, answer = self.copy()
+        self.assertEqual(status, 200, answer)
+        for name in ("voice_dna.json", "creator.json", backup.HISTORY_FOLDER):
+            self.assertIn(name, answer["copied"])
+        profile, example = self.store.load_dna()
+        self.assertEqual((example, profile["persona_summary"]["one_line_essence_en"], profile["score"]), (False, "Mine, later", None))
+        self.assertEqual(self.store.load_creator()["name"], "小林")
+        for path in [self.store.dna_path, self.store.creator_path] + sorted(self.store.dna_history_dir.glob("*.json")):
+            written = path.read_text(encoding="utf-8")
+            self.assertNotIn("NaN", written, path.name)             # written out afresh: every page can read it
+            self.assertNotIn("Infinity", written, path.name)
+        self.assertEqual(len(backup._history_names(self.store.dna_history_dir)), 1)
+
+    def test_a_file_the_app_cannot_read_is_carried_as_it_is_and_stops_nothing(self):
+        odd = {"creator.json": b"[1, 2, 3]", "voice_dna.json": b"{cut short", "voice_pending.json": b"\xff\xfe not text",
+               "recommendations.json": b"[" * 50000}
+        for name, held in odd.items():
+            (self.there.data_dir / name).write_bytes(held)
+        self.assertTrue(self.there.dna_unreadable())
+        status, answer = self.copy()
+        self.assertEqual(status, 200, answer)
+        self.assertEqual(answer["scripts"], 1)
+        # What cannot be read is as it was; what can be read, though it is no profile, was written out afresh.
+        for name in ("voice_dna.json", "voice_pending.json", "recommendations.json"):
+            self.assertEqual((self.store.data_dir / name).read_bytes(), odd[name], name)
+        self.assertEqual(json.loads((self.store.data_dir / "creator.json").read_text(encoding="utf-8")), [1, 2, 3])
+        # The new folder is where the old one was: the profile is said to be unreadable, and the app goes on.
+        self.assertTrue(self.store.dna_unreadable())
+        self.assertIsNone(self.store.load_creator())
+        self.assertEqual(self.send("GET", "/api/state")[0], 200)
+
+    def test_a_link_and_a_file_too_large_are_still_refused_and_named(self):
+        (self.there.data_dir / "voice_dna.json").write_bytes(b"{" + b" " * 5000 + b"}")
+        with mock.patch.object(backup, "MAX_SMALL_FILE_BYTES", 4096):
+            status, answer = self.copy()
+        self.assertEqual((status, self.said(answer)), (400, "bad_source_data"))
+        self.assertIn("voice_dna.json is larger", answer["message"])
+        (self.there.data_dir / "voice_dna.json").unlink()
+        elsewhere = self.tmp / "elsewhere.json"
+        elsewhere.write_text("{}", encoding="utf-8")
+        os.symlink(str(elsewhere), str(self.there.data_dir / "creator.json"))
+        status, answer = self.copy()
+        self.assertEqual((status, self.said(answer)), (400, "bad_source_data"))
+        self.assertIn("creator.json is not a plain file", answer["message"])
+        self.assertTrue(updater.is_data_empty(self.store))
+
+    def test_a_full_disk_and_a_database_in_use_are_named_as_that_and_not_as_bad_data(self):
+        full = sqlite3.OperationalError("database or disk is full")
+        for where, error, status_wanted, said in (
+            ("_copy_database", full, 507, ("the disk is full", "磁盘已满")),
+            ("_rebuild", full, 507, ("the disk is full", "磁盘已满")),
+            ("_try_out", OSError(errno.ENOSPC, "No space left on device"), 507, ("the disk is full", "磁盘已满")),
+            ("_copy_database", sqlite3.OperationalError("database is locked"), 409, ("in use by another program", "占用")),
+            ("_copy_database", TimeoutError("the database stayed in use by another program"), 409, ("in use by another program", "占用")),
+        ):
+            with mock.patch.object(backup, where, side_effect=error):
+                status, answer = self.copy()
+            self.assertEqual((status, self.said(answer)), (status_wanted, "move_failed"), (where, error))
+            self.assertIn(said[0], answer["message"])
+            self.assertIn(said[1], answer["message_zh"])
+            self.assertNotIn("safety checks", answer["message"])
+            self.assertIn("as it was before", answer["message"])
+            self.assertTrue(updater.is_data_empty(self.store))
+            self.assertEqual([entry.name for entry in self.app.backups.folder.iterdir() if entry.name.startswith("work-")], [])
+        # What is wrong with the data is still said to be wrong with the data.
+        with mock.patch.object(backup, "_copy_database", side_effect=sqlite3.DatabaseError("file is not a database")):
+            status, answer = self.copy()
+        self.assertEqual((status, self.said(answer)), (400, "bad_source_data"))
+        self.assertIn("safety checks", answer["message"])
+        # And with nothing in the way the copy is made.
+        status, answer = self.copy()
+        self.assertEqual((status, answer["scripts"]), (200, 1))
+
+
 # ---------------------------------------------------------------------------------------------- 6. U3 & U5: bounded apply-zip, never into an existing folder
 class ApplyZipTest(ServerCase):
     def test_apply_zip_unpacks_via_temp_folder_migrates_data_and_never_copies_whisper(self):
