@@ -16,8 +16,9 @@ What it does, on whatever system it runs on:
 
 It needs no network: the app only listens on this computer and no AI service is asked. A started app would
 also ask GitHub whether a newer release is there; every app started here is told not to (NO_UPDATE_CHECK_ENV),
-and is then asked whether it knows that. Nothing outside the unpacked folder is written. ``--result`` writes
-what happened to a file, for the release notes.
+and is then asked whether it knows that. It would also run, by itself, the tasks its settings switch on; every
+app started here is told to run none (NO_AUTOPILOT_ENV), and is asked whether it knows that too. Nothing outside
+the unpacked folder is written. ``--result`` writes what happened to a file, for the release notes.
 
 Standard library only. Used by .github/workflows/release-candidate.yml; it runs the same on a desk.
 """
@@ -45,6 +46,9 @@ START_TIMEOUT_SEC = 90
 # Set to 1 for every app a trial starts: the app then asks GitHub nothing (as in studio/server.py). A trial runs
 # on a machine nobody sits at, and what it finds must not depend on what GitHub answers that day.
 NO_UPDATE_CHECK_ENV = "LEARN_MY_VOICE_NO_UPDATE_CHECK"
+# Set to 1 likewise: the app then runs no task by itself (as in studio/server.py). What a trial finds must be the
+# app as it was started, not as a task changed it meanwhile.
+NO_AUTOPILOT_ENV = "LEARN_MY_VOICE_NO_AUTOPILOT"
 LAUNCHERS = {"Darwin": ["bash", "Start Learn My Voice.command"], "Windows": ["cmd", "/c", "Start Learn My Voice.bat"],
              "Linux": ["sh", "start-learn-my-voice.sh"]}
 SPOKEN = "这周又去超市补货啦 / 然后拿了两盒水饺"
@@ -159,6 +163,9 @@ def use(base: str, version: str, checks: List[str]) -> None:
     status, updates, _ = ask(base, "GET", "/api/update")
     expect("started by a trial, it does not look for updates and says so",
            status == 200 and isinstance(updates, dict) and updates.get("checks") == {"on": False}, updates)
+    status, pilot, _ = ask(base, "GET", "/api/autopilot")
+    expect("started by a trial, it runs no task by itself and says so",
+           status == 200 and isinstance(pilot, dict) and pilot.get("on") is False and pilot.get("active") is False, pilot)
     expect("it says which build it is: %s" % version, state.get("build", {}).get("version") == version and not state["build"]["from_source"],
            state.get("build"))
     status, made, _ = ask(base, "POST", "/api/scripts", {"title": "试一下", "lines": [{"spoken_script_zh": SPOKEN}]})
@@ -192,6 +199,7 @@ def run_once(app: Path, command: List[str], version: str, how: str, checks: List
     env.pop("STUDIO_DATA_DIR", None)                         # the app keeps its data where a person's copy would
     env.pop("LEARN_MY_VOICE_WINDOW_CHECK", None)             # and is started the way a person starts it,
     env[NO_UPDATE_CHECK_ENV] = "1"                           # but for one thing: it asks GitHub nothing
+    env[NO_AUTOPILOT_ENV] = "1"                              # and another: it runs no task by itself
     options: Dict[str, Any] = {"creationflags": subprocess.CREATE_NEW_PROCESS_GROUP} if os.name == "nt" else {"start_new_session": True}
     with open(str(log_path), "wb") as log:
         process = subprocess.Popen(command + ["--no-browser", "--port", str(port)], cwd=str(app), stdin=subprocess.DEVNULL,
