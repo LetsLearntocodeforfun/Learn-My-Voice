@@ -265,8 +265,8 @@ async function manualBridge(task, payload, options) {
       <textarea id="mb-prompt" class="mono" rows="5" readonly></textarea>
       <div class="row" style="margin-top:8px">
         <button type="button" class="btn primary" id="mb-copy">${esc(t('mb_copy'))}</button>
-        ${task === 'video_ingest' ? `<a class="btn" href="https://gemini.google.com/" target="_blank" rel="noopener">${esc(t('mb_open_gemini'))}</a>` : ''}
-        <a class="btn" href="https://chatgpt.com/" target="_blank" rel="noopener">${esc(t('mb_open'))}</a>
+        ${task === 'video_ingest' ? `<button type="button" class="btn" data-open-url="https://gemini.google.com/" id="mb-open-gemini">${esc(t('mb_open_gemini'))}</button>` : ''}
+        <button type="button" class="btn" data-open-url="https://chatgpt.com/" id="mb-open">${esc(t('mb_open'))}</button>
         <span class="meta">${esc(tf('mb_size', { n: prompt.length.toLocaleString() }))}</span></div>`;
     $modal.innerHTML = `<div class="sheet" role="dialog" aria-modal="true">
       <h2>${esc(o.title || t('mb_title'))}</h2>
@@ -315,6 +315,9 @@ async function manualBridge(task, payload, options) {
       document.getElementById('mb-copy').onclick = async () => {
         toast(t((await copyText(prompt, $prompt)) ? 'mb_copied' : 'mb_copy_failed'));
       };
+      $modal.querySelectorAll('[data-open-url]').forEach((b) => {
+        b.onclick = () => openOutside(b.dataset.openUrl);
+      });
     } else {
       $reply.focus();
     }
@@ -955,7 +958,7 @@ function trendHtml(x) {
   const tags = [];
   if (x.source === 'ai') {
     const link = /^https?:\/\//i.test(x.source_url)
-      ? ` <a href="${esc(x.source_url)}" target="_blank" rel="noopener noreferrer">${esc(t('tr_src_link'))}</a>` : '';
+      ? ` <button type="button" data-open-url="${esc(x.source_url)}" style="border:0;background:none;padding:0;color:inherit;text-decoration:underline;cursor:pointer">${esc(t('tr_src_link'))}</button>` : '';
     tags.push(`<span class="tag warn">${esc(t('tr_src_ai'))}${link}</span>`);
   }
   if (x.stale) tags.push(`<span class="tag warn">${esc(t('tr_stale'))}</span>`);
@@ -1046,6 +1049,11 @@ async function renderTrends(data) {
     try { await renderTrends(await api('PUT', '/api/trends/' + card.dataset.id, { heat: e.target.value })); } catch (err) { showError(err); }
   };
   $list.onclick = async (e) => {
+    const srcBtn = e.target.closest('[data-open-url]');
+    if (srcBtn) {
+      openOutside(srcBtn.dataset.openUrl);
+      return;
+    }
     const card = e.target.closest('.trend');
     if (!card) return;
     const item = p.trends.find((x) => x.id === card.dataset.id);

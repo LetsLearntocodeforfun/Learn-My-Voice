@@ -321,7 +321,8 @@ class TimedMaterialTest(SetupCase):
 
     def test_webvtt_is_read_and_a_short_clip_gives_no_rate(self):
         status, item = self.call("POST", "/api/samples", {"subtitle_text": SHORT_VTT, "source_name": "clip.vtt"})
-        self.assertEqual((status, item["kind"], item["text"]), (201, "subtitle", "今天去超市买菜啦\n结果人特别多嘛"))
+        self.assertEqual(status, 201, item)
+        self.assertEqual((item["kind"], item["text"]), ("subtitle", "今天去超市买菜啦\n结果人特别多嘛"))
         self.assertEqual(item["timing"], SHORT_TIMING)                     # 4.5 s of speech: too little for a rate
         self.assertEqual(item["title"], "今天去超市买菜啦")                  # no title given: the first line
         self.assertIsNone(self.samples()["measured"])                      # and under a minute in total: no combined rate

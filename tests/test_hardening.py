@@ -1005,7 +1005,7 @@ class PageProtectionTest(StudioCase):
             "an event handler written into markup": r"<[A-Za-z][^<>]*\son[a-z]+\s*=",
             "a javascript: address": r"javascript:",
             "code built from text": r"\beval\s*\(|new\s+Function\s*\(|set(?:Timeout|Interval)\s*\(\s*['\"`]",
-            "something loaded from another address": r"""(?:src|href)\s*=\s*["']?(?:https?:)?//(?!chatgpt\.com/|gemini\.google\.com/)|@import|url\(\s*["']?(?:https?:|//|data:)""",
+            "something loaded from another address": r"""(?:src|href)\s*=\s*["']?(?:https?:)?//|@import|url\(\s*["']?(?:https?:|//|data:)""",
             "an embedded page or plug-in": r"<(?:iframe|object|embed|base|form)\b",
             "an external source, picture or font": r"<(?:source|picture)\b|@font-face|new\s+Image\s*\(",
             "a connection other than a request to this server": r"\b(?:WebSocket|EventSource|sendBeacon|importScripts|Worker)\b",
