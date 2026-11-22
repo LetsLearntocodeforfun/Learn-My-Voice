@@ -1035,8 +1035,12 @@ class Handler(BaseHTTPRequestHandler):
         if task == "comment_ocr":
             return self._json(_counting(lambda: rednote_analytics.apply_screenshot_ocr_reply(str(body.get("reply") or ""))))
         if task == "draft" and body.get("plan_id") is not None:
+            # Copy and paste only. Nothing but the pasted reply and the record it answers is handed on, so this
+            # route can neither ask the AI service for a draft (``use_ai``) nor make an empty script (no ``reply``),
+            # whatever else the body holds. A missing or blank reply is refused (``reply_required``).
+            pasted = {"reply": body.get("reply"), "brief_id": body.get("brief_id")}
             try:
-                made = planner.make_script(store, body.get("plan_id"), body, default_title=UNTITLED[self._lang(body)])
+                made = planner.make_script(store, body.get("plan_id"), pasted, default_title=UNTITLED[self._lang(body)])
             except planner.PlannerError as exc:
                 raise ApiError(exc.status, exc.code, exc.message, exc.message_zh)
             except TextTooLong as exc:

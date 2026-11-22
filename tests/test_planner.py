@@ -30,7 +30,7 @@ import unittest
 from pathlib import Path
 from unittest import mock
 
-from studio import mcp_server, pipeline, planner, posted, rednote_analytics, server
+from studio import llm, mcp_server, pipeline, planner, posted, rednote_analytics, server
 from studio.store import MANUAL_PROVIDER, Store
 from tests import browser
 
@@ -622,6 +622,28 @@ class RoutesTest(PlanCase):
         self.assertEqual(self.api("POST", "/api/manual/prompt", {"task": "draft", "plan_id": second_id})[0], 409)
         self.assertEqual(self.api("POST", "/api/manual/reply", {"task": "draft", "plan_id": second_id, "reply": "{}"})[0], 409)
         self.assertEqual(self.api("POST", "/api/manual/prompt", {"task": "draft", "plan_id": "0" * 12})[0], 404)
+
+    def test_the_copy_and_paste_route_never_asks_the_ai_service_and_never_makes_an_empty_script(self):
+        # A service is set up, so a draft by AI would be possible. The copy-and-paste route still sends nothing.
+        self.store.update_config(lambda c: (c.update(provider="openai", model="gpt-test"), c["keys"].update(openai="sk-test")))
+        plan_id = self.api("POST", "/api/plans", {"title": "换季衣橱整理"})[1]["plan"]["id"]
+        sent = []
+
+        def never(method, url, headers, body):
+            sent.append(url)
+            raise AssertionError("the copy-and-paste route called the AI service")
+
+        # Both ways to the service are stood in for: the one this server was given, and the real one a call
+        # without a transport would use. So nothing leaves this computer, also while this test fails.
+        with mock.patch.object(llm, "_http", never), mock.patch.object(self.httpd.app, "transport", never):
+            for body in ({"task": "draft", "plan_id": plan_id, "use_ai": True},
+                         {"task": "draft", "plan_id": plan_id, "use_ai": True, "reply": "  "},
+                         {"task": "draft", "plan_id": plan_id}):
+                status, refused = self.api("POST", "/api/manual/reply", body)
+                self.assertEqual((status, refused.get("error")), (400, "reply_required"), body)
+        self.assertEqual(sent, [])
+        self.assertEqual(self.store.list_scripts(), [])
+        self.assertIsNone(self.store.get_video_plan(plan_id)["script_id"])
 
     def test_a_draft_by_ai_needs_an_ai_service_and_without_one_nothing_is_made(self):
         plan_id = self.api("POST", "/api/plans", {"title": "暖气房过夜实测"})[1]["plan"]["id"]
