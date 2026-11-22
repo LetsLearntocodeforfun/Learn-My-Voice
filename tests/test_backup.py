@@ -58,7 +58,7 @@ OWN = [
 MARKUP = "<img src=x onerror=alert(1)>"
 ASSUMES = re.compile(r"\b(she|her|hers|herself|husband|wife|couple)\b", re.I)
 # The layout of the database this version of the data stands for (backup.layout_fingerprint()).
-LAYOUT_OF_DATA_VERSION = {1: "dc489db00a5395ce", 2: "b0612eef1d02873d", 3: "d5c2a68c0ed818d4", 4: "bc8828c370d2a5aa"}
+LAYOUT_OF_DATA_VERSION = {1: "dc489db00a5395ce", 2: "b0612eef1d02873d", 3: "d5c2a68c0ed818d4", 4: "cf0129481247cd84"}
 
 # The tables as the code at 3fdd3a6 creates them: the commit this feature was built on.
 SCHEMA_AT_3FDD3A6 = """
@@ -241,6 +241,14 @@ def fill(store, tag="甲"):
     pilot.on = True
     autopilot.save_settings(store, {"enabled": True, "tasks": {"example.note": True}})
     pilot.run_due()
+    with contextlib.closing(store._db()) as db, db:
+        db.execute(
+            "INSERT INTO watched_files (id, path, size_bytes, mtime_ns, first_seen_at, settled_at,"
+            " status, kind, sample_id, is_sponsored, error_text, updated_at)"
+            " VALUES (?,?,?,?,?,?,?,?,?,?,?,?)",
+            ("0123456789ab", "/watched/" + tag + ".mp4", 4096, 1763000000000000000, 100.0, 165.0,
+             "ingested", "media", first_sample["id"], 0, "", 165.0),
+        )
     store.save_creator(creator.normalize({"name": tag + "小满", "pronoun": "she", "niches": "护肤", "never": ["宝子们"]}))
     store.save_dna(dict(EXAMPLE, profile_version=tag + "-0"))
     store.save_dna(dict(EXAMPLE, profile_version=tag + "-1"))
@@ -439,7 +447,8 @@ class ContentsTest(Case):
         self.assertEqual(rows(inside), rows(self.store.db_path))
         self.assertEqual(sorted(rows(inside)), ["ai_suggestions", "autopilot_runs", "briefs", "lessons", "metric_snapshots",
                                                 "sample_beats", "sample_comments", "sample_sentiments", "samples",
-                                                "script_pins", "scripts", "sponsor_briefs", "trends", "video_plans"])
+                                                "script_pins", "scripts", "sponsor_briefs", "trends", "video_plans",
+                                                "watched_files"])
         for table, found in rows(inside).items():
             self.assertTrue(found, table)                                    # the made-up folder has something in every table
         self.assertEqual(json.loads(held["settings.json"].decode("utf-8")),
@@ -630,7 +639,8 @@ class RoundTripTest(Case):
         layout = backup.reference_layout()
         self.assertEqual(sorted(layout["tables"]), ["ai_suggestions", "autopilot_runs", "briefs", "lessons", "metric_snapshots",
                                                     "sample_beats", "sample_comments", "sample_sentiments", "samples",
-                                                    "script_pins", "scripts", "sponsor_briefs", "trends", "video_plans"])
+                                                    "script_pins", "scripts", "sponsor_briefs", "trends", "video_plans",
+                                                    "watched_files"])
         self.assertEqual(sorted(layout["indexes"]), ["ai_suggestions_by_script", "metric_snapshots_by_sample",
                                                      "sample_beats_by_sample", "sample_comments_by_sample",
                                                      "samples_by_script"])

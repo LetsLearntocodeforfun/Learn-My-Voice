@@ -11,6 +11,7 @@ accepts it; only ``save_dna`` and ``restore_dna`` change the active profile.
 """
 from __future__ import annotations
 
+import contextlib
 import json
 import math
 import os
@@ -376,24 +377,18 @@ CREATE TABLE IF NOT EXISTS autopilot_runs (
     undone_at REAL
 );
 CREATE TABLE IF NOT EXISTS watched_files (
-    path TEXT PRIMARY KEY,
-    size INTEGER NOT NULL,
-    changed_ns INTEGER NOT NULL,
-    seen_at REAL NOT NULL,
-    state TEXT NOT NULL DEFAULT 'seen',
-    kind TEXT NOT NULL DEFAULT '',
-    reason TEXT NOT NULL DEFAULT '',
-    attempts INTEGER NOT NULL DEFAULT 0,
-    retry_at REAL,
-    result TEXT NOT NULL DEFAULT '',
-    run_id TEXT NOT NULL DEFAULT '',
-    done_at REAL
-);
-CREATE TABLE IF NOT EXISTS auto_lessons (
-    signature TEXT PRIMARY KEY,
-    lesson_id TEXT NOT NULL DEFAULT '',
-    scripts INTEGER NOT NULL DEFAULT 0,
-    accepted_at REAL NOT NULL
+    id TEXT PRIMARY KEY,
+    path TEXT NOT NULL UNIQUE,
+    size_bytes INTEGER NOT NULL,
+    mtime_ns INTEGER NOT NULL,
+    first_seen_at REAL NOT NULL,
+    settled_at REAL,
+    status TEXT NOT NULL DEFAULT 'waiting',
+    kind TEXT NOT NULL DEFAULT 'media',
+    sample_id TEXT,
+    is_sponsored INTEGER NOT NULL DEFAULT 0,
+    error_text TEXT NOT NULL DEFAULT '',
+    updated_at REAL NOT NULL
 );
 """
 
@@ -1385,6 +1380,7 @@ class Store:
             db.execute("DELETE FROM sample_comments WHERE sample_id = ?", (sample_id,))
             db.execute("DELETE FROM sample_sentiments WHERE sample_id = ?", (sample_id,))
             db.execute("DELETE FROM sample_beats WHERE sample_id = ?", (sample_id,))
+            db.execute("UPDATE watched_files SET sample_id = NULL WHERE sample_id = ?", (sample_id,))
             return db.execute("DELETE FROM samples WHERE id = ?", (sample_id,)).rowcount > 0
 
     def list_sample_heads(self, text_chars: int, title_chars: int) -> List[Dict[str, Any]]:
@@ -2511,3 +2507,59 @@ class Store:
         with self._sponsor_db() as db:
             db.execute("DELETE FROM briefs WHERE kind = 'sponsor_draft' AND fingerprint = ?", (brief_id,))
             return db.execute("DELETE FROM sponsor_briefs WHERE id = ?", (brief_id,)).rowcount > 0
+
+    # ---- watched folder files & non-sponsored AI drafts (studio/autovoice.py) ----
+    @staticmethod
+    def _watched_row(row: sqlite3.Row) -> Dict[str, Any]:
+        return {
+            "id": row["id"],
+            "path": row["path"],
+            "size_bytes": int(row["size_bytes"]),
+            "mtime_ns": int(row["mtime_ns"]),
+            "first_seen_at": float(row["first_seen_at"]),
+            "settled_at": float(row["settled_at"]) if row["settled_at"] is not None else None,
+            "status": row["status"],
+            "kind": row["kind"],
+            "sample_id": row["sample_id"],
+            "is_sponsored": bool(row["is_sponsored"]),
+            "error_text": row["error_text"] or "",
+            "updated_at": float(row["updated_at"]),
+        }
+
+    def list_watched_files(self, limit: Optional[int] = None) -> List[Dict[str, Any]]:
+        with contextlib.closing(self._db()) as db:
+            if limit is None:
+                rows = db.execute("SELECT * FROM watched_files ORDER BY updated_at DESC, rowid DESC").fetchall()
+            else:
+                rows = db.execute(
+                    "SELECT * FROM watched_files ORDER BY updated_at DESC, rowid DESC LIMIT ?",
+                    (max(1, int(limit)),),
+                ).fetchall()
+        return [self._watched_row(r) for r in rows]
+
+    def get_watched_file(self, watched_id: str) -> Optional[Dict[str, Any]]:
+        if not isinstance(watched_id, str) or not watched_id:
+            return None
+        with contextlib.closing(self._db()) as db:
+            row = db.execute("SELECT * FROM watched_files WHERE id = ?", (watched_id,)).fetchone()
+        return self._watched_row(row) if row is not None else None
+
+    def get_lesson(self, lesson_id: str) -> Optional[Dict[str, Any]]:
+        if not isinstance(lesson_id, str) or not lesson_id:
+            return None
+        with contextlib.closing(self._db()) as db:
+            row = db.execute("SELECT * FROM lessons WHERE id = ?", (lesson_id,)).fetchone()
+        return self._lesson_row(row) if row is not None else None
+
+    def list_organic_ai_drafts(self) -> List[Dict[str, Any]]:
+        """Every non-sponsored AI-drafted script as ``{"id", "ai_lines", "lines"}``, oldest first."""
+        with contextlib.closing(self._db()) as db:
+            rows = db.execute(
+                "SELECT id, ai_lines_json, lines_json FROM scripts"
+                " WHERE ai_lines_json IS NOT NULL AND mode != ? ORDER BY created_at, rowid",
+                (MODE_SPONSORED,),
+            ).fetchall()
+        return [
+            {"id": r["id"], "ai_lines": loads_stored(r["ai_lines_json"]), "lines": loads_stored(r["lines_json"])}
+            for r in rows
+        ]

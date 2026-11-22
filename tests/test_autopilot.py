@@ -267,7 +267,8 @@ class RegistryTest(Case):
             self.assertEqual(autopilot.REGISTRY.tasks(), [task])
             self.assertIsNotNone(autopilot.REGISTRY.undo_handler("voice.profile_applied"))
             self.assertIs(autopilot.Autopilot(self.store).registry, autopilot.REGISTRY)
-        self.assertIsNone(autopilot.REGISTRY.task("voice.relearn"))          # this test left nothing behind
+        self.assertIsNot(autopilot.REGISTRY.task("voice.relearn"), task)     # this test left nothing behind
+        self.assertIsNone(autopilot.REGISTRY.undo_handler("voice.profile_applied"))
 
     def test_a_name_is_checked_when_it_is_registered(self):
         run = lambda context: {}                                             # noqa: E731
@@ -1964,7 +1965,7 @@ class DataVersionTest(RestoreCase):
         self.assertNotIn("autopilot_runs", SCHEMA_AT_309D9F4)
         self.assertEqual(backup.DATA_VERSION, 4)
         self.assertNotEqual(backup.layout_fingerprint(), LAYOUT_OF_DATA_VERSION_3)
-        self.assertEqual(sorted(set(backup.reference_layout()["tables"]) - set(rows(self.version_3_folder().db_path))), ["autopilot_runs"])
+        self.assertEqual(sorted(set(backup.reference_layout()["tables"]) - set(rows(self.version_3_folder().db_path))), ["autopilot_runs", "watched_files"])
 
     def version_3_folder(self):
         """A data folder as the app at data version 3 makes it, with something in it."""
@@ -1995,7 +1996,8 @@ class DataVersionTest(RestoreCase):
                           preview["file"]["holds"]["samples"], preview["now"]["scripts"]), (3, True, 1, 1, 1))
         self.assertTrue(self.backups.restore(preview["restore_id"])["restored"])
         now = rows(self.store.db_path)
-        self.assertEqual(now.pop("autopilot_runs"), [])                      # the table this version adds is there, with nothing in it
+        self.assertEqual(now.pop("autopilot_runs"), [])                      # the tables this version adds are there, with nothing in them
+        self.assertEqual(now.pop("watched_files"), [])
         self.assertEqual(now, was)                                           # and every row of that backup is, as it was
         self.assertEqual([script["title"] for script in self.store.list_scripts()], ["版本三写的"])
         # Autopilot works on what was restored, and the folder can be backed up and restored again as version 4.

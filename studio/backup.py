@@ -79,7 +79,7 @@ import zlib
 from pathlib import Path
 from typing import Any, Callable, Dict, Iterator, List, Optional, Tuple
 
-from . import autopilot, buildinfo, creator, llm, pipeline, posted, trends, wordlist
+from . import autopilot, autovoice, buildinfo, creator, llm, pipeline, posted, trends, wordlist
 from . import setup as setup_status
 from . import store as store_module
 from .store import Store, loads_stored
@@ -649,6 +649,7 @@ def _try_out(store: Store) -> None:
             store.list_sponsor_briefs(),
             len(store.list_sample_beats()),
             autopilot.recent_runs(store),
+            autovoice.voice_payload(store),
         ]
         json.dumps(answers, ensure_ascii=False)
     except Exception as exc:  # noqa: BLE001 - whatever a reader trips over, the file is not used

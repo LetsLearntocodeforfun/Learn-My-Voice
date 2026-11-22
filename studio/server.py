@@ -58,7 +58,7 @@ from . import checks, corpus, creator, exports, keyword_import, llm, pipeline, t
 from . import buildinfo, hooks, outside, posted, refs, suggest, video_ingest, wordlist
 from . import planner, rednote_analytics, soundstats, sponsored, tone_analyzer, updater
 from . import setup as setup_status
-from . import autopilot, backup
+from . import autopilot, autovoice, backup
 from .jobs import JobError, Jobs, Progress
 from .store import (
     HISTORY_ID,
@@ -1359,12 +1359,20 @@ class Handler(BaseHTTPRequestHandler):
                 return self._json(pilot.status())
             if route == ("POST", "/api/autopilot/settings"):
                 return self._json(pilot.save_settings(self._read_json()))
+            if route == ("GET", "/api/autopilot/voice"):
+                return self._json(autovoice.voice_payload(self.app.store, now=pilot.clock()))
+            if route == ("POST", "/api/autopilot/voice"):
+                res = autovoice.save_voice_settings(self.app.store, self._read_json(), now=pilot.clock())
+                pilot._wake.set()
+                return self._json(res)
             if route == ("POST", "/api/autopilot/run"):
                 return self._json(pilot.run_now(self._read_json().get("task")), 202)
             m = re.fullmatch(r"/api/autopilot/runs/([0-9a-f]{12})/undo", path)
             if m and method == "POST":
                 return self._json(pilot.undo(m.group(1)))
         except autopilot.AutopilotError as exc:
+            raise ApiError(exc.status, exc.code, exc.message, exc.message_zh, extra=exc.extra)
+        except autovoice.VoiceAutoError as exc:
             raise ApiError(exc.status, exc.code, exc.message, exc.message_zh, extra=exc.extra)
         raise ApiError(404, "not_found")
 
