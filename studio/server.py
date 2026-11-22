@@ -399,7 +399,8 @@ class App:
         # What the app does by itself, within what the creator chose (studio/autopilot.py). Made after ``backups``, so
         # a restore the app was closed in the middle of is put back first; a run is one of ``jobs`` and begins inside
         # the gate of ``backups``. It runs nothing unless ``autopilot_on`` is set, and only ``main`` sets it.
-        self.autopilot = autopilot.Autopilot(store, self.jobs, self.backups, transport_of=lambda: self.transport)
+        self.autopilot = autopilot.Autopilot(store, self.jobs, self.backups, transport_of=lambda: self.transport,
+                                             transcriber_of=lambda: self.transcriber)
         self.max_upload_bytes = MAX_UPLOAD_BYTES
         self.install_lock = threading.Lock()
         self.discover_lock = threading.Lock()

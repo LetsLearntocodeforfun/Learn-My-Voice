@@ -32,6 +32,8 @@ When a task runs (``Autopilot.run_due``, called by the scheduler thread once a m
 - When a task has a ``due(context)`` condition it is asked once the cadence has passed, and again at every look
   until it says yes. A task that is not due leaves no line in the log.
 - One task runs at a time, also when one was started by hand. The scheduler waits for it before it looks again.
+  Nothing here cuts a task off: one that waits for ever keeps every other task waiting, and every restore
+  refused, until the app is closed. A task has to put a limit on everything it waits for.
 - A task that raises is logged as ``failed`` with what it said, cut to MAX_DETAIL_CHARS. The others still run.
   It is tried again after RETRY_AFTER_SEC, then after twice that, four times that and so on while it keeps
   failing, and never later than its own cadence. A run the app was closed in the middle of is found at the
@@ -344,13 +346,15 @@ class Context:
     - ``level``: ``suggest`` or ``auto``, as the creator chose. With ``suggest`` a task leaves what it found as
       a proposal; with ``auto`` it may make the change, within its own bounds, and says how to reverse it.
     - ``transport``: the model transport to hand to ``studio.llm`` (None for the real one; a stand-in in tests).
+    - ``transcriber``: what the app transcribes with (``server.App.transcriber``: the ``studio.transcribe``
+      module unless a test handed the app a stand-in), or None when this autopilot was handed none.
     - ``run_id``: the id of this run in the log; ``""`` while only ``due`` is asked.
     - ``task``: the task's name. ``forced``: whether the creator started this run by hand.
     - ``spend(calls=1)``, ``record_undo(kind, payload)``, ``progress(stage, fraction)``, ``last_done(task)``:
       see each.
     """
 
-    __slots__ = ("store", "settings", "level", "transport", "run_id", "task", "forced", "_pilot", "_progress")
+    __slots__ = ("store", "settings", "level", "transport", "transcriber", "run_id", "task", "forced", "_pilot", "_progress")
 
     def __init__(self, pilot: "Autopilot", task: str, run_id: str, forced: bool,
                  progress: Optional[Callable[[str, Optional[float]], None]]) -> None:
@@ -359,6 +363,7 @@ class Context:
         self.settings: Mapping[str, Any] = _for_tasks(pilot.store)
         self.level: str = self.settings["level"]
         self.transport = pilot._transport()
+        self.transcriber = pilot._transcriber()
         self.run_id, self.task, self.forced = run_id, task, bool(forced)
 
     @property
@@ -685,19 +690,23 @@ class Autopilot:
     which is for a test of a task by itself. ``registry`` is ``REGISTRY`` unless a test hands in its own.
     ``transport`` is what tasks get as ``context.transport``; ``transport_of``, a function without arguments,
     is asked for it each time instead (the app hands that in, so a stand-in a test puts on ``App.transport``
-    later is the one tasks get). ``clock`` gives the time in seconds; a test hands in its own and never waits.
+    later is the one tasks get). ``transcriber_of``, likewise a function without arguments, is asked each time
+    for what tasks get as ``context.transcriber``; left out, they get None. ``clock`` gives the time in seconds;
+    a test hands in its own and never waits.
 
     ``on`` is the first switch (see the module's words): False until ``server.main`` sets it.
     """
 
     def __init__(self, store: "Store", jobs: Optional[Jobs] = None, backups: Any = None, *,
                  registry: Optional[Registry] = None, transport: Any = None,
-                 transport_of: Optional[Callable[[], Any]] = None, clock: Callable[[], float] = time.time) -> None:
+                 transport_of: Optional[Callable[[], Any]] = None,
+                 transcriber_of: Optional[Callable[[], Any]] = None, clock: Callable[[], float] = time.time) -> None:
         self.store = store
         self.jobs = jobs if jobs is not None else Jobs()
         self.backups = backups
         self.registry = registry if registry is not None else REGISTRY
         self.transport, self.transport_of = transport, transport_of
+        self.transcriber_of = transcriber_of
         self.clock = clock
         self.on = False
         self._lock = threading.RLock()          # one start, and one undo, at a time
@@ -715,6 +724,9 @@ class Autopilot:
 
     def _transport(self) -> Any:
         return self.transport_of() if self.transport_of is not None else self.transport
+
+    def _transcriber(self) -> Any:
+        return self.transcriber_of() if self.transcriber_of is not None else None
 
     @contextlib.contextmanager
     def _gate(self, changes: bool = True) -> Iterator[None]:
@@ -1048,7 +1060,9 @@ class Autopilot:
         ``on`` and ``enabled`` are the two switches and ``active`` is both; ``level``; ``daily_model_calls``
         with today's ``spent`` and the ``limit``; ``tasks``, each with its switch, its cadence, whether it calls
         a model, whether it has a further condition, its ``last_run`` and ``next_run_at`` (None while it will
-        not run: a switch is off; with a further condition it is the earliest time, not a promise);
+        not run by itself: a switch is off, or it is running now. Never earlier than ``now``: a task that is due
+        has ``now`` there and is taken up at the scheduler's next look, within LOOK_EVERY_SEC. With a further
+        condition it is the earliest time, not a promise);
         ``running``, the run under way; ``runs``, the newest RECENT_RUNS lines of the log; ``now``.
         """
         prefs = settings(self.store)
@@ -1065,7 +1079,7 @@ class Autopilot:
                     "name": task.name, "on": switched_on, "every_sec": task.every_sec, "calls_model": task.calls_model,
                     "has_condition": task.due is not None,
                     "last_run": _public(rows[0], current) if rows else None,
-                    "next_run_at": due_at if due_at is not None and math.isfinite(due_at) else None,
+                    "next_run_at": max(due_at, now) if due_at is not None and math.isfinite(due_at) else None,
                 })
             spent = self._spent_in(db, now)
             runs = [_public(row, current) for row in

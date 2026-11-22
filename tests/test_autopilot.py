@@ -6,7 +6,8 @@ Each class covers one thing a creator, or a module that registers a task, can re
   that task on; with any of them off, a run asked for by hand is refused in English and in Chinese;
 - registering a task or an undo handler only puts it on a list, and a name is checked when it is registered;
 - a task is handed the store, the clock, a copy of the settings it cannot change, the level, the model
-  transport, its run's id, and ways to reserve model calls, to say how a change is reversed and how far it is;
+  transport and the transcriber the app has, its run's id, and ways to reserve model calls, to say how a change
+  is reversed and how far it is;
 - tasks that are due run in order, the one that has waited longest first, one at a time, and what is overdue
   when the app is opened is caught up on;
 - a task that raises is logged with what it said, cut short; the next one still runs; it is tried again after
@@ -521,7 +522,7 @@ class ScheduleTest(Case):
         self.later(40 * DAY)                                                 # the computer's clock was wrong when it ran
         self.assertEqual(self.look(), [("trends.refresh", "done")])
         self.later(-40 * DAY)                                                # and was then put right
-        self.assertEqual(self.pilot.status()["tasks"][0]["next_run_at"], 0.0)
+        self.assertEqual(self.pilot.status()["tasks"][0]["next_run_at"], BASE)          # due: now, never a time gone by
         self.assertEqual(self.look(), [("trends.refresh", "done")])          # a run dated forty days from now is not believed
         self.assertEqual(self.look(), [])
         self.assertEqual(self.pilot.status()["tasks"][0]["next_run_at"], BASE + 6 * HOUR)
@@ -1523,7 +1524,8 @@ class RequestsTest(ServerCase):
         self.task("notes.add", run=lambda context: (notes.append("one"), context.record_undo("notes.added", "one"), {"added": 1})[2])
         self.app.autopilot_on = True
         status, state = self.send("POST", "/api/autopilot/settings", {"enabled": True, "tasks": {"notes.add": True}})
-        self.assertEqual((status, state["active"], state["tasks"][0]["on"], state["tasks"][0]["next_run_at"]), (200, True, True, 0.0))
+        self.assertEqual((status, state["active"], state["tasks"][0]["on"], state["tasks"][0]["next_run_at"], state["now"]),
+                         (200, True, True, BASE, BASE))                      # it never ran: it is due now
         status, answer = self.send("POST", "/api/autopilot/run", {"task": "notes.add"})
         self.assertEqual((status, answer["run"]["task"], answer["run"]["forced"], answer["job"]["kind"]), (202, "notes.add", True, "autopilot"))
         self.assertTrue(self.pilot.wait(10))
@@ -1592,6 +1594,25 @@ class RequestsTest(ServerCase):
         self.app.transport = stand_in = lambda *args: {"said": "nothing"}    # put there after the app was made, as tests do
         self.assertEqual(self.look(), [("ideas.refresh", "done")])
         self.assertEqual(seen, [stand_in])
+
+    def test_a_task_gets_the_transcriber_the_app_has_when_it_runs_and_none_where_none_was_handed_in(self):
+        seen = []
+        self.task("voice.ingest_folder", every=600, due=lambda context: seen.append(("due", context.transcriber)) or True,
+                  run=lambda context: seen.append(("run", context.transcriber)))
+        self.switch_on("voice.ingest_folder")
+        self.assertEqual(self.look(), [("voice.ingest_folder", "done")])
+        self.assertIs(self.app.transcriber, server.transcribe)               # what the app transcribes with unless told otherwise
+        self.assertEqual(seen[-1], ("run", server.transcribe))
+        self.assertEqual({what for _when, what in seen}, {server.transcribe})    # its condition is handed the same
+        self.app.transcriber = stand_in = object()                           # put there after the app was made, as tests do
+        self.later(600)
+        self.look()
+        self.assertEqual(seen[-1], ("run", stand_in))
+        alone = self.make()                                                  # an autopilot nobody handed a transcriber
+        alone.on = True
+        self.later(600)
+        self.assertEqual([line["status"] for line in alone.run_due()], ["done"])
+        self.assertEqual(seen[-1], ("run", None))
 
 
 # ---------------------------------------------------------------------------------------------- 14. who turns the first switch on
@@ -1845,7 +1866,8 @@ class RestoreTest(RestoreCase):
         self.later(2 * HOUR)
         self.backups.restore(self.staged(path)["restore_id"])
         state = self.pilot.status()
-        self.assertEqual((state["runs"][0]["status"], state["running"], state["tasks"][0]["next_run_at"]), ("interrupted", None, BASE + HOUR))
+        self.assertEqual((state["runs"][0]["status"], state["running"], state["tasks"][0]["next_run_at"]),
+                         ("interrupted", None, BASE + 2 * HOUR))            # due since an hour ago: now
         self.assertEqual(self.sql("SELECT status FROM autopilot_runs"), [("running",)])     # as the backup has it, until a run begins
         self.assertEqual(self.look(), [("voice.relearn", "done")])           # two hours after it began: tried again
         self.assertEqual(self.sql("SELECT status FROM autopilot_runs ORDER BY rowid"), [("interrupted",), ("done",)])
