@@ -290,11 +290,11 @@ class BrowserAutopilotUiTest(unittest.TestCase):
                 page.wait_for(f"!document.querySelector('[data-ap-run-now=\"{tname}\"]').disabled")
 
             page.eval_js("document.querySelector('[data-ap-run-now=\"plans.suggest\"]').click(); true")
-            page.wait_for("document.querySelectorAll('[data-ap-undo]').length === 1")
+            page.wait_for("document.querySelectorAll('[data-ap-undo]:not([disabled])').length === 1")
             self.assertEqual(len(self.store.list_plan_suggestions("open")), 2)
 
             # Test Undo button on #/autopilot!
-            page.eval_js("document.querySelector('[data-ap-undo]').click(); true")
+            page.eval_js("document.querySelector('[data-ap-undo]:not([disabled])').click(); true")
             page.wait_for("Boolean(document.querySelector('[data-ap-undone=\"1\"]'))")
             self.assertEqual(self.store.list_plan_suggestions("open"), [])
 
@@ -306,7 +306,7 @@ class BrowserAutopilotUiTest(unittest.TestCase):
             page.eval_js("document.querySelector('[data-ap-run-now=\"plans.suggest\"]').click(); true")
             page.wait_for("document.querySelectorAll('[data-ap-run]').length >= 2 && !document.querySelector('[data-ap-run-now=\"ideas.refresh\"]').disabled")
             page.eval_js("document.querySelector('[data-ap-run-now=\"ideas.refresh\"]').click(); true")
-            page.wait_for("document.querySelectorAll('[data-ap-run]').length >= 3 && document.querySelectorAll('[data-ap-undo]').length >= 2")
+            page.wait_for("document.querySelectorAll('[data-ap-run]').length >= 3 && document.querySelectorAll('[data-ap-undo]:not([disabled])').length >= 2")
 
             # 3. Open #/plan: verify plan basis badge + 2 suggestion chips -> Take one, Dismiss one!
             page.go("#/plan", "Boolean(document.getElementById('pl-list'))")

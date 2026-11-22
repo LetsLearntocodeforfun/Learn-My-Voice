@@ -956,6 +956,9 @@ class Autopilot:
                 raise JobError("autopilot_task_failed", "The automatic task %s failed: %s" % (task.name, said),
                                "自动任务 %s 没有完成：%s" % (task.name, said))
             self._finish(run_id, DONE, summary=_clean_summary(summary))
+            with self._lock:
+                self._current = None
+                self._idle.set()
             return self.run(run_id)
         finally:
             with self._lock:
@@ -1097,13 +1100,16 @@ class Autopilot:
             runs = [_public(row, current) for row in
                     db.execute("SELECT * FROM autopilot_runs ORDER BY rowid DESC LIMIT ?", (RECENT_RUNS,)).fetchall()]
             under_way = db.execute("SELECT * FROM autopilot_runs WHERE id = ?", (current,)).fetchone() if current else None
+        running_line = _public(under_way, current) if under_way is not None else None
+        if running_line is not None and running_line["status"] != RUNNING:
+            running_line = None
         return {
             "on": bool(self.on), "enabled": prefs["enabled"], "active": active,
             "level": prefs["level"], "levels": list(LEVELS),
             "daily_model_calls": {"limit": prefs["daily_model_calls"], "spent": spent, "max": MAX_DAILY_CALLS,
                                   "default": DEFAULT_DAILY_CALLS},
             "tasks": tasks,
-            "running": _public(under_way, current) if under_way is not None else None,
+            "running": running_line,
             "runs": runs, "now": now, "look_every_sec": LOOK_EVERY_SEC,
         }
 
