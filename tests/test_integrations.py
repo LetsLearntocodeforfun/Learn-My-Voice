@@ -444,6 +444,80 @@ class McpToolTest(McpCase):
         self.assertEqual(plans["plans_left_out"], 1)
         self.assertIn("untrusted viewer comments", plans["note"])
 
+    def test_analytics_per_day_explicit_keys_and_tone_analysis_depth_list_string_bounds(self):
+        from unittest import mock
+
+        s = self.store.create_sample(title="长标题" * 100, text=HER_SCRIPT)
+        readings = [
+            {
+                "sample_id": s["id"],
+                "read_on": "2026-10-%02d" % day,
+                "current": day == 20,
+                "values": {"views": 200 * day, "likes": 10 * day, "shares": day},
+            }
+            for day in range(1, 21)
+        ]
+        self.store.apply_readings(readings)
+
+        err_an, an = self.tool("get_rednote_analytics", limit=5)
+        self.assertFalse(err_an, an)
+        vid = an["videos"][0]
+        self.assertLessEqual(len(vid["title"]), 200)
+        self.assertNotIn("velocity", vid)
+        pd = vid["per_day"]
+        self.assertEqual(pd["readings"], 20)
+        self.assertEqual(len(pd["history"]), mcp_server.MCP_MAX_SNAPSHOT_POINTS)
+        self.assertEqual(pd["history_left_out"], 20 - mcp_server.MCP_MAX_SNAPSHOT_POINTS)
+        self.assertEqual(pd["history"][0]["read_on"], "2026-10-09")
+        self.assertEqual(pd["history"][-1]["read_on"], "2026-10-20")
+        self.assertEqual(pd["history"][-1]["shares"], 20)
+
+        # Lowering MCP_MAX_SNAPSHOT_POINTS trims per_day.history further and updates history_left_out
+        with mock.patch.object(mcp_server, "MCP_MAX_SNAPSHOT_POINTS", 5):
+            err_an5, an5 = self.tool("get_rednote_analytics", limit=5)
+        self.assertFalse(err_an5)
+        self.assertEqual(len(an5["videos"][0]["per_day"]["history"]), 5)
+        self.assertEqual(an5["videos"][0]["per_day"]["history_left_out"], 15)
+
+        # Stray keys on raw overview, video entries, or history points never pass through
+        real_overview = mcp_server.rednote_analytics.analytics_overview(self.store)
+        injected_overview = dict(real_overview, stray_root="LEAK_ROOT")
+        injected_vid = dict(injected_overview["videos"][0], stray_video="LEAK_VIDEO")
+        injected_pd = dict(injected_vid["per_day"], stray_pd="LEAK_PD")
+        injected_pd["history"] = [dict(pt, stray_pt="LEAK_PT") for pt in injected_pd["history"]]
+        injected_vid["per_day"] = injected_pd
+        injected_overview["videos"] = [injected_vid]
+        with mock.patch.object(mcp_server.rednote_analytics, "analytics_overview", return_value=injected_overview):
+            err_inj, an_inj = self.tool("get_rednote_analytics")
+        self.assertFalse(err_inj)
+        dumped_inj = json.dumps(an_inj, ensure_ascii=False)
+        for forbidden in ("LEAK_ROOT", "LEAK_VIDEO", "LEAK_PD", "LEAK_PT"):
+            self.assertNotIn(forbidden, dumped_inj)
+
+        # get_tone_analysis bounds strings, titles, list lengths, dict sizes, nesting depth, and top-level keys
+        deep: dict = {"leaf": "deep_secret"}
+        for _ in range(12):
+            deep = {"nested": deep}
+        bloated_tone = {
+            "ready": True,
+            "needed_breaths": 10,
+            "organic_items_analyzed": 1,
+            "stray_tone_key": "LEAK_TONE",
+            "linguistics": deep,
+            "sound_samples": [{"title": "T" * 500, "note": "N" * 1500} for _ in range(45)],
+            "multimodal_vocal_notes": [{"title": "V" * 400, "vocal_energy": "E" * 1500} for _ in range(35)],
+        }
+        with mock.patch.object(mcp_server.tone_analyzer, "corpus_tone_profile", return_value=bloated_tone):
+            err_bt, bt = self.tool("get_tone_analysis")
+        self.assertFalse(err_bt, bt)
+        self.assertNotIn("stray_tone_key", bt)
+        self.assertNotIn("LEAK_TONE", json.dumps(bt))
+        self.assertNotIn("deep_secret", json.dumps(bt))
+        self.assertEqual(len(bt["sound_samples"]), mcp_server.MCP_MAX_TONE_LIST)
+        self.assertEqual(len(bt["sound_samples"][0]["title"]), 200)
+        self.assertEqual(len(bt["sound_samples"][0]["note"]), mcp_server.MCP_MAX_SUMMARY_CHARS)
+        self.assertEqual(len(bt["multimodal_vocal_notes"]), mcp_server.MCP_MAX_TONE_LIST)
+
 
 class McpPlanIdeasTest(McpCase):
     """Nothing an AI app can call accepts something for the creator: what it adds to the plan is an idea."""
