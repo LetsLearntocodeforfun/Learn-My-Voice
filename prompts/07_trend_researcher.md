@@ -1,10 +1,10 @@
 # Stage 7 Blueprint: Trend Researcher (Live Web Lookup -> Trend Keywords)
 
 ## Purpose
-Finds topics and search keywords that are popular on Xiaohongshu right now in this creator's niches, so the studio can weigh them against the creator's own results. The studio never fetches platform data itself. This step only works with an AI that can search the web during the conversation, and everything it returns is stored as unverified, with its source link, for the creator to check. The creator's niches come from the creator profile filled in during setup (`{{creator_profile_json}}`), from a focus typed for this lookup, and from the titles of the creator's own videos.
+Finds topics and search keywords that are popular on Xiaohongshu right now in this creator's niches, so the studio can weigh them against the creator's own results. Nothing is ever fetched from Xiaohongshu (`xiaohongshu.com`, `rednote.com`, `xhslink.com`) by the studio itself. This live web lookup runs only when the creator asks for it directly (on the 选题建议 or 热点词 page, or by copy and paste), or on a background schedule (`trends.refresh` in `studio/trend_sources.py`) ONLY when the creator has explicitly switched on Autopilot, the `trends.refresh` task, and the `ai_lookup` trend source in Settings (all off by default). Separate public `https://` pages that the creator explicitly lists in Settings are read with `prompts/10_trend_page_reader.md` only when listed and switched on, never from Xiaohongshu. This step requires an AI provider with its own live web search tool, and everything it returns is stored as unverified, with its source link, for the creator to check. The creator's niches come from the creator profile filled in during setup (`{{creator_profile_json}}`), from a focus typed for this lookup, and from the titles of the creator's own videos.
 
 ## Recommended Model
-- A chat product with live web search, by copy and paste. Or, from the app's 选题建议 page, a Gemini or OpenAI model called with that provider's own web search tool. A model without web access must decline (rule 1).
+- A chat product with live web search, by copy and paste. Or, when triggered by the creator or by a switched-on `ai_lookup` schedule, a Gemini or OpenAI model called with that provider's own web search tool. A model without live web search must decline (rule 1), and background runs skip non-browsing providers cleanly without failing.
 
 ---
 

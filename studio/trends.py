@@ -1,18 +1,21 @@
-"""Trend keywords: reading what she pastes in, keeping what the sources she switched on saw, and scoring it
-against her own history.
+"""Trend keywords: reading what the creator pastes in, keeping what switched-on sources saw, and scoring it
+against the creator's own history.
 
 Where a keyword comes from. This module itself fetches nothing and calls no model:
 
-- from her: typed, pasted, or a keyword export she imports by hand (``manual``: her own entry);
-- from an AI that looked it up on the web when she asked for a lookup (``ai``: unverified, kept with its
-  source link);
-- from the automatic sources of ``studio/trend_sources.py``, each only while she has switched it on: the
-  same AI web lookup on a schedule (``ai``); a page she named in Settings, which the app fetches itself
-  (``studio/webfetch.py``) and the AI service she chose reads (``ai``, with that page as its link); and a
-  keyword file in a folder she has the app watch (``file``). All of these are unverified.
+- from the creator: typed, pasted, or a keyword export imported by hand (``manual``: their own entry);
+- from an AI that looked it up on the live web when asked (``ai``: unverified, kept with its source link);
+- from the background sources in ``studio/trend_sources.py``, each running ONLY when Autopilot, the task
+  ``trends.refresh`` (or watched-folder intake), and that specific source are explicitly switched on by the
+  creator: the scheduled Stage 7 AI web lookup (``ai``); a public ``https://`` page the creator explicitly
+  listed in Settings, fetched politely after checking ``robots.txt`` and read via ``prompts/10_trend_page_reader.md``
+  (``web_page``, with that page as ``source_url``); and a keyword spreadsheet in the watched folder (``file``).
+  All of these are stored as unverified.
 
-Nothing is fetched from Xiaohongshu: ``studio/webfetch.py`` refuses it by name before any request. With
-every automatic source off, which is how a new folder starts, the app fetches no trend data from anywhere.
+Nothing is ever fetched from Xiaohongshu: ``studio/trend_sources.py`` refuses ``xiaohongshu.com``,
+``rednote.com``, and ``xhslink.com`` (and their subdomains) by name before any DNS or socket call. With
+Autopilot and automatic sources off, which is how every new data folder starts, nothing runs in the
+background and no trend page or lookup is fetched from anywhere.
 
 What an automatic source finds is only ever ADDED (``store_found``): a keyword that is not tracked yet
 becomes a row, without a heat number, and every keyword it saw is written down as a sighting (the table
@@ -78,7 +81,7 @@ STALE_BELOW = 0.25       # freshness under this is shown as possibly out of date
 MAX_KEYWORDS_PER_PASTE = 200
 WEIGHTS = {"trend": (0.7, 0.3), "balanced": (0.5, 0.5), "mine": (0.3, 0.7)}  # (trend, her own results)
 
-MANUAL, AI, FILE = "manual", "ai", "file"   # ``trends.source``: the creator's own entry; found by an AI; read from a file
+MANUAL, AI, WEB_PAGE, FILE = "manual", "ai", "web_page", "file"   # ``trends.source``: creator entry; AI lookup; public web page; keyword file
 SEEN_BY = ("ai", "page", "file")            # ``trend_observations.source``: the scheduled lookup, a named page, a keyword file
 SIGHTING_DAYS = 60          # a sighting older than this is not counted
 MAX_SIGHTINGS = 20000       # rows kept in trend_observations; the oldest go first. Two runs a day of 112 keywords fill it in 89 days
@@ -263,8 +266,9 @@ def prepare_found(items: Sequence[Dict[str, Any]], *, row_source: str, seen_by: 
     made here, so that a run can write down how to reverse the change (``undo``, for ``remove_found``) before
     it makes it (``store_found``). At most MAX_KEYWORDS_PER_PASTE keywords are taken, each once.
     """
-    if row_source not in (AI, FILE) or seen_by not in SEEN_BY:
-        raise ValueError("an automatic source stores keywords as %r or %r, seen by one of %r" % (AI, FILE, SEEN_BY))
+    if row_source not in (AI, WEB_PAGE, FILE) or seen_by not in SEEN_BY:
+        raise ValueError("an automatic source stores keywords as %r, %r or %r, seen by one of %r"
+                         % (AI, WEB_PAGE, FILE, SEEN_BY))
     day = _date(now)
     if day is None:
         raise ValueError("no day can be told from the time %r" % (now,))
