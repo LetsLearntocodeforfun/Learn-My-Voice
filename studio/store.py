@@ -349,7 +349,8 @@ CREATE TABLE IF NOT EXISTS video_plans (
     questions_json TEXT NOT NULL DEFAULT '[]',
     script_id TEXT,
     created_at REAL NOT NULL,
-    updated_at REAL NOT NULL
+    updated_at REAL NOT NULL,
+    basis TEXT NOT NULL DEFAULT ''
 );
 CREATE TABLE IF NOT EXISTS sponsor_briefs (
     id TEXT PRIMARY KEY,
@@ -432,6 +433,7 @@ _ADDED_COLUMNS = (
     ("samples", "metrics_on", "TEXT"),
     ("samples", "ai_json", "TEXT"),
     ("samples", "snapshot", "TEXT NOT NULL DEFAULT ''"),
+    ("video_plans", "basis", "TEXT NOT NULL DEFAULT ''"),
 )
 # What has to happen once, together with adding a column. A video stored before ``needs_review`` existed
 # was never confirmed by the creator, so it starts out waiting like any video added from now on.
@@ -2377,7 +2379,8 @@ class Store:
     #
     # The column ``priority`` is left from round 1. No page ever set it and nothing reads it. It stays in the
     # table because the layout of data version 3 is held by tests that other work changes at the same time.
-    _PLAN_TEXT_COLUMNS = ("title", "video_format", "scheduled_for", "status", "source_kind", "notes",
+    _PLAN_BASES = ("", "word_lists", "numbers", "model")
+    _PLAN_TEXT_COLUMNS = ("title", "video_format", "scheduled_for", "status", "source_kind", "basis", "notes",
                           "rationale_zh", "rationale_en")
 
     @staticmethod
@@ -2397,6 +2400,7 @@ class Store:
             "scheduled_for": row["scheduled_for"] or "",
             "status": row["status"] or "PLANNED",
             "source_kind": row["source_kind"] or "manual",
+            "basis": row["basis"] if ("basis" in row.keys() and row["basis"] in Store._PLAN_BASES) else "",
             "notes": row["notes"] or "",
             "rationale_zh": row["rationale_zh"] or "",
             "rationale_en": row["rationale_en"] or "",
@@ -2452,14 +2456,15 @@ class Store:
                 db.execute(
                     "INSERT INTO video_plans (id, title, video_format, target_sec, scheduled_for, status,"
                     " source_kind, notes, rationale_zh, rationale_en, keywords_json, questions_json, script_id,"
-                    " created_at, updated_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                    " created_at, updated_at, basis) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
                     (plan_id, str(plan["title"]), str(plan.get("video_format") or "VLOG_VOICEOVER"),
                      int(plan.get("target_sec") or 60), str(plan.get("scheduled_for") or ""),
                      str(plan.get("status") or "PLANNED"), str(plan.get("source_kind") or "manual"),
                      str(plan.get("notes") or ""), str(plan.get("rationale_zh") or ""),
                      str(plan.get("rationale_en") or ""), _dumps(normalize_keywords(plan.get("keywords"))),
                      _dumps([q for q in plan.get("questions") or [] if isinstance(q, str)]),
-                     script_id if isinstance(script_id, str) and script_id else None, stamp, stamp),
+                     script_id if isinstance(script_id, str) and script_id else None, stamp, stamp,
+                     plan.get("basis") if plan.get("basis") in Store._PLAN_BASES else ""),
                 )
             rows = {row["id"]: row for row in db.execute(
                 "SELECT * FROM video_plans WHERE id IN (%s)" % ",".join("?" * len(ids)), ids)} if ids else {}
@@ -2467,13 +2472,13 @@ class Store:
 
     def create_video_plan(self, *, title: str, video_format: str = "VLOG_VOICEOVER", target_sec: int = 60,
                           scheduled_for: str = "", status: str = "PLANNED", source_kind: str = "manual",
-                          notes: str = "", rationale_zh: str = "", rationale_en: str = "",
+                          basis: str = "", notes: str = "", rationale_zh: str = "", rationale_en: str = "",
                           keywords: Any = None, questions: Any = None,
                           script_id: Optional[str] = None) -> Dict[str, Any]:
         """Store one new plan (``create_video_plans``)."""
         return self.create_video_plans([{
             "title": title, "video_format": video_format, "target_sec": target_sec, "scheduled_for": scheduled_for,
-            "status": status, "source_kind": source_kind, "notes": notes, "rationale_zh": rationale_zh,
+            "status": status, "source_kind": source_kind, "basis": basis, "notes": notes, "rationale_zh": rationale_zh,
             "rationale_en": rationale_en, "keywords": keywords, "questions": questions, "script_id": script_id}])[0]
 
     def update_video_plan(self, plan_id: str, changes: Dict[str, Any]) -> Optional[Dict[str, Any]]:

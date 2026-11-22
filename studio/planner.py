@@ -376,6 +376,7 @@ def _new_plan(body: Any) -> Dict[str, Any]:
     video_format = body.get("video_format")
     seconds = _seconds(body.get("target_sec") if body.get("target_sec") is not None else body.get("target_duration_sec"))
     kind = body.get("source_kind")
+    basis = body.get("basis")
     return {
         "title": _title(body.get("title") or body.get("title_zh")),
         "video_format": video_format if video_format in pipeline.VIDEO_FORMATS else pipeline.VIDEO_FORMATS[0],
@@ -383,6 +384,7 @@ def _new_plan(body: Any) -> Dict[str, Any]:
         "scheduled_for": _day(body.get("scheduled_for")),
         "status": status,
         "source_kind": kind if isinstance(kind, str) and _SOURCE_KIND.fullmatch(kind) else "manual",
+        "basis": basis if basis in OPPORTUNITY_BASES else "",
         "notes": _notes(body.get("notes") or body.get("script_notes_zh")),
         "rationale_zh": _line(body.get("rationale_zh") or body.get("why_zh"), MAX_WHY_CHARS),
         "rationale_en": _line(body.get("rationale_en") or body.get("why_en"), MAX_WHY_CHARS),

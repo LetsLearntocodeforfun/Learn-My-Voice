@@ -154,6 +154,25 @@ QUESTION_CUES = (
     "尺码", "色号", "型号", "link", "where did you", "which brand", "how much",
 )
 _CLAUSE_SPLIT = re.compile(r"[，,。！!？?；;、/\r\n～~…]+")
+_QUOTE_STRIP = re.compile(r"[\s，,。！？!?；;：:\"'“”‘’「」『』()（）\[\]【】·—…~～/\\-]+")
+
+
+def _quote_norm(text: Any) -> str:
+    return _QUOTE_STRIP.sub("", unicodedata.normalize("NFKC", str(text or ""))).casefold()
+
+
+def _is_quoted_in_comments(question_text: Any, comments: Sequence[Dict[str, Any]]) -> bool:
+    """Whether ``question_text`` matches a verbatim substring of any stored comment on the video."""
+    needle = _quote_norm(question_text)
+    if len(needle) < 2:
+        return False
+    for comment in comments:
+        hay = _quote_norm(comment.get("text"))
+        if not hay:
+            continue
+        if needle in hay or (len(hay) >= 4 and hay in needle):
+            return True
+    return False
 _A_NOT_A_SUFFIX = re.compile(r"(?:会不会|是不是|能不能|有没有|好不好|可不可以|够不够|值不值)\s*$")
 _ZH_NEG_SUFFIX = re.compile(
     r"(?:一点也不|一点都不|完全没有|完全没|完全不|根本没有|根本没|根本不|不是很|不怎么|不太会|不太|不算|并不|并未|并非|并无|毫无|没有|木有|不是|不会|没|不|别|勿|未)"
@@ -831,14 +850,27 @@ def analytics_overview(store: Store) -> Dict[str, Any]:
         sent_basis = "model" if sent_source in ("ai", "manual") else "word_lists"
 
         if isinstance(sent_summary, dict):
-            for q in (sent_summary.get("audience_questions") or [])[:4]:
+            raw_qs = sent_summary.get("audience_questions") or []
+            sample_comments: Optional[List[Dict[str, Any]]] = None
+            for q in raw_qs[:4]:
                 if isinstance(q, dict) and q.get("question_zh"):
+                    q_basis = q.get("basis") if q.get("basis") in ("model", "word_lists") else sent_basis
+                    if isinstance(q.get("quoted"), bool):
+                        quoted = q["quoted"]
+                    elif q_basis == "model":
+                        if sample_comments is None:
+                            sample_comments = store.list_sample_comments(sid)
+                        quoted = _is_quoted_in_comments(q["question_zh"], sample_comments)
+                    else:
+                        quoted = True
                     top_questions.append({
                         "sample_id": sid,
                         "video_title": sample["title"],
                         "question_zh": str(q["question_zh"]),
                         "question_en": str(q.get("question_en") or q["question_zh"]),
                         "demand_count": int(q.get("demand_count") or 1),
+                        "basis": q_basis,
+                        "quoted": quoted,
                     })
             for angle in (sent_summary.get("followup_video_angles") or [])[:2]:
                 if isinstance(angle, dict) and angle.get("title_zh"):
@@ -1115,6 +1147,8 @@ def build_local_sentiment_summary(sample: Dict[str, Any], comments: List[Dict[st
             "question_zh": q["text"][:140],
             "question_en": q["text"][:140],
             "demand_count": max(1, (q.get("likes") or 0) + 1),
+            "basis": "word_lists",
+            "quoted": True,
         }
         for q in questions[:6]
     ]
@@ -1141,24 +1175,26 @@ def build_local_sentiment_summary(sample: Dict[str, Any], comments: List[Dict[st
     if audience_qs:
         top_q = audience_qs[0]["question_zh"]
         followups.append({
-            "title_zh": "回应评论区提问｜%s" % top_q[:22].rstrip("？?！!。"),
-            "title_en": 'Answering viewer question from "%s"' % sample["title"][:32],
+            "title_zh": "《%s》评论区按词表数出 %d 条提问" % (sample["title"][:24], len(questions)),
+            "title_en": '%d viewer question%s counted by word lists under "%s"'
+            % (len(questions), "" if len(questions) == 1 else "s", sample["title"][:32]),
             "video_format": "VLOG_VOICEOVER",
             "target_duration_sec": 60,
-            "rationale_zh": "词表标出 %d 条提问评论，最高赞问题：「%s」" % (len(questions), top_q[:40]),
-            "rationale_en": 'Word lists flagged %d viewer questions; top question: "%s"' % (len(questions), top_q[:50]),
-            "script_notes_zh": "开头直接引用上一期评论区提问：「%s」，实拍演示并给出真实建议。" % top_q[:60],
+            "rationale_zh": "按词表数出 %d 条带提问词或问号的评论，最高赞原文：「%s」" % (len(questions), top_q[:40]),
+            "rationale_en": 'Word lists counted %d comments with question cues; top quoted comment: "%s"' % (len(questions), top_q[:50]),
+            "script_notes_zh": "评论区观众原话：「%s」" % top_q[:60],
         })
     if objections:
         top_obj = objections[0]["sample_comment"]
         followups.append({
-            "title_zh": "%s｜优缺点与使用实话" % sample["title"][:20],
-            "title_en": 'Pros, cons & caveats follow-up on "%s"' % sample["title"][:30],
+            "title_zh": "《%s》评论区按词表数出 %d 条顾虑词评论" % (sample["title"][:22], len(neg_list)),
+            "title_en": '%d comment%s matched concern words under "%s"'
+            % (len(neg_list), "" if len(neg_list) == 1 else "s", sample["title"][:30]),
             "video_format": "SINGLE_PRODUCT_SHARE",
             "target_duration_sec": 60,
-            "rationale_zh": "词表标出顾虑评论（「%s」），可拍一期实测说明适用边界。" % top_obj[:36],
-            "rationale_en": "Word lists matched a viewer concern in comments.",
-            "script_notes_zh": "针对评论区提到的顾虑（%s）做真实对比与适用边界说明。" % top_obj[:50],
+            "rationale_zh": "按词表数出 %d 条命中顾虑词的评论，例如：「%s」" % (len(neg_list), top_obj[:36]),
+            "rationale_en": 'Word lists matched %d comments with concern words, e.g. "%s"' % (len(neg_list), top_obj[:46]),
+            "script_notes_zh": "评论区命中顾虑词的原话：「%s」" % top_obj[:50],
         })
 
     summary_zh = (
@@ -1290,11 +1326,17 @@ def apply_sentiment_reply(store: Store, sample_id: str, reply: Dict[str, Any], *
     for item in (reply.get("audience_questions") if isinstance(reply.get("audience_questions"), list) else [])[:10]:
         if isinstance(item, dict) and item.get("question_zh"):
             dc = item.get("demand_count")
+            q_zh = str(item["question_zh"])[:200]
+            quoted = _is_quoted_in_comments(q_zh, comments)
+            if not quoted and item.get("sample_comment"):
+                quoted = _is_quoted_in_comments(item.get("sample_comment"), comments)
             questions.append({
-                "question_zh": str(item["question_zh"])[:200],
-                "question_en": str(item.get("question_en") or item["question_zh"])[:200],
+                "question_zh": q_zh,
+                "question_en": str(item.get("question_en") or q_zh)[:200],
                 "demand_count": max(1, min(9999, int(dc or 1)))
                 if isinstance(dc, (int, float)) and not isinstance(dc, bool) else 1,
+                "basis": "model",
+                "quoted": quoted,
             })
 
     angles = []

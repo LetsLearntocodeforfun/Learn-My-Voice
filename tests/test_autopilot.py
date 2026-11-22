@@ -1958,30 +1958,40 @@ class RestoreTest(RestoreCase):
 
 # ---------------------------------------------------------------------------------------------- 17. the version of the data
 class DataVersionTest(RestoreCase):
+    ADDED_AT_309D9F4 = tuple(col for col in store_module._ADDED_COLUMNS if col[0] != "video_plans")
+
     def test_the_tables_written_out_here_are_the_ones_data_version_3_stood_for(self):
-        with mock.patch.object(store_module, "_SCHEMA", SCHEMA_AT_309D9F4):
+        with mock.patch.object(store_module, "_SCHEMA", SCHEMA_AT_309D9F4), \
+                mock.patch.object(store_module, "_ADDED_COLUMNS", self.ADDED_AT_309D9F4):
             self.assertEqual(backup.layout_fingerprint(), LAYOUT_OF_DATA_VERSION_3)
         self.assertNotIn("autopilot_runs", SCHEMA_AT_309D9F4)
         self.assertEqual(backup.DATA_VERSION, 4)
         self.assertNotEqual(backup.layout_fingerprint(), LAYOUT_OF_DATA_VERSION_3)
-        self.assertEqual(sorted(set(backup.reference_layout()["tables"]) - set(rows(self.version_3_folder().db_path))), ["autopilot_runs"])
+        self.assertEqual(sorted(set(backup.reference_layout()["tables"]) - set(rows(self.version_3_folder().db_path))),
+                         ["autopilot_runs", "idea_sets", "plan_suggestions"])
 
     def version_3_folder(self):
         """A data folder as the app at data version 3 makes it, with something in it."""
-        with mock.patch.object(store_module, "_SCHEMA", SCHEMA_AT_309D9F4):
+        with mock.patch.object(store_module, "_SCHEMA", SCHEMA_AT_309D9F4), \
+                mock.patch.object(store_module, "_ADDED_COLUMNS", self.ADDED_AT_309D9F4):
             old = Store(self.tmp / ("version-3-%d" % self.count) / "data")
             self.count += 1
             old.create_script(title="版本三写的", lines=[{"spoken_script_zh": "今天去超市买菜啦 / 人特别多嘛"}], keywords=["秋冬护肤"])
             old.create_sample(title="素材", text="上周末去 Costco 补货嘛 / 结果某人又走不动哈", metrics={"views": 1200, "likes": 80})
             old.upsert_trends([{"keyword": "秋冬护肤", "heat": 125000}], source="manual")
-            old.create_video_plan(title="下期计划", scheduled_for="2026-11-28")
+            with contextlib.closing(old._db()) as db, db:
+                db.execute(
+                    "INSERT INTO video_plans (id, title, scheduled_for, created_at, updated_at)"
+                    " VALUES ('111111111111', '下期计划', '2026-11-28', 1.0, 1.0)")
             old.add_lesson(script_id="", ai="因此我强烈推荐", final="所以我真的很推荐嘛", note="口语一点")
         return old
 
     def test_a_backup_made_by_data_version_3_is_restored_by_this_version(self):
         old = self.version_3_folder()
         path = self.tmp / ("version-3.%s" % backup.EXTENSION)
-        with mock.patch.object(store_module, "_SCHEMA", SCHEMA_AT_309D9F4), mock.patch.object(backup, "DATA_VERSION", 3):
+        with mock.patch.object(store_module, "_SCHEMA", SCHEMA_AT_309D9F4), \
+                mock.patch.object(store_module, "_ADDED_COLUMNS", self.ADDED_AT_309D9F4), \
+                mock.patch.object(backup, "DATA_VERSION", 3):
             backup.create(old, path)                                         # written by the app's own code, as that version wrote it
         was = rows(old.db_path)
         with zipfile.ZipFile(str(path)) as archive:
@@ -1995,7 +2005,10 @@ class DataVersionTest(RestoreCase):
                           preview["file"]["holds"]["samples"], preview["now"]["scripts"]), (3, True, 1, 1, 1))
         self.assertTrue(self.backups.restore(preview["restore_id"])["restored"])
         now = rows(self.store.db_path)
-        self.assertEqual(now.pop("autopilot_runs"), [])                      # the table this version adds is there, with nothing in it
+        for added_table in ("autopilot_runs", "idea_sets", "plan_suggestions"):
+            self.assertEqual(now.pop(added_table), [])                       # the tables this version adds are there, empty
+        self.assertEqual([r[:-1] for r in now["video_plans"]], was.pop("video_plans"))
+        self.assertEqual([r[-1] for r in now.pop("video_plans")], [""])      # video_plans gained basis = ''
         self.assertEqual(now, was)                                           # and every row of that backup is, as it was
         self.assertEqual([script["title"] for script in self.store.list_scripts()], ["版本三写的"])
         # Autopilot works on what was restored, and the folder can be backed up and restored again as version 4.
