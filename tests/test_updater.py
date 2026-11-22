@@ -1727,6 +1727,118 @@ class ApplyZipTest(ServerCase):
         self.assertFalse((self.tmp / "learn-my-voice-0.4.0").exists())
         self.assertEqual([p.name for p in self.tmp.iterdir() if ".unpacking-" in p.name], [])
 
+    def test_apply_zip_archive_edge_cases_encrypted_compression_case_collision_two_roots_and_build_mismatch(self):
+        self.packaged("0.2.0-beta")
+
+        def make_archive(build_ver="0.4.0", root_name="learn-my-voice-0.4.0", extra_entries=(), include_build=True):
+            buf = io.BytesIO()
+            with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as zf:
+                if include_build:
+                    zf.writestr(
+                        "%s/studio/build.json" % root_name,
+                        json.dumps({"version": build_ver, "commit": "a" * 40, "built_on": "2026-11-21"}),
+                    )
+                for item, payload in extra_entries:
+                    zf.writestr(item, payload)
+            return buf.getvalue()
+
+        # 1. Encrypted entry (flag bit 0x1 set in local & central directory headers; writestr clears flag_bits).
+        raw_plain = bytearray(make_archive(extra_entries=[("learn-my-voice-0.4.0/secret.txt", b"cipher")]))
+        local_at = raw_plain.index(b"PK\x03\x04")
+        raw_plain[local_at + 6] |= 0x1
+        central_at = raw_plain.index(b"PK\x01\x02")
+        raw_plain[central_at + 8] |= 0x1
+        enc_pkg = self.save_zip(bytes(raw_plain), name="enc.zip")
+        st_enc, ans_enc = self.send("POST", "/api/update/apply-zip", {"zip_path": str(enc_pkg)})
+        self.assertEqual((st_enc, self.said(ans_enc)), (400, "bad_zip"))
+        self.assertIn("Encrypted", ans_enc["message"])
+
+        # 2. Unsupported compression method (ZIP_BZIP2, and an unknown numeric method in central directory).
+        bz_buf = io.BytesIO()
+        with zipfile.ZipFile(bz_buf, "w", zipfile.ZIP_DEFLATED) as zf:
+            zf.writestr(
+                "learn-my-voice-0.4.0/studio/build.json",
+                json.dumps({"version": "0.4.0", "commit": "a" * 40, "built_on": "2026-11-21"}),
+            )
+            bz_info = zipfile.ZipInfo("learn-my-voice-0.4.0/data.bin", date_time=(2026, 11, 21, 0, 0, 0))
+            zf.writestr(bz_info, b"plain", compress_type=zipfile.ZIP_BZIP2)
+        bz_pkg = self.save_zip(bz_buf.getvalue(), name="bzip2.zip")
+        st_bz, ans_bz = self.send("POST", "/api/update/apply-zip", {"zip_path": str(bz_pkg)})
+        self.assertEqual((st_bz, self.said(ans_bz)), (400, "bad_zip"))
+        self.assertIn("compression", ans_bz["message"])
+
+        # 3. Case-colliding entries inside the version folder.
+        case_pkg = self.save_zip(
+            make_archive(extra_entries=[("learn-my-voice-0.4.0/Readme.md", b"1"), ("learn-my-voice-0.4.0/readme.MD", b"2")]),
+            name="case-collision.zip",
+        )
+        st_cc, ans_cc = self.send("POST", "/api/update/apply-zip", {"zip_path": str(case_pkg)})
+        self.assertEqual((st_cc, self.said(ans_cc)), (400, "bad_zip"))
+        self.assertIn("case-colliding", ans_cc["message"])
+
+        # 4. Two top-level folders in one archive.
+        two_roots_pkg = self.save_zip(
+            make_archive(extra_entries=[("learn-my-voice-0.4.1/README.md", b"second root")]),
+            name="two-roots.zip",
+        )
+        st_two, ans_two = self.send("POST", "/api/update/apply-zip", {"zip_path": str(two_roots_pkg)})
+        self.assertEqual((st_two, self.said(ans_two)), (400, "bad_zip"))
+        self.assertIn("single version folder", ans_two["message"])
+
+        # 5. studio/build.json version mismatch (and missing build.json).
+        mismatch_pkg = self.save_zip(make_archive(build_ver="0.4.1", root_name="learn-my-voice-0.4.0"), name="mismatch.zip")
+        st_mm, ans_mm = self.send("POST", "/api/update/apply-zip", {"zip_path": str(mismatch_pkg)})
+        self.assertEqual((st_mm, self.said(ans_mm)), (400, "bad_zip"))
+        self.assertIn("build.json", ans_mm["message"])
+
+        no_build_pkg = self.save_zip(
+            make_archive(include_build=False, extra_entries=[("learn-my-voice-0.4.0/README.md", b"hi")]),
+            name="no-build.zip",
+        )
+        st_nb, ans_nb = self.send("POST", "/api/update/apply-zip", {"zip_path": str(no_build_pkg)})
+        self.assertEqual((st_nb, self.said(ans_nb)), (400, "bad_zip"))
+        self.assertFalse((self.tmp / "learn-my-voice-0.4.0").exists())
+        self.assertEqual([p.name for p in self.tmp.iterdir() if ".unpacking-" in p.name], [])
+
+    def test_stale_unpacking_folders_are_cleaned_only_inside_unpack_and_migrate_zip_and_active_ones_stay(self):
+        self.packaged("0.2.0-beta")
+        stale = self.tmp / ".learn-my-voice-0.2.5.unpacking-deadbeef"
+        stale.mkdir()
+        (stale / "leftover.txt").write_text("crashed earlier", encoding="utf-8")
+        old_ts = time.time() - (updater.STALE_UNPACKING_SEC + 120)
+        os.utime(str(stale), (old_ts, old_ts))
+
+        recent = self.tmp / ".learn-my-voice-0.2.6.unpacking-12345678"
+        recent.mkdir()
+        (recent / "busy.txt").write_text("still unpacking", encoding="utf-8")
+
+        unrelated = self.tmp / ".learn-my-voice-notes"
+        unrelated.mkdir()
+        os.utime(str(unrelated), (old_ts, old_ts))
+
+        # Status / scan calls must NOT delete stale unpacking folders on their own.
+        self.send("GET", "/api/update?scan=1")
+        self.assertTrue(stale.is_dir())
+
+        # Track that Backups.passage(False, None) is entered when reading the live folder.
+        passages = []
+        orig_passage = self.app.backups.passage
+
+        @contextlib.contextmanager
+        def tracked_passage(changes, named):
+            passages.append((changes, named))
+            with orig_passage(changes, named):
+                yield
+
+        pkg = self.save_zip(make_release_zip_bytes("0.3.0-beta", {"README.md": "# 0.3.0-beta\n"}))
+        with mock.patch.object(self.app.backups, "passage", tracked_passage):
+            st, res = self.send("POST", "/api/update/apply-zip", {"zip_path": str(pkg)})
+        self.assertEqual(st, 201, res)
+        self.assertFalse(stale.exists())          # stale unpacking folder removed
+        self.assertTrue(recent.is_dir())          # recent/active unpacking folder preserved
+        self.assertTrue(unrelated.is_dir())       # unrelated hidden folder preserved
+        self.assertIn((False, None), passages)    # live-folder read ran inside backups read passage
+
 
 # ---------------------------------------------------------------------------------------------- 6b. the unpacked database is closed before the rename
 class HandlesTest(ServerCase):
@@ -2057,6 +2169,14 @@ class UpdaterCopyTest(unittest.TestCase):
         self.assertIn(".sha256", en["up_sha_note"])
         self.assertIn("local_tools/whisper", zh["up_whisper_note"])
         self.assertIn("local_tools/whisper", en["up_whisper_note"])
+        for key in ("up_persist_zip", "up_whisper_note", "up_applied_zip_done"):
+            for folder_left_behind in ("data/uploads", "data/backups", "local_tools/whisper"):
+                self.assertIn(folder_left_behind, zh[key], key)
+                self.assertIn(folder_left_behind, en[key], key)
+        self.assertIn("AI", zh["up_persist_zip"])
+        self.assertIn("unless", en["up_persist_zip"])
+        self.assertIn("旧文件夹", zh["up_applied_zip_done"])
+        self.assertIn("stay in the old folder", en["up_applied_zip_done"])
 
 
 @unittest.skipUnless(browser.AVAILABLE, browser.WHY_NOT)
@@ -2065,9 +2185,10 @@ class PageOffTest(Case):
         self.packaged("0.2.0")
         self.keep_found("9.0.0")
         texts = {"zh": "这次运行没有开启检查更新", "en": "Looking for updates is switched off for this run"}
-        with mock.patch.object(updater, "_default_transport", self.never):
+        with loopback_only() as blocked:
             for lang, begins in texts.items():
                 with browser.open_app(self.store, lang=lang) as page:
+                    page.httpd.app.update_transport = self.never
                     self.assertIs(page.httpd.app.update_checks, False)
                     page.go("#/", "true")
                     self.assertFalse(page.eval_js("Boolean(document.getElementById('up-startup-banner'))"), lang)
@@ -2078,7 +2199,7 @@ class PageOffTest(Case):
                     for gone in ("up-force-btn", "up-auto-chk", "up-pre-chk", "up-dl-now"):
                         self.assertFalse(page.eval_js("Boolean(document.getElementById(%s))" % json.dumps(gone)), (lang, gone))
                     self.assertEqual(page.problems, [], lang)
-        self.assertEqual(self.asked, [])
+        self.assertEqual((blocked, self.asked), ([], []))
 
 
 @unittest.skipUnless(browser.AVAILABLE, browser.WHY_NOT)
@@ -2265,6 +2386,10 @@ class PageInteractiveTest(Case):
                 self.assertIn("not signed", page.eval_js("document.getElementById('up-dl-sha-note').textContent"))
                 page.eval_js("document.querySelector('[data-up-apply-zip]').click()")
                 page.wait_for("Boolean(document.getElementById('up-applied-msg'))")
+                applied_msg = page.eval_js("document.getElementById('up-applied-msg').textContent")
+                self.assertIn("stay in the old folder", applied_msg)
+                self.assertIn("data/uploads", applied_msg)
+                self.assertIn("data/backups", applied_msg)
                 self.assertTrue((self.tmp / "learn-my-voice-9.0.0" / "data" / "studio.db").is_file())
                 self.assertEqual(Store(self.tmp / "learn-my-voice-9.0.0" / "data").list_scripts()[0]["title"], "从旧版带来的脚本")
 

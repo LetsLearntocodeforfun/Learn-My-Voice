@@ -69,15 +69,14 @@ import errno
 import functools
 import gc
 import hashlib
-import json
 import os
 import platform
 import re
-import shutil
 import sqlite3
 import stat
 import struct
 import tempfile
+import threading
 import time
 import unicodedata
 import urllib.error
@@ -87,7 +86,7 @@ import uuid
 import zipfile
 import zlib
 from pathlib import Path
-from typing import Any, Callable, Dict, Iterator, List, Optional, Sequence, Tuple, Union
+from typing import Any, Callable, Dict, Iterator, List, Optional, Sequence, Set, Tuple, Union
 
 from . import backup, buildinfo, creator, keystore, llm, outside, wordlist
 from . import store as store_module
@@ -128,6 +127,13 @@ _CHANGELOG_HEADING_RE = re.compile(r"^## v([0-9]+\.[0-9]+\.[0-9]+(?:-[0-9A-Za-z.
 _SHA256_LINE_RE = re.compile(r"^([0-9a-fA-F]{64})(?:[ \t]+\*?(\S.*))?$", re.ASCII)
 _REPO_RE = re.compile(r"^[A-Za-z0-9_.-]{1,100}/[A-Za-z0-9_.-]{1,100}$", re.ASCII)
 _SIBLING_DIR_RE = re.compile(r"^learn-my-voice-([0-9]{1,9}\.[0-9]{1,9}\.[0-9]{1,9}(?:[-.][0-9A-Za-z]+){0,8})$", re.ASCII)
+_STALE_UNPACKING_RE = re.compile(
+    r"^\.learn-my-voice-[0-9]{1,9}\.[0-9]{1,9}\.[0-9]{1,9}(?:[-.][0-9A-Za-z]+){0,8}\.unpacking-[0-9a-f]{8}$",
+    re.ASCII,
+)
+STALE_UNPACKING_SEC = 3600
+_UNPACK_LOCK = threading.Lock()
+_ACTIVE_UNPACKING: Set[str] = set()
 _WINDOWS_FORBIDDEN = frozenset('<>:"/\\|?*')
 _WINDOWS_DEVICES = frozenset(
     ["CON", "PRN", "AUX", "NUL"] + ["COM%d" % n for n in range(1, 10)] + ["LPT%d" % n for n in range(1, 10)]
@@ -781,25 +787,26 @@ def is_data_empty(store: Store) -> bool:
         for table in _WORK_TABLES:
             if table in existing and db.execute("SELECT COUNT(*) FROM %s" % table).fetchone()[0] > 0:
                 return False
-    if creator.is_set(store.load_creator()):
-        return False
-    if os.path.lexists(str(store.creator_path)):
-        try:
-            loaded_creator = Store._read_stored(store.creator_path)
-            if not isinstance(loaded_creator, dict) or creator.is_set(loaded_creator):
-                return False
-        except (OSError, ValueError):
+    with store_module._DNA_LOCK:
+        if creator.is_set(store.load_creator()):
             return False
-    own, unreadable = store._own_dna()
-    if own is not None or unreadable:
-        return False
-    if store.load_pending() is not None or os.path.lexists(str(store.pending_path)):
-        return False
-    if backup._history_names(store.dna_history_dir):
-        return False
-    ideas = store.load_recommendations()
-    if (isinstance(ideas, dict) and bool(ideas)) or os.path.lexists(str(store.recommendations_path)):
-        return False
+        if os.path.lexists(str(store.creator_path)):
+            try:
+                loaded_creator = Store._read_stored(store.creator_path)
+                if not isinstance(loaded_creator, dict) or creator.is_set(loaded_creator):
+                    return False
+            except (OSError, ValueError):
+                return False
+        own, unreadable = store._own_dna()
+        if own is not None or unreadable:
+            return False
+        if store.load_pending() is not None or os.path.lexists(str(store.pending_path)):
+            return False
+        if backup._history_names(store.dna_history_dir):
+            return False
+        ideas = store.load_recommendations()
+        if (isinstance(ideas, dict) and bool(ideas)) or os.path.lexists(str(store.recommendations_path)):
+            return False
     return True
 
 
@@ -1223,7 +1230,8 @@ def discover_previous_installations(store: Store, search_root: Optional[Path] = 
     # What a copy from each would do to the AI connection, worked out the way the copy itself works it out
     # (_settings_to_carry), so that the page can say it before anything is copied. This reads each listed
     # folder's config.json, bounded like the rest of this look, and nothing else of it.
-    ours = store._read_raw_config_dict()
+    with store_module._CONFIG_LOCK:
+        ours = store._read_raw_config_dict()
     for item in listed:
         item["ai"] = _settings_to_carry(_settings_at(Path(item["path"]) / "data" / "config.json"), ours)[1] \
             if item["has_config"] else None
@@ -1575,44 +1583,47 @@ def _stage_folder_migration(src_data: Path, work: Path, target_existing_cfg: Dic
     cfg_bytes: Optional[bytes] = None
     src_cfg = src_data / "config.json"
     theirs: Optional[Dict[str, Any]] = None
-    if os.path.lexists(str(src_cfg)):
-        if not backup._is_plain_file(src_cfg):
-            raise _bad_source_data_error("config.json is not a plain file", "config.json 不是普通文件")
-        theirs = _settings_at(src_cfg)
+    with store_module._CONFIG_LOCK:
+        src_cfg_exists = os.path.lexists(str(src_cfg))
+        if src_cfg_exists:
+            if not backup._is_plain_file(src_cfg):
+                raise _bad_source_data_error("config.json is not a plain file", "config.json 不是普通文件")
+            theirs = _settings_at(src_cfg)
     carried_settings, ai_told = _settings_to_carry(theirs, target_existing_cfg)
-    ai_told["unreadable"] = theirs is None and os.path.lexists(str(src_cfg))
+    ai_told["unreadable"] = theirs is None and src_cfg_exists
     if theirs is not None:
         cfg_bytes = Store._encode(carried_settings)
         Store._write_bytes(new_dir / "config.json", cfg_bytes, mode=0o600)
         copied.append("config.json")
 
-    # 2. Check and stage creator, voice DNA, waiting voice proposal, and recommendations.
-    for name in backup.PLAIN_FILES:
-        src_f = src_data / name
-        if os.path.lexists(str(src_f)):
-            Store._write_bytes(new_dir / name, _small_file_to_carry(src_f, name), mode=0o600)
-            copied.append(name)
+    # 2 & 3. Hold _DNA_LOCK while reading plain profile files and Voice DNA history so a live folder's
+    # active profile, waiting proposal and history belong together without racing a concurrent save.
+    with store_module._DNA_LOCK:
+        for name in backup.PLAIN_FILES:
+            src_f = src_data / name
+            if os.path.lexists(str(src_f)):
+                Store._write_bytes(new_dir / name, _small_file_to_carry(src_f, name), mode=0o600)
+                copied.append(name)
 
-    # 3. Check and stage Voice DNA history.
-    src_hist = src_data / backup.HISTORY_FOLDER
-    if os.path.lexists(str(src_hist)):
-        if src_hist.is_symlink() or not src_hist.is_dir():
-            raise _bad_source_data_error("voice_dna_history is a link or not a folder", "voice_dna_history 不是普通文件夹")
-        for entry in src_hist.iterdir():
-            if entry.is_symlink():
-                raise _bad_source_data_error("voice_dna_history contains a symbolic link", "voice_dna_history 含有符号链接")
-        names = backup._history_names(src_hist)[-backup.MAX_HISTORY_FILES:]
-        if names:
-            dst_hist = new_dir / backup.HISTORY_FOLDER
-            dst_hist.mkdir(mode=0o700, exist_ok=True)
-            for hname in names:
-                hpath = src_hist / hname
-                if hname.endswith(".json"):
-                    Store._write_bytes(dst_hist / hname, _small_file_to_carry(hpath, hname), mode=0o600)
-                else:
-                    if os.lstat(str(hpath)).st_size <= backup.MAX_SMALL_FILE_BYTES:
-                        Store._write_bytes(dst_hist / hname, hpath.read_bytes(), mode=0o600)
-            copied.append(backup.HISTORY_FOLDER)
+        src_hist = src_data / backup.HISTORY_FOLDER
+        if os.path.lexists(str(src_hist)):
+            if src_hist.is_symlink() or not src_hist.is_dir():
+                raise _bad_source_data_error("voice_dna_history is a link or not a folder", "voice_dna_history 不是普通文件夹")
+            for entry in src_hist.iterdir():
+                if entry.is_symlink():
+                    raise _bad_source_data_error("voice_dna_history contains a symbolic link", "voice_dna_history 含有符号链接")
+            names = backup._history_names(src_hist)[-backup.MAX_HISTORY_FILES:]
+            if names:
+                dst_hist = new_dir / backup.HISTORY_FOLDER
+                dst_hist.mkdir(mode=0o700, exist_ok=True)
+                for hname in names:
+                    hpath = src_hist / hname
+                    if hname.endswith(".json"):
+                        Store._write_bytes(dst_hist / hname, _small_file_to_carry(hpath, hname), mode=0o600)
+                    else:
+                        if os.lstat(str(hpath)).st_size <= backup.MAX_SMALL_FILE_BYTES:
+                            Store._write_bytes(dst_hist / hname, hpath.read_bytes(), mode=0o600)
+                copied.append(backup.HISTORY_FOLDER)
 
     # 4. Snapshot, validate, and rebuild SQLite database through backup._rebuild.
     src_db = src_data / backup.DATABASE
@@ -1826,7 +1837,8 @@ def migrate_from_previous_folder(target_store: Store, source_app_dir: Path, *,
                 work_parent.mkdir(mode=0o700, parents=True, exist_ok=True)
                 # Named so that ``Backups.recover`` knows the folder as one of its work folders (backup._WORK).
                 work = Path(tempfile.mkdtemp(dir=str(work_parent), prefix="work-migrate_"))
-                existing_cfg = target_store._read_raw_config_dict()
+                with store_module._CONFIG_LOCK:
+                    existing_cfg = target_store._read_raw_config_dict()
                 _staged, copied_files, cfg_bytes, ai_told = _stage_folder_migration(src_data, work, existing_cfg)
                 old = work / "old"
                 had_settings = False
@@ -2048,10 +2060,41 @@ def _name_key(name: str) -> str:
     return unicodedata.normalize("NFC", name).casefold()
 
 
+def _clean_stale_unpacking_dirs(parent: Path, *, now: Optional[float] = None) -> None:
+    """Remove stale ``.learn-my-voice-*.unpacking-*`` sibling folders left by an earlier interrupted unpack.
+
+    Called ONLY inside ``unpack_and_migrate_zip``. Skips symlinks, non-matching names, folders that are
+    currently active in this process, and folders modified within ``STALE_UNPACKING_SEC`` (which another
+    copy of the app may still be unpacking into).
+    """
+    now_ts = time.time() if now is None else float(now)
+    try:
+        entries = list(parent.iterdir())
+    except OSError:
+        return
+    for entry in entries[:100]:
+        if _STALE_UNPACKING_RE.fullmatch(entry.name) is None:
+            continue
+        try:
+            if entry.is_symlink() or not entry.is_dir():
+                continue
+            st = os.lstat(str(entry))
+            if (now_ts - st.st_mtime) < STALE_UNPACKING_SEC:
+                continue
+            key = os.path.normcase(str(entry.resolve()))
+            with _UNPACK_LOCK:
+                if key in _ACTIVE_UNPACKING:
+                    continue
+            backup._remove_folder(entry)
+        except OSError:
+            continue
+
+
 @_refusing("unpack_failed", "The package could not be unpacked: %s. Nothing in this folder was changed.",
            "压缩包没能解压：%s。当前文件夹没有改动。")
 def unpack_and_migrate_zip(current_store: Store, zip_path: Path, *,
                            dest_parent: Optional[Path] = None,
+                           backups: Optional[backup.Backups] = None,
                            jobs: Any = None) -> Dict[str, Any]:
     """Unpack a verified release ``.zip`` into a new sibling folder and copy ``current_store``'s data into it.
 
@@ -2061,7 +2104,8 @@ def unpack_and_migrate_zip(current_store: Store, zip_path: Path, *,
       Windows-unsafe names, copies ``data/`` into the temporary directory, and renames into place at the end.
     - Never copies ``local_tools/whisper``.
     """
-    if jobs is not None and jobs.unfinished():
+    active_jobs = jobs if jobs is not None else (backups.jobs if backups is not None else None)
+    if active_jobs is not None and active_jobs.unfinished():
         raise _migrate_busy_error()
 
     raw_pkg = Path(zip_path)
@@ -2089,7 +2133,10 @@ def unpack_and_migrate_zip(current_store: Store, zip_path: Path, *,
         raise UpdateError("save_failed", "Destination parent folder is not available.",
                           "目标上级目录不可用。", 507)
 
+    _clean_stale_unpacking_dirs(parent)
+
     staging_dir: Optional[Path] = None
+    active_key: Optional[str] = None
     try:
         with zipfile.ZipFile(str(pkg), "r") as zf:
             infos = zf.infolist()
@@ -2204,6 +2251,9 @@ def unpack_and_migrate_zip(current_store: Store, zip_path: Path, *,
             if staging_dir is None:
                 raise UpdateError("save_failed", "Could not create temporary unpacking folder.",
                                   "无法创建临时解压目录。", 507)
+            active_key = os.path.normcase(str(staging_dir.resolve()))
+            with _UNPACK_LOCK:
+                _ACTIVE_UNPACKING.add(active_key)
             placed = False
             try:
                 staging_resolved = staging_dir.resolve()
@@ -2254,8 +2304,10 @@ def unpack_and_migrate_zip(current_store: Store, zip_path: Path, *,
 
                 # Copy current data/ into the newly unpacked staging folder before moving it into place.
                 staged_new_store = Store(staging_resolved / "data")
+                read_live = backups.passage(False, None) if backups is not None else contextlib.nullcontext()
                 try:
-                    mig = migrate_from_previous_folder(staged_new_store, current_app_dir, jobs=jobs)
+                    with read_live:
+                        mig = migrate_from_previous_folder(staged_new_store, current_app_dir, jobs=active_jobs)
                 except UpdateError as exc:
                     if exc.why is None:
                         raise                   # busy: said in its own words
@@ -2298,6 +2350,9 @@ def unpack_and_migrate_zip(current_store: Store, zip_path: Path, *,
                         raise UpdateError("save_failed", "Could not place unpacked folder %s: %s" % (top_folder, exc),
                                           "无法放置解压后的新版本目录 %s：%s" % (top_folder, exc), 507)
             finally:
+                if active_key is not None:
+                    with _UNPACK_LOCK:
+                        _ACTIVE_UNPACKING.discard(active_key)
                 if not placed:
                     backup._remove_folder(staging_dir)
     except UpdateError:

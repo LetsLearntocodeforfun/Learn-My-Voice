@@ -1896,7 +1896,7 @@ class Handler(BaseHTTPRequestHandler):
                 raise ApiError(404, "not_found", "Download the update package in the app first.",
                                "请先在应用内下载新版压缩包。")
             try:
-                res = updater.unpack_and_migrate_zip(store, Path(wanted_zip), jobs=app.jobs)
+                res = updater.unpack_and_migrate_zip(store, Path(wanted_zip), backups=app.backups, jobs=app.jobs)
             except updater.UpdateError as exc:
                 raise ApiError(exc.status, exc.code, exc.message, exc.message_zh, extra=exc.extra)
             return self._json(res, 201)
