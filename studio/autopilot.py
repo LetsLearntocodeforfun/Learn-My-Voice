@@ -66,8 +66,9 @@ refused while it is unfinished, and the page can follow it.
 Settings are kept in ``config.json`` under ``autopilot`` and cleaned every time they are read, so a damaged
 or hand-edited file cannot switch anything on: ``enabled``, ``level`` (``suggest`` or ``auto``; what the two
 mean for a change is up to each task), ``daily_model_calls`` and ``tasks``. Other modules keep settings of
-their own beside these (``save_other_setting``); saving these four leaves theirs as they are. The settings
-belong to the computer: a backup does not carry them and a restore does not change them.
+their own beside these (``save_other_setting``); saving these four leaves theirs as they are. ``clean_stored``
+cleans the whole value at once, also one read from another folder's file. The settings belong to the
+computer: a backup does not carry them and a restore does not change them.
 
 Standard library only.
 """
@@ -114,6 +115,7 @@ MIN_EVERY_SEC = 600
 MAX_EVERY_SEC = 30 * 86400              # the longest: the log is read to know when a task last ran
 MAX_TASKS = 24                          # tasks one registry holds; with KEEP_RUNS_PER_TASK, fewer lines than MAX_RUNS
 MAX_TASKS_KEPT = 64                     # task switches kept in the settings, also for tasks this version does not have
+MAX_OTHER_SETTINGS = 40                 # settings of other modules that are handed to a task, or carried to another folder
 LOOK_EVERY_SEC = 60.0                   # how often the scheduler looks for what is due
 FIRST_LOOK_AFTER_SEC = 5.0              # after the app started: the page loads first
 RETRY_AFTER_SEC = 3600                  # a failed task is tried again after this, doubled for each failure in a row
@@ -441,6 +443,28 @@ def _clean(raw: Any) -> Dict[str, Any]:
     }
 
 
+def clean_stored(value: Any) -> Dict[str, Any]:
+    """Everything kept under ``autopilot`` in a settings file, made safe to use and to carry elsewhere.
+
+    ``value`` is whatever a ``config.json`` holds under that name: this folder's, or another folder's when data
+    is moved between versions. Returned: this module's four values, cleaned as ``settings`` cleans them (anything
+    that is not as this module writes it counts as never set, so a damaged value switches nothing on), and
+    beside them what other modules keep there, as it is stored. Of those, the ones with a name
+    ``save_other_setting`` accepts are kept, at most MAX_OTHER_SETTINGS; what is inside them is not looked at
+    and not copied: the module that owns a value checks it. A value that is no JSON object gives a new
+    folder's settings and nothing else.
+    """
+    held = value if isinstance(value, dict) else {}
+    kept: Dict[str, Any] = {}
+    for key, stored in held.items():
+        if len(kept) >= MAX_OTHER_SETTINGS:
+            break
+        if isinstance(key, str) and _OTHER_KEY.fullmatch(key) and key not in OWN_SETTINGS:
+            kept[key] = stored
+    kept.update(_clean(held))
+    return kept
+
+
 def settings(store: "Store") -> Dict[str, Any]:
     """The creator's settings for autopilot: ``{"enabled", "level", "daily_model_calls", "tasks": {name: bool}}``.
 
@@ -452,14 +476,12 @@ def settings(store: "Store") -> Dict[str, Any]:
 
 
 def _for_tasks(store: "Store") -> Mapping[str, Any]:
-    """What ``Context.settings`` is: the four cleaned values, other modules' values as stored, and no way to change either."""
-    held = _stored(store)
+    """What ``Context.settings`` is: ``clean_stored`` of what this folder holds, as a copy, with no way to change it."""
     try:
-        others = copy.deepcopy({key: value for key, value in held.items() if key not in OWN_SETTINGS})
+        held = copy.deepcopy(clean_stored(_stored(store)))
     except RecursionError:
-        others = {}
-    others.update(_clean(held))
-    return types.MappingProxyType(others)
+        held = _clean(None)
+    return types.MappingProxyType(held)
 
 
 def save_settings(store: "Store", changes: Any) -> Dict[str, Any]:

@@ -17,14 +17,30 @@ Each class covers one thing a creator, or a module that registers a task, can re
 - a run the app was closed in the middle of is marked as interrupted at the next start;
 - the log is bounded, and a log from elsewhere with anything in it can still be shown;
 - damaged settings switch nothing on, and what other modules keep beside these settings survives a save;
-- a run begins inside the gate, waits there while data is being replaced, and looks again afterwards.
+- a run begins inside the gate, waits there while data is being replaced, and looks again afterwards;
+- a server a test makes, and an app a trial starts, run nothing: only ``server.main`` turns the first switch on
+  and starts the scheduler, and not when the app is started with LEARN_MY_VOICE_NO_AUTOPILOT=1 or for a check of
+  the window; both trials hand that variable to every app they start and ask the app whether it knows;
+- the four requests (read the state, change the settings, run a task now, undo a run) hand over to the module
+  and refuse with a code and a sentence in each language;
+- no task starts while a backup is being restored or data is moved in from an earlier folder; a restore and a
+  move are refused while a task runs; afterwards the schedule goes by the log that is there then;
+- a backup made by data version 3 is restored by this version, and the lines of the log do not count as the
+  creator's work.
 
-No model and no network are involved, and no test waits for time to pass: the clock is handed in.
+No model is involved and nothing is asked of another computer, and no test waits for time to pass: the clock is
+handed in. Where a test shows that a look is held back while data is replaced, it gives that look 0.3 seconds
+to get through, which it would need a hundredth of.
 """
 import contextlib
+import http.client
+import importlib.util
 import io
 import json
+import os
+import re
 import shutil
+import socket
 import sqlite3
 import subprocess
 import sys
@@ -32,10 +48,13 @@ import tempfile
 import threading
 import time
 import unittest
+import zipfile
 from pathlib import Path
 from unittest import mock
 
-from studio import autopilot
+from studio import autopilot, backup, buildinfo, server, updater
+from studio import store as store_module
+from studio.jobs import Jobs
 from studio.store import ROOT, Store
 
 HOUR, DAY = 3600, 86400
@@ -1054,6 +1073,29 @@ class SettingsTest(Case):
                 autopilot.save_other_setting(self.store, key, value)
         self.assertEqual(self.store.config_path.read_bytes(), before)
 
+    def test_one_function_cleans_everything_kept_there_also_what_was_read_from_another_folders_file(self):
+        new = dict(self.NEW)
+        for value in (None, "on", 7, True, [], [{"enabled": True}]):
+            self.assertEqual(autopilot.clean_stored(value), new, value)
+        theirs = {"lookup": {"on": True}, "deep": [[["as", "stored"]]]}
+        value = {"enabled": True, "level": "auto", "daily_model_calls": 30, "tasks": {"trends.refresh": True, "Not A Task": True},
+                 "watch_folder": "/Users/somebody/Movies", "sources": theirs, "Bad Key": 1, "": 2, "x" * 41: 3, "UPPER": 4}
+        cleaned = autopilot.clean_stored(value)
+        self.assertEqual(cleaned, {"enabled": True, "level": "auto", "daily_model_calls": 30, "tasks": {"trends.refresh": True},
+                                   "watch_folder": "/Users/somebody/Movies", "sources": theirs})
+        self.assertIs(cleaned["sources"], theirs)                            # theirs is kept as it is stored, not looked into
+        self.assertEqual(autopilot.clean_stored(cleaned), cleaned)           # cleaning what is clean changes nothing
+        damaged = autopilot.clean_stored({"enabled": "yes", "level": 5, "daily_model_calls": 10 ** 9, "tasks": ["trends.refresh"],
+                                          "watch_folder": "/kept"})
+        self.assertEqual(damaged, dict(new, watch_folder="/kept"))           # what is damaged switches nothing on
+        many = autopilot.clean_stored({"key_%d" % n: n for n in range(100)})
+        self.assertEqual(len(many), autopilot.MAX_OTHER_SETTINGS + 4)
+        self.assertEqual(value["tasks"], {"trends.refresh": True, "Not A Task": True})     # and what was handed in is not changed
+        # What a task is handed is this, for the folder in use.
+        self.store.update_config(lambda config: config.update(autopilot=value))
+        self.assertEqual(dict(autopilot._for_tasks(self.store)), cleaned)
+        self.assertEqual(autopilot.settings(self.store), {key: cleaned[key] for key in autopilot.OWN_SETTINGS})
+
     def test_a_value_of_another_kind_refuses_the_whole_request_and_saves_nothing(self):
         autopilot.save_settings(self.store, {"enabled": True, "level": "auto", "daily_model_calls": 5, "tasks": {"trends.refresh": True}})
         before = self.store.config_path.read_bytes()
@@ -1194,6 +1236,742 @@ class SchedulerTest(Case):
             self.pilot.stop()
         self.assertIn("the database was busy", printed.getvalue())
         self.assertEqual(trips, [])
+
+
+# ---- what the classes below need --------------------------------------------------------------------------------
+# The fingerprint data version 3 stood for (tests/test_backup.py, LAYOUT_OF_DATA_VERSION), and the tables as the code
+# at 309d9f4 creates them: the commit that version was published from, and the one autopilot was built on.
+LAYOUT_OF_DATA_VERSION_3 = "d5c2a68c0ed818d4"
+SCHEMA_AT_309D9F4 = """
+CREATE TABLE IF NOT EXISTS scripts (
+    id TEXT PRIMARY KEY,
+    title TEXT NOT NULL,
+    mode TEXT NOT NULL DEFAULT 'NORMAL_ORGANIC',
+    video_format TEXT NOT NULL DEFAULT 'VLOG_VOICEOVER',
+    target_sec INTEGER NOT NULL DEFAULT 60,
+    notes TEXT NOT NULL DEFAULT '',
+    lines_json TEXT NOT NULL DEFAULT '[]',
+    line_count INTEGER,
+    preview TEXT,
+    post_json TEXT NOT NULL DEFAULT '{}',
+    ai_lines_json TEXT,
+    status TEXT NOT NULL DEFAULT 'DRAFT',
+    keywords_json TEXT NOT NULL DEFAULT '[]',
+    basis_json TEXT,
+    created_at REAL NOT NULL,
+    updated_at REAL NOT NULL
+);
+CREATE TABLE IF NOT EXISTS samples (
+    id TEXT PRIMARY KEY,
+    title TEXT NOT NULL,
+    text TEXT NOT NULL,
+    is_sponsored INTEGER NOT NULL DEFAULT 0,
+    views INTEGER,
+    likes INTEGER,
+    collects INTEGER,
+    comments INTEGER,
+    kind TEXT NOT NULL DEFAULT 'script',
+    timing_json TEXT,
+    source_name TEXT NOT NULL DEFAULT '',
+    needs_review INTEGER NOT NULL DEFAULT 0,
+    reviewed_at REAL,
+    origin TEXT NOT NULL DEFAULT '',
+    script_id TEXT,
+    posted_on TEXT,
+    note_url TEXT NOT NULL DEFAULT '',
+    metrics_on TEXT,
+    ai_json TEXT,
+    snapshot TEXT NOT NULL DEFAULT '',
+    created_at REAL NOT NULL,
+    updated_at REAL NOT NULL
+);
+CREATE TABLE IF NOT EXISTS trends (
+    id TEXT PRIMARY KEY,
+    key TEXT NOT NULL UNIQUE,
+    keyword TEXT NOT NULL,
+    heat INTEGER,
+    source TEXT NOT NULL DEFAULT 'manual',
+    source_url TEXT NOT NULL DEFAULT '',
+    note_zh TEXT NOT NULL DEFAULT '',
+    note_en TEXT NOT NULL DEFAULT '',
+    created_at REAL NOT NULL,
+    updated_at REAL NOT NULL
+);
+CREATE TABLE IF NOT EXISTS lessons (
+    id TEXT PRIMARY KEY,
+    script_id TEXT NOT NULL DEFAULT '',
+    ai TEXT NOT NULL,
+    final TEXT NOT NULL,
+    note TEXT NOT NULL DEFAULT '',
+    created_at REAL NOT NULL,
+    UNIQUE (ai, final)
+);
+CREATE TABLE IF NOT EXISTS briefs (
+    id TEXT PRIMARY KEY,
+    kind TEXT NOT NULL,
+    fingerprint TEXT NOT NULL DEFAULT '',
+    payload_json TEXT NOT NULL,
+    created_at REAL NOT NULL
+);
+CREATE TABLE IF NOT EXISTS ai_suggestions (
+    script_id TEXT NOT NULL,
+    text TEXT NOT NULL,
+    created_at REAL NOT NULL
+);
+CREATE INDEX IF NOT EXISTS ai_suggestions_by_script ON ai_suggestions (script_id);
+CREATE TABLE IF NOT EXISTS script_pins (
+    script_id TEXT NOT NULL,
+    sample_id TEXT NOT NULL,
+    created_at REAL NOT NULL,
+    PRIMARY KEY (script_id, sample_id)
+);
+CREATE TABLE IF NOT EXISTS metric_snapshots (
+    id TEXT PRIMARY KEY,
+    sample_id TEXT NOT NULL,
+    read_on TEXT NOT NULL,
+    views INTEGER,
+    likes INTEGER,
+    collects INTEGER,
+    comments INTEGER,
+    shares INTEGER,
+    new_followers INTEGER,
+    click_rate_pct REAL,
+    avg_watch_sec REAL,
+    completion_rate_pct REAL,
+    created_at REAL NOT NULL
+);
+CREATE INDEX IF NOT EXISTS metric_snapshots_by_sample ON metric_snapshots (sample_id);
+CREATE TABLE IF NOT EXISTS sample_comments (
+    id TEXT PRIMARY KEY,
+    sample_id TEXT NOT NULL,
+    text TEXT NOT NULL,
+    likes INTEGER,
+    sentiment TEXT NOT NULL DEFAULT 'neutral',
+    is_question INTEGER NOT NULL DEFAULT 0,
+    created_at REAL NOT NULL
+);
+CREATE INDEX IF NOT EXISTS sample_comments_by_sample ON sample_comments (sample_id);
+CREATE TABLE IF NOT EXISTS sample_sentiments (
+    sample_id TEXT PRIMARY KEY,
+    summary_json TEXT NOT NULL DEFAULT '{}',
+    source TEXT NOT NULL DEFAULT 'local',
+    updated_at REAL NOT NULL
+);
+CREATE TABLE IF NOT EXISTS sample_beats (
+    id TEXT PRIMARY KEY,
+    sample_id TEXT NOT NULL,
+    beat_index INTEGER NOT NULL DEFAULT 1,
+    beat_type TEXT NOT NULL,
+    audio_mode TEXT NOT NULL DEFAULT 'VOICEOVER',
+    delivery TEXT NOT NULL DEFAULT '',
+    start_sec REAL,
+    end_sec REAL,
+    spoken_text TEXT NOT NULL,
+    english_meaning TEXT NOT NULL DEFAULT '',
+    visual_summary TEXT NOT NULL DEFAULT '',
+    created_at REAL NOT NULL
+);
+CREATE INDEX IF NOT EXISTS sample_beats_by_sample ON sample_beats (sample_id);
+CREATE TABLE IF NOT EXISTS video_plans (
+    id TEXT PRIMARY KEY,
+    title TEXT NOT NULL,
+    video_format TEXT NOT NULL DEFAULT 'VLOG_VOICEOVER',
+    target_sec INTEGER NOT NULL DEFAULT 60,
+    scheduled_for TEXT NOT NULL DEFAULT '',
+    status TEXT NOT NULL DEFAULT 'PLANNED',
+    priority INTEGER NOT NULL DEFAULT 2,
+    source_kind TEXT NOT NULL DEFAULT 'manual',
+    notes TEXT NOT NULL DEFAULT '',
+    rationale_zh TEXT NOT NULL DEFAULT '',
+    rationale_en TEXT NOT NULL DEFAULT '',
+    keywords_json TEXT NOT NULL DEFAULT '[]',
+    questions_json TEXT NOT NULL DEFAULT '[]',
+    script_id TEXT,
+    created_at REAL NOT NULL,
+    updated_at REAL NOT NULL
+);
+CREATE TABLE IF NOT EXISTS sponsor_briefs (
+    id TEXT PRIMARY KEY,
+    title TEXT NOT NULL DEFAULT '',
+    source_name TEXT NOT NULL DEFAULT '',
+    brief TEXT NOT NULL,
+    reading_json TEXT,
+    choice_json TEXT,
+    ticks_json TEXT NOT NULL DEFAULT '{}',
+    script_id TEXT,
+    created_at REAL NOT NULL,
+    updated_at REAL NOT NULL
+);
+"""
+
+
+def load(folder, name):
+    """A script of this repository that is not part of a package (``tools/``, ``desktop/``), loaded by its path."""
+    spec = importlib.util.spec_from_file_location(name, str(ROOT / folder / (name + ".py")))
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+try_release = load("tools", "try_release")
+try_installer = load("desktop", "try_installer")
+
+
+@contextlib.contextmanager
+def loopback_only():
+    """Nothing may be asked of another computer: a connection or a lookup that leaves this one is written down and refused."""
+    blocked = []
+    real_connect, real_lookup = socket.socket.connect, socket.getaddrinfo
+
+    def is_local(host):
+        host = str(host)
+        return host in ("localhost", "::1") or host.startswith("127.")
+
+    def connect(sock, address):
+        host = address[0] if isinstance(address, tuple) else address
+        if not is_local(host):
+            blocked.append(("connect", address))
+            raise OSError("a test tried to reach another computer")
+        return real_connect(sock, address)
+
+    def lookup(host, *args, **kwargs):
+        if host is not None and not is_local(host):
+            blocked.append(("lookup", host))
+            raise socket.gaierror("a test tried to look up another computer")
+        return real_lookup(host, *args, **kwargs)
+
+    with mock.patch.object(socket.socket, "connect", connect), mock.patch.object(socket, "getaddrinfo", lookup):
+        yield blocked
+
+
+def rows(path):
+    """Every row of every table of a database, with its place in the table."""
+    with contextlib.closing(sqlite3.connect(str(path))) as db:
+        tables = sorted(row[0] for row in db.execute("SELECT name FROM sqlite_master WHERE type = 'table'"))
+        return {table: db.execute("SELECT rowid, * FROM %s ORDER BY rowid" % table).fetchall() for table in tables}
+
+
+class ServerCase(Case):
+    """The app on that folder as a test makes it, answering on this computer. Its autopilot has this test's tasks and clock."""
+
+    def setUp(self):
+        super().setUp()
+        guard = loopback_only()
+        self.blocked = guard.__enter__()
+        self.addCleanup(guard.__exit__, None, None, None)
+        self.httpd = server.make_server(0, self.store, lambda *args: {})
+        self.app = self.httpd.app
+        self.pilot = self.app.autopilot
+        self.pilot.registry, self.pilot.clock = self.registry, self.clock
+        self.pilots.append(self.pilot)
+        self.port = self.httpd.server_address[1]
+        thread = threading.Thread(target=self.httpd.serve_forever, kwargs={"poll_interval": 0.02}, daemon=True)
+        thread.start()
+        self.addCleanup(lambda: (self.httpd.shutdown(), self.httpd.server_close(), thread.join(5)))
+
+    def send(self, method, path, payload=None, headers=None, body=None):
+        head = dict(headers or {})
+        if payload is not None:
+            body = json.dumps(payload, ensure_ascii=False).encode("utf-8")
+            head["Content-Type"] = "application/json"
+        conn = http.client.HTTPConnection("127.0.0.1", self.port, timeout=60)
+        try:
+            conn.request(method, path, body=body, headers=head)
+            res = conn.getresponse()
+            raw = res.read()
+        finally:
+            conn.close()
+        return res.status, json.loads(raw.decode("utf-8"))
+
+    def said(self, answer):
+        """A refusal has a code and a sentence in each language, and is never the last-resort answer."""
+        self.assertNotEqual(answer.get("error"), "internal")
+        self.assertRegex(answer.get("message_zh", ""), CHINESE)
+        self.assertRegex(answer["message"], "[A-Za-z]{4}")
+        return answer["error"]
+
+    def packaged(self, version):
+        """The app runs as a release package of ``version`` for as long as the test lasts."""
+        path = self.tmp / "build.json"
+        path.write_text(json.dumps({"version": version, "commit": "a" * 40, "built_on": "2026-11-22"}), encoding="utf-8")
+        for patch in (mock.patch.object(buildinfo, "BUILD_FILE", path), mock.patch.object(buildinfo, "desktop", return_value=None)):
+            patch.start()
+            self.addCleanup(patch.stop)
+
+
+# ---------------------------------------------------------------------------------------------- 13. the four requests
+class RequestsTest(ServerCase):
+    def test_a_server_a_test_makes_runs_nothing_whatever_is_requested(self):
+        self.task("trends.refresh")
+        self.assertIs(self.app.autopilot_on, False)
+        self.assertNotIn("autopilot", [thread.name for thread in threading.enumerate()])
+        status, state = self.send("POST", "/api/autopilot/settings", {"enabled": True, "level": "auto", "tasks": {"trends.refresh": True}})
+        self.assertEqual((status, state["on"], state["enabled"], state["active"], state["level"]), (200, False, True, False, "auto"))
+        status, answer = self.send("POST", "/api/autopilot/run", {"task": "trends.refresh"})
+        self.assertEqual((status, self.said(answer)), (409, "autopilot_off_here"))
+        self.assertIn("LEARN_MY_VOICE_NO_AUTOPILOT=1", answer["message"])
+        self.assertIn("LEARN_MY_VOICE_NO_AUTOPILOT=1", answer["message_zh"])
+        self.assertEqual(self.pilot.run_due(), [])                           # and what the scheduler would do does nothing either
+        status, state = self.send("GET", "/api/autopilot")
+        self.assertEqual((status, state["runs"], state["running"], state["tasks"][0]["next_run_at"]), (200, [], None, None))
+        self.assertEqual((self.ran, self.app.jobs.unfinished(), self.blocked), ([], 0, []))
+
+    def test_once_the_first_switch_is_on_the_same_requests_run_the_task_and_take_back_what_it_did(self):
+        """Without this the test above would also pass if the requests could never run anything."""
+        notes = []
+        self.registry.add_undo("notes.added", lambda store, payload: notes.remove(payload))
+        self.task("notes.add", run=lambda context: (notes.append("one"), context.record_undo("notes.added", "one"), {"added": 1})[2])
+        self.app.autopilot_on = True
+        status, state = self.send("POST", "/api/autopilot/settings", {"enabled": True, "tasks": {"notes.add": True}})
+        self.assertEqual((status, state["active"], state["tasks"][0]["on"], state["tasks"][0]["next_run_at"]), (200, True, True, 0.0))
+        status, answer = self.send("POST", "/api/autopilot/run", {"task": "notes.add"})
+        self.assertEqual((status, answer["run"]["task"], answer["run"]["forced"], answer["job"]["kind"]), (202, "notes.add", True, "autopilot"))
+        self.assertTrue(self.pilot.wait(10))
+        status, followed = self.send("GET", "/api/jobs/" + answer["job"]["id"])
+        self.assertEqual((status, followed["job"]["status"], followed["job"]["label"], followed["job"]["result"]["summary"]),
+                         (200, "done", "notes.add", {"added": 1}))
+        status, state = self.send("GET", "/api/autopilot")
+        line = state["runs"][0]
+        self.assertEqual((line["id"], line["status"], line["changes"], line["can_undo"], notes), (answer["run"]["id"], "done", 1, True, ["one"]))
+        self.assertEqual((state["tasks"][0]["last_run"]["id"], state["tasks"][0]["next_run_at"]), (line["id"], BASE + HOUR))
+        status, undone = self.send("POST", "/api/autopilot/runs/%s/undo" % line["id"], {})
+        self.assertEqual((status, undone["undone"], undone["run"]["can_undo"], undone["run"]["undone_at"], notes), (200, 1, False, BASE, []))
+        status, again = self.send("POST", "/api/autopilot/runs/%s/undo" % line["id"], {})
+        self.assertEqual((status, self.said(again)), (409, "autopilot_already_undone"))
+        self.assertEqual(self.blocked, [])
+
+    def test_every_refusal_has_a_code_and_a_sentence_in_each_language(self):
+        self.task("trends.refresh")
+        refused = [
+            ("/api/autopilot/run", {"task": "trends.refresh"}, 409, "autopilot_off_here"),
+            ("/api/autopilot/run", {"task": "no.such_task"}, 404, "autopilot_unknown_task"),
+            ("/api/autopilot/run", {}, 404, "autopilot_unknown_task"),
+            ("/api/autopilot/settings", {"enabled": "yes"}, 400, "autopilot_bad_setting"),
+            ("/api/autopilot/settings", {"daily_model_calls": 500}, 400, "autopilot_bad_setting"),
+            ("/api/autopilot/settings", {"watch_folder": "/somewhere"}, 400, "autopilot_bad_setting"),
+            ("/api/autopilot/settings", {"tasks": {"no.such_task": True}}, 404, "autopilot_unknown_task"),
+            ("/api/autopilot/runs/000000000000/undo", {}, 404, "autopilot_run_not_found"),
+        ]
+        for path, payload, expected, code in refused:
+            status, answer = self.send("POST", path, payload)
+            self.assertEqual((status, self.said(answer)), (expected, code), (path, payload))
+        self.assertEqual(autopilot.settings(self.store), SettingsTest.NEW)   # none of it saved anything
+        self.app.autopilot_on = True
+        status, answer = self.send("POST", "/api/autopilot/run", {"task": "trends.refresh"})
+        self.assertEqual((status, self.said(answer)), (409, "autopilot_not_enabled"))
+        self.send("POST", "/api/autopilot/settings", {"enabled": True})
+        status, answer = self.send("POST", "/api/autopilot/run", {"task": "trends.refresh"})
+        self.assertEqual((status, self.said(answer)), (409, "autopilot_task_off"))
+        for method, path in (("GET", "/api/autopilot/runs"), ("GET", "/api/autopilot/run"), ("DELETE", "/api/autopilot"),
+                             ("PUT", "/api/autopilot/settings"), ("POST", "/api/autopilot/runs/not-an-id/undo"),
+                             ("POST", "/api/autopilot/runs/000000000000/redo"), ("GET", "/api/autopilotx")):
+            status, answer = self.send(method, path, {} if method == "POST" else None)
+            self.assertEqual((status, answer["error"]), (404, "not_found"), (method, path))
+        status, answer = self.send("POST", "/api/autopilot/settings", body=b"enabled=true",
+                                   headers={"Content-Type": "application/x-www-form-urlencoded"})
+        self.assertGreaterEqual(status, 400)                                 # a form another site could send is not taken
+        self.assertIs(autopilot.settings(self.store)["level"], "suggest")
+        self.assertEqual((self.ran, self.blocked), ([], []))
+
+    def test_a_page_that_was_open_before_a_restore_can_neither_change_the_settings_nor_run_a_task(self):
+        self.task("trends.refresh")
+        self.switch_on("trends.refresh")
+        stale = {backup.EPOCH_HEADER: "abcdefabcdef"}                        # the data that page means is no longer there
+        for path, payload in (("/api/autopilot/settings", {"enabled": False}), ("/api/autopilot/run", {"task": "trends.refresh"}),
+                              ("/api/autopilot/runs/000000000000/undo", {})):
+            status, answer = self.send("POST", path, payload, headers=stale)
+            self.assertEqual((status, self.said(answer)), (409, "stale_data"), path)
+        self.assertEqual((autopilot.settings(self.store)["enabled"], self.ran), (True, []))
+        status, _state = self.send("GET", "/api/autopilot", headers=stale)   # reading goes on
+        self.assertEqual(status, 200)
+
+    def test_a_task_gets_the_transport_the_app_has_when_it_runs(self):
+        seen = []
+        self.task("ideas.refresh", run=lambda context: seen.append(context.transport))
+        self.switch_on("ideas.refresh")
+        self.app.transport = stand_in = lambda *args: {"said": "nothing"}    # put there after the app was made, as tests do
+        self.assertEqual(self.look(), [("ideas.refresh", "done")])
+        self.assertEqual(seen, [stand_in])
+
+
+# ---------------------------------------------------------------------------------------------- 14. who turns the first switch on
+class StartedTest(Case):
+    """Only ``server.main`` turns the first switch on and starts the scheduler, and only for a run a person started."""
+
+    def started(self, **variables):
+        seen = {}
+
+        def serve(httpd, *args, **kwargs):
+            pilot = httpd.app.autopilot
+            seen.update(on=httpd.app.autopilot_on, scheduler=pilot._thread is not None and pilot._thread.is_alive(),
+                        window_check=httpd.app.window_check is not None, looked=pilot.run_due(), pilot=pilot)
+
+        variables.setdefault(server.NO_UPDATE_CHECK_ENV, "1")
+        environment = dict(variables, STUDIO_DATA_DIR=str(self.tmp / ("started-%d" % len(os.listdir(str(self.tmp)))) / "data"))
+        with mock.patch.dict(os.environ, environment), mock.patch.object(server.StudioServer, "serve_forever", serve), \
+                contextlib.redirect_stdout(io.StringIO()):
+            for name in (server.NO_AUTOPILOT_ENV, server.WINDOW_CHECK_ENV):
+                if name not in variables:
+                    os.environ.pop(name, None)
+            self.assertEqual(server.main(["--port", "0", "--no-browser"]), 0)
+        pilot = seen.pop("pilot")
+        seen["scheduler_after"] = pilot._thread is not None and pilot._thread.is_alive()
+        return seen
+
+    def test_started_by_a_person_the_app_may_run_tasks_and_has_its_scheduler_until_it_closes(self):
+        self.assertEqual(self.started(), {"on": True, "scheduler": True, "window_check": False, "looked": [], "scheduler_after": False})
+        self.assertNotIn("autopilot", [thread.name for thread in threading.enumerate()])
+
+    def test_started_with_the_variable_it_may_not(self):
+        self.assertEqual(server.NO_AUTOPILOT_ENV, "LEARN_MY_VOICE_NO_AUTOPILOT")
+        seen = self.started(LEARN_MY_VOICE_NO_AUTOPILOT="1")
+        self.assertEqual((seen["on"], seen["scheduler"]), (False, False))
+        for other in ("0", "", "yes", "true"):
+            seen = self.started(LEARN_MY_VOICE_NO_AUTOPILOT=other)
+            self.assertEqual((seen["on"], seen["scheduler"]), (True, True), other)
+
+    def test_started_for_a_check_of_the_window_it_may_not(self):
+        seen = self.started(LEARN_MY_VOICE_WINDOW_CHECK="1")
+        self.assertEqual((seen["on"], seen["scheduler"], seen["window_check"]), (False, False, True))
+
+    def test_a_server_made_any_other_way_may_not_and_has_no_scheduler(self):
+        httpd = server.make_server(0, self.store)
+        self.addCleanup(httpd.server_close)
+        self.assertIs(httpd.app.autopilot_on, False)
+        self.assertIsNone(httpd.app.autopilot._thread)
+        self.assertIs(httpd.app.autopilot.start(), False)
+        source = (ROOT / "studio" / "server.py").read_text(encoding="utf-8")
+        main = source[source.index("\ndef main("):]
+        # One place sets the switch and one starts the scheduler: both in main. The other assignment is the property itself.
+        self.assertEqual((len(re.findall(r"\.autopilot_on = ", source)), len(re.findall(r"\.autopilot_on = ", main))), (1, 1))
+        self.assertEqual((len(re.findall(r"autopilot\.start\(", source)), len(re.findall(r"autopilot\.start\(", main))), (1, 1))
+        self.assertEqual(len(re.findall(r"autopilot\.on = ", source)), 1)
+        for name in ("backup.py", "updater.py", "mcp_server.py", "pipeline.py"):
+            other = (ROOT / "studio" / name).read_text(encoding="utf-8")
+            self.assertIsNone(re.search(r"autopilot_on\s*=|\.on = True|\.start\(\)", other), name)
+
+
+# ---------------------------------------------------------------------------------------------- 15. the trials
+class Ended:
+    """Stands in for a started app that ended at once."""
+    pid, returncode = 4242, 1
+
+    def poll(self):
+        return 1
+
+    def wait(self, timeout=None):
+        return 1
+
+    def kill(self):
+        pass
+
+
+class TrialsTest(ServerCase):
+    def test_the_three_places_name_the_same_variable(self):
+        self.assertEqual({autopilot.NO_AUTOPILOT_ENV, server.NO_AUTOPILOT_ENV, try_release.NO_AUTOPILOT_ENV, try_installer.NO_AUTOPILOT_ENV},
+                         {"LEARN_MY_VOICE_NO_AUTOPILOT"})
+
+    def test_the_trial_of_a_package_hands_it_to_every_app_it_starts(self):
+        for given in ({}, {"LEARN_MY_VOICE_NO_AUTOPILOT": "0"}, {"LEARN_MY_VOICE_NO_AUTOPILOT": "1"}):
+            started = []
+
+            def start(command, **more):
+                started.append((command, more["env"]))
+                return Ended()
+
+            app = self.tmp / "unpacked" / "learn-my-voice-0.2.0"
+            app.mkdir(parents=True, exist_ok=True)
+            with mock.patch.dict(os.environ, given), mock.patch.object(try_release.subprocess, "Popen", start):
+                if not given:
+                    os.environ.pop("LEARN_MY_VOICE_NO_AUTOPILOT", None)
+                with self.assertRaises(try_release.Failed) as stopped:
+                    try_release.run_once(app, ["sh", "start-learn-my-voice.sh"], "0.2.0", "the launcher", [], chinese=True)
+            self.assertIn("ended at once", str(stopped.exception))
+            self.assertEqual(len(started), 1)
+            self.assertEqual(started[0][1]["LEARN_MY_VOICE_NO_AUTOPILOT"], "1", given)
+        source = (ROOT / "tools" / "try_release.py").read_text(encoding="utf-8")
+        self.assertEqual(source.count("subprocess.Popen("), 1)               # and there is no other place it starts an app
+
+    def test_the_trial_of_an_installer_hands_it_to_both_starts_of_the_app(self):
+        started = []
+        with mock.patch.object(try_installer.subprocess, "Popen", lambda command, **more: started.append(more["env"])), \
+                mock.patch.dict(os.environ, {"LEARN_MY_VOICE_NO_AUTOPILOT": "0"}):
+            try_installer.start(self.tmp / "app", self.tmp / "data-of-the-trial", self.tmp / "log.txt", window_check=True)
+            try_installer.start(self.tmp / "app", None, self.tmp / "log.txt")
+        self.assertEqual([env["LEARN_MY_VOICE_NO_AUTOPILOT"] for env in started], ["1", "1"])
+        source = (ROOT / "desktop" / "try_installer.py").read_text(encoding="utf-8")
+        self.assertEqual(source.count("subprocess.Popen("), 1)
+
+    def test_the_trial_asks_the_app_whether_it_knows_and_fails_when_it_would_run_tasks(self):
+        self.packaged("0.2.0-beta.rc.99")
+        base = "http://127.0.0.1:%d" % self.port
+        checks = []
+        try_release.use(base, "0.2.0-beta.rc.99", checks)
+        self.assertIn("started by a trial, it runs no task by itself and says so", checks)
+        self.app.autopilot_on = True                                         # the variable did not reach the app
+        with self.assertRaises(try_release.Failed) as stopped:
+            try_release.use(base, "0.2.0-beta.rc.99", [])
+        self.assertIn("it runs no task by itself", str(stopped.exception))
+        # The trial of an installer asks the same of the app it started the way a person starts it. That trial needs
+        # an installer and is not run here: only that it asks, and what it does with the answer, is read off its text.
+        for name, folder in (("try_release", "tools"), ("try_installer", "desktop")):
+            source = (ROOT / folder / (name + ".py")).read_text(encoding="utf-8")
+            self.assertEqual(re.findall(r'"/api/autopilot[^"]*"', source), ['"/api/autopilot"'], name)
+        installer = (ROOT / "desktop" / "try_installer.py").read_text(encoding="utf-8")
+        self.assertIn('pilot.get("on") is not False', installer)
+        self.assertEqual(self.blocked, [])
+
+
+# ---------------------------------------------------------------------------------------------- 16. restoring a backup, moving data in
+class RestoreCase(Case):
+    """The gate and the jobs of a running app (``backup.Backups``, ``Jobs``), and its autopilot beside them."""
+
+    def setUp(self):
+        super().setUp()
+        self.jobs = Jobs()
+        self.backups = backup.Backups(self.store, self.jobs)
+        self.pilot = self.make(jobs=self.jobs, backups=self.backups)
+        self.count = 0
+
+    def backup_of(self, store):
+        self.count += 1
+        path = self.tmp / ("made-%d.%s" % (self.count, backup.EXTENSION))
+        backup.create(store, path)
+        return path
+
+    def staged(self, path):
+        """Hand a copy of the file to the app the way an upload arrives."""
+        self.count += 1
+        copy = self.tmp / ("arrived-%d.part" % self.count)
+        shutil.copyfile(str(path), str(copy))
+        return self.backups.stage(copy)
+
+    def elsewhere(self):
+        """Another data folder, with a script in it and this test's task switched on."""
+        there = Store(self.tmp / ("elsewhere-%d" % self.count) / "data")
+        there.create_script(title="那边的一篇")
+        return there
+
+    def look_while(self, replace):
+        """Have the scheduler look in the middle of ``replace(at_the_moment)``, which calls ``at_the_moment()`` once the
+        data is being replaced. Returns ``(what was seen at that moment, the lines the look wrote in the end)``."""
+        seen, written = {}, []
+        look = threading.Thread(target=lambda: written.extend(self.pilot.run_due()), daemon=True)
+
+        def at_the_moment():
+            if not seen:
+                look.start()
+                look.join(0.3)              # far longer than a look takes that nothing holds back
+                seen.update(still_waiting=look.is_alive(), ran=list(self.ran), jobs=self.jobs.unfinished())
+
+        replace(at_the_moment)
+        look.join(10)
+        self.assertFalse(look.is_alive())
+        return seen, written
+
+
+class RestoreTest(RestoreCase):
+    def test_no_task_starts_while_a_backup_is_being_restored_and_it_runs_afterwards_in_the_restored_data(self):
+        self.task("trends.refresh")
+        self.switch_on("trends.refresh")
+        preview = self.staged(self.backup_of(self.elsewhere()))
+
+        def restore(at_the_moment):
+            self.backups._before_step = lambda name: at_the_moment()         # the restore has shut everybody out and replaces the data
+            self.backups.restore(preview["restore_id"])
+
+        seen, written = self.look_while(restore)
+        self.assertEqual(seen, {"still_waiting": True, "ran": [], "jobs": 0})
+        # The log that was restored has no run of the task: it is due, and runs on what is there now.
+        self.assertEqual(([line["status"] for line in written], self.ran), (["done"], ["trends.refresh"]))
+        self.assertEqual([script["title"] for script in self.store.list_scripts()], ["那边的一篇"])
+        self.assertEqual(self.sql("SELECT task, status FROM autopilot_runs"), [("trends.refresh", "done")])
+
+    def test_after_a_restore_the_schedule_goes_by_the_log_that_was_restored(self):
+        self.task("trends.refresh", every=12 * HOUR)
+        self.switch_on("trends.refresh")
+        there = self.elsewhere()
+        autopilot.save_settings(there, {"enabled": True, "tasks": {"trends.refresh": True}})
+        over_there = autopilot.Autopilot(there, registry=self.registry, clock=self.clock)
+        self.pilots.append(over_there)
+        over_there.on = True
+        self.assertEqual([line["status"] for line in over_there.run_due()], ["done"])      # it ran there, just now
+        del self.ran[:]
+        preview = self.staged(self.backup_of(there))
+
+        def restore(at_the_moment):
+            self.backups._before_step = lambda name: at_the_moment()
+            self.backups.restore(preview["restore_id"])
+
+        seen, written = self.look_while(restore)                             # here it never ran: before the restore it was due
+        self.assertEqual(seen, {"still_waiting": True, "ran": [], "jobs": 0})
+        self.assertEqual((written, self.ran), ([], []))                      # by the restored log it ran just now: not due
+        self.later(12 * HOUR)
+        self.assertEqual(self.look(), [("trends.refresh", "done")])
+        self.assertEqual(len(self.sql("SELECT id FROM autopilot_runs")), 2)
+
+    def test_a_restore_is_refused_while_a_task_runs_and_goes_through_once_it_is_done(self):
+        started, release = threading.Event(), self.hold()
+        self.task("voice.relearn", run=lambda context: (started.set(), release.wait(10)) and {})
+        self.switch_on("voice.relearn")
+        preview = self.staged(self.backup_of(self.elsewhere()))
+        self.assertEqual(self.pilot.run_due.__self__.jobs.unfinished(), 0)
+        look = threading.Thread(target=self.pilot.run_due, daemon=True)      # the scheduler's own run, not one started by hand
+        look.start()
+        self.assertTrue(started.wait(10))
+        self.assertEqual((self.jobs.unfinished(), self.backups.info()["busy"]), (1, True))
+        with self.assertRaises(backup.Refused) as refused:
+            self.backups.restore(preview["restore_id"])
+        self.assertEqual((refused.exception.code, refused.exception.status), ("restore_busy", 409))
+        self.assertRegex(refused.exception.message_zh, CHINESE)
+        self.assertEqual(self.store.list_scripts(), [])                      # nothing was replaced
+        release.set()
+        look.join(10)
+        self.assertTrue(self.pilot.wait(10))
+        self.assertEqual((self.jobs.unfinished(), self.backups.info()["busy"]), (0, False))
+        self.assertTrue(self.backups.restore(preview["restore_id"])["restored"])
+        self.assertEqual([script["title"] for script in self.store.list_scripts()], ["那边的一篇"])
+
+    def test_a_backup_made_while_a_task_ran_holds_that_run_and_after_a_restore_it_counts_as_cut_off(self):
+        started, release = threading.Event(), self.hold()
+        self.task("voice.relearn", every=7 * DAY, run=lambda context: (started.set(), release.wait(10)) and {})
+        self.switch_on("voice.relearn")
+        self.pilot.run_now("voice.relearn")
+        self.assertTrue(started.wait(10))
+        path = self.backup_of(self.store)                                    # a backup can be made while a task runs
+        release.set()
+        self.assertTrue(self.pilot.wait(10))
+        self.assertEqual(self.lines()[0]["status"], "done")
+        self.later(2 * HOUR)
+        self.backups.restore(self.staged(path)["restore_id"])
+        state = self.pilot.status()
+        self.assertEqual((state["runs"][0]["status"], state["running"], state["tasks"][0]["next_run_at"]), ("interrupted", None, BASE + HOUR))
+        self.assertEqual(self.sql("SELECT status FROM autopilot_runs"), [("running",)])     # as the backup has it, until a run begins
+        self.assertEqual(self.look(), [("voice.relearn", "done")])           # two hours after it began: tried again
+        self.assertEqual(self.sql("SELECT status FROM autopilot_runs ORDER BY rowid"), [("interrupted",), ("done",)])
+
+    def test_the_settings_stay_with_the_computer_a_backup_does_not_carry_them_and_a_restore_does_not_change_them(self):
+        there = self.elsewhere()
+        autopilot.save_settings(there, {"enabled": True, "level": "auto", "daily_model_calls": 99, "tasks": {"trends.refresh": True}})
+        autopilot.save_other_setting(there, "watch_folder", "/Users/somebody/over-there")
+        path = self.backup_of(there)
+        with zipfile.ZipFile(str(path)) as archive:
+            self.assertEqual(sorted(json.loads(archive.read("settings.json").decode("utf-8"))), ["trend_weight"])   # what a backup carries
+            for name in archive.namelist():
+                self.assertNotIn(b"over-there", archive.read(name), name)
+        autopilot.save_settings(self.store, {"daily_model_calls": 3})
+        autopilot.save_other_setting(self.store, "watch_folder", "/Users/somebody/here")
+        self.backups.restore(self.staged(path)["restore_id"])
+        self.assertEqual(autopilot.settings(self.store), {"enabled": False, "level": "suggest", "daily_model_calls": 3, "tasks": {}})
+        self.assertEqual(self.store.load_config()["autopilot"]["watch_folder"], "/Users/somebody/here")
+        self.assertEqual([script["title"] for script in self.store.list_scripts()], ["那边的一篇"])
+
+    def test_no_task_starts_while_data_is_moved_in_from_an_earlier_folder_and_moving_is_refused_while_one_runs(self):
+        earlier = self.tmp / "learn-my-voice-0.1.9"
+        Store(earlier / "data").create_script(title="早期脚本")
+        started, release = threading.Event(), self.hold()
+        self.task("voice.relearn", run=lambda context: (started.set(), release.wait(10)) and {})
+        self.task("trends.refresh")
+        self.switch_on("voice.relearn")
+        self.pilot.run_now("voice.relearn")
+        self.assertTrue(started.wait(10))
+        with self.assertRaises(updater.UpdateError) as refused:
+            updater.migrate_from_previous_folder(self.store, earlier, backups=self.backups, jobs=self.jobs)
+        self.assertEqual((refused.exception.code, refused.exception.status), ("migrate_busy", 409))
+        self.assertRegex(refused.exception.message_zh, CHINESE)
+        self.assertEqual(self.store.list_scripts(), [])
+        release.set()
+        self.assertTrue(self.pilot.wait(10))
+        # The folder still counts as empty: one line in the log is not the creator's work. Now the other task is due.
+        autopilot.save_settings(self.store, {"tasks": {"voice.relearn": False, "trends.refresh": True}})
+        del self.ran[:]
+        put_in_place = updater._apply_staged_to_empty_store
+
+        def move(at_the_moment):
+            def while_everybody_is_out(*args):
+                at_the_moment()
+                return put_in_place(*args)
+
+            with mock.patch.object(updater, "_apply_staged_to_empty_store", while_everybody_is_out):
+                updater.migrate_from_previous_folder(self.store, earlier, backups=self.backups, jobs=self.jobs)
+
+        seen, written = self.look_while(move)
+        self.assertEqual(seen, {"still_waiting": True, "ran": [], "jobs": 0})
+        self.assertEqual([script["title"] for script in self.store.list_scripts()], ["早期脚本"])
+        self.assertEqual(([line["task"] for line in written], self.ran), (["trends.refresh"], ["trends.refresh"]))
+
+
+# ---------------------------------------------------------------------------------------------- 17. the version of the data
+class DataVersionTest(RestoreCase):
+    def test_the_tables_written_out_here_are_the_ones_data_version_3_stood_for(self):
+        with mock.patch.object(store_module, "_SCHEMA", SCHEMA_AT_309D9F4):
+            self.assertEqual(backup.layout_fingerprint(), LAYOUT_OF_DATA_VERSION_3)
+        self.assertNotIn("autopilot_runs", SCHEMA_AT_309D9F4)
+        self.assertEqual(backup.DATA_VERSION, 4)
+        self.assertNotEqual(backup.layout_fingerprint(), LAYOUT_OF_DATA_VERSION_3)
+        self.assertEqual(sorted(set(backup.reference_layout()["tables"]) - set(rows(self.version_3_folder().db_path))), ["autopilot_runs"])
+
+    def version_3_folder(self):
+        """A data folder as the app at data version 3 makes it, with something in it."""
+        with mock.patch.object(store_module, "_SCHEMA", SCHEMA_AT_309D9F4):
+            old = Store(self.tmp / ("version-3-%d" % self.count) / "data")
+            self.count += 1
+            old.create_script(title="版本三写的", lines=[{"spoken_script_zh": "今天去超市买菜啦 / 人特别多嘛"}], keywords=["秋冬护肤"])
+            old.create_sample(title="素材", text="上周末去 Costco 补货嘛 / 结果某人又走不动哈", metrics={"views": 1200, "likes": 80})
+            old.upsert_trends([{"keyword": "秋冬护肤", "heat": 125000}], source="manual")
+            old.create_video_plan(title="下期计划", scheduled_for="2026-11-28")
+            old.add_lesson(script_id="", ai="因此我强烈推荐", final="所以我真的很推荐嘛", note="口语一点")
+        return old
+
+    def test_a_backup_made_by_data_version_3_is_restored_by_this_version(self):
+        old = self.version_3_folder()
+        path = self.tmp / ("version-3.%s" % backup.EXTENSION)
+        with mock.patch.object(store_module, "_SCHEMA", SCHEMA_AT_309D9F4), mock.patch.object(backup, "DATA_VERSION", 3):
+            backup.create(old, path)                                         # written by the app's own code, as that version wrote it
+        was = rows(old.db_path)
+        with zipfile.ZipFile(str(path)) as archive:
+            said = json.loads(archive.read(backup.MANIFEST).decode("utf-8"))
+            (self.tmp / "inside.db").write_bytes(archive.read(backup.DATABASE))
+        self.assertEqual(said["data_version"], 3)
+        self.assertNotIn("autopilot_runs", rows(self.tmp / "inside.db"))
+        self.store.create_script(title="这里原来的一篇")
+        preview = self.staged(path)
+        self.assertEqual((preview["file"]["data_version"], preview["file"]["older"], preview["file"]["holds"]["scripts"],
+                          preview["file"]["holds"]["samples"], preview["now"]["scripts"]), (3, True, 1, 1, 1))
+        self.assertTrue(self.backups.restore(preview["restore_id"])["restored"])
+        now = rows(self.store.db_path)
+        self.assertEqual(now.pop("autopilot_runs"), [])                      # the table this version adds is there, with nothing in it
+        self.assertEqual(now, was)                                           # and every row of that backup is, as it was
+        self.assertEqual([script["title"] for script in self.store.list_scripts()], ["版本三写的"])
+        # Autopilot works on what was restored, and the folder can be backed up and restored again as version 4.
+        self.task("trends.refresh")
+        self.switch_on("trends.refresh")
+        self.assertEqual(self.look(), [("trends.refresh", "done")])
+        again = self.backup_of(self.store)
+        with zipfile.ZipFile(str(again)) as archive:
+            self.assertEqual(json.loads(archive.read(backup.MANIFEST).decode("utf-8"))["data_version"], 4)
+        preview = self.staged(again)
+        self.assertEqual((preview["file"]["data_version"], preview["file"]["older"]), (4, False))
+        self.backups.restore(preview["restore_id"])
+        self.assertEqual([(line["task"], line["status"]) for line in self.lines()], [("trends.refresh", "done")])
+
+    def test_a_backup_of_this_version_is_refused_by_what_cannot_read_it_with_a_sentence(self):
+        path = self.backup_of(self.store)
+        with mock.patch.object(backup, "DATA_VERSION", 3):                   # an app that knows data version 3 and no later
+            with self.assertRaises(backup.Refused) as refused:
+                self.staged(path)
+        self.assertEqual((refused.exception.code, refused.exception.status), ("backup_newer", 409))
+        self.assertRegex(refused.exception.message_zh, CHINESE)
+
+    def test_the_lines_of_the_log_do_not_count_as_the_creators_work(self):
+        self.task("lessons.accept_recurring")
+        self.switch_on("lessons.accept_recurring")
+        self.assertEqual(self.look(), [("lessons.accept_recurring", "done")])
+        self.assertEqual(len(self.sql("SELECT id FROM autopilot_runs")), 1)
+        self.assertNotIn("autopilot_runs", updater._WORK_TABLES)
+        self.assertTrue(updater.is_data_empty(self.store))                   # a folder autopilot ran in, with nothing of the creator's
+        self.store.create_script(title="一篇")
+        self.assertFalse(updater.is_data_empty(self.store))
 
 
 if __name__ == "__main__":

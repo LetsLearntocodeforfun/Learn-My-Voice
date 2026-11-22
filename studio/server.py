@@ -58,7 +58,7 @@ from . import checks, corpus, creator, exports, keyword_import, llm, pipeline, t
 from . import buildinfo, hooks, outside, posted, refs, suggest, video_ingest, wordlist
 from . import planner, rednote_analytics, soundstats, sponsored, tone_analyzer, updater
 from . import setup as setup_status
-from . import backup
+from . import autopilot, backup
 from .jobs import JobError, Jobs, Progress
 from .store import (
     HISTORY_ID,
@@ -85,6 +85,8 @@ MAX_WINDOW_REPORT = 200_000  # characters of what the window check may report
 WINDOW_CHECK_ENV = "LEARN_MY_VOICE_WINDOW_CHECK"
 # Set to 1 by anything that starts the app without a person in front of it: no question is put to GitHub then.
 NO_UPDATE_CHECK_ENV = "LEARN_MY_VOICE_NO_UPDATE_CHECK"
+# Set to 1 the same way: the app then runs no task by itself, whatever its settings say (studio/autopilot.py).
+NO_AUTOPILOT_ENV = autopilot.NO_AUTOPILOT_ENV
 DEFAULT_PORT = 8765
 UNTITLED = {"zh": "未命名脚本", "en": "Untitled script"}
 MANUAL_TASKS = ("draft", "voice", "ideas", "trends", "suggest", "video_ingest", "sentiment", "comment_ocr")
@@ -394,11 +396,26 @@ class App:
         # undoing a restore the app was closed in the middle of. Every request to the API passes through it
         # (``Handler._gated_api``).
         self.backups = backup.Backups(store, self.jobs)
+        # What the app does by itself, within what the creator chose (studio/autopilot.py). Made after ``backups``, so
+        # a restore the app was closed in the middle of is put back first; a run is one of ``jobs`` and begins inside
+        # the gate of ``backups``. It runs nothing unless ``autopilot_on`` is set, and only ``main`` sets it.
+        self.autopilot = autopilot.Autopilot(store, self.jobs, self.backups, transport_of=lambda: self.transport)
         self.max_upload_bytes = MAX_UPLOAD_BYTES
         self.install_lock = threading.Lock()
         self.discover_lock = threading.Lock()
         self.uploads = Uploads(store.uploads_dir)
         self.uploads.clear_leftovers()
+
+    @property
+    def autopilot_on(self) -> bool:
+        """Whether this run of the app may run tasks by itself at all (``Autopilot.on``; the creator's own switch is
+        in the settings). Off unless ``main`` turns it on: a server made for a test, or for a trial of a package or
+        of an installer, never changes anything by itself."""
+        return self.autopilot.on
+
+    @autopilot_on.setter
+    def autopilot_on(self, value: bool) -> None:
+        self.autopilot.on = bool(value)
 
     def _write_token_file(self) -> None:
         folder = Path(self.store.data_dir)
@@ -1316,6 +1333,36 @@ class Handler(BaseHTTPRequestHandler):
             return self._json({"ok": True, "discarded": backups.discard(m.group(1))})
         raise ApiError(404, "not_found")
 
+    # ---- autopilot: what the app does by itself (studio/autopilot.py) ---------
+    def _autopilot_api(self, method: str, path: str) -> None:
+        """What the app does by itself while it is open, within what the creator chose. Each line hands over at once.
+
+        - ``GET /api/autopilot``: both switches, the level, every task with its last and its next run, today's model
+          calls and their limit, the run under way, the newest lines of the log (``Autopilot.status``).
+        - ``POST /api/autopilot/settings`` ``{"enabled", "level", "daily_model_calls", "tasks": {name: bool}}``, any
+          of them: change the creator's settings. Answers with the state as it then is.
+        - ``POST /api/autopilot/run`` ``{"task"}``: run one task now. Answers at once (202) with ``{"run", "job"}``;
+          the job is followed like any other (``GET /api/jobs/<id>``). Refused while either switch is off.
+        - ``POST /api/autopilot/runs/<id>/undo``: reverse what one run changed, once.
+
+        Each is the creator's click in the app. A refusal has a code and a sentence in English and in Chinese.
+        """
+        pilot = self.app.autopilot
+        route = (method, path)
+        try:
+            if route == ("GET", "/api/autopilot"):
+                return self._json(pilot.status())
+            if route == ("POST", "/api/autopilot/settings"):
+                return self._json(pilot.save_settings(self._read_json()))
+            if route == ("POST", "/api/autopilot/run"):
+                return self._json(pilot.run_now(self._read_json().get("task")), 202)
+            m = re.fullmatch(r"/api/autopilot/runs/([0-9a-f]{12})/undo", path)
+            if m and method == "POST":
+                return self._json(pilot.undo(m.group(1)))
+        except autopilot.AutopilotError as exc:
+            raise ApiError(exc.status, exc.code, exc.message, exc.message_zh, extra=exc.extra)
+        raise ApiError(404, "not_found")
+
     # ---- api ----------------------------------------------------------------
     def _api(self, method: str, path: str) -> None:
         app = self.app
@@ -1325,6 +1372,8 @@ class Handler(BaseHTTPRequestHandler):
             self._read_json()       # every POST must be JSON, also one that needs nothing from its body
         if path == "/api/backup" or path.startswith(("/api/backup/", "/api/restore")):
             return self._backup_api(method, path)       # one file that holds everything, and restoring one
+        if path == "/api/autopilot" or path.startswith("/api/autopilot/"):
+            return self._autopilot_api(method, path)    # what the app does by itself, and taking it back
         if path == "/api/sponsored" or path.startswith("/api/sponsored/") or re.fullmatch(r"/api/scripts/[0-9a-f]{12}/sponsor(/ticks)?", path):
             return self._sponsored_api(method, path)    # a brand's brief, and the list beside a script drafted from it
 
@@ -2234,6 +2283,7 @@ class StudioServer(ThreadingHTTPServer):
     def server_close(self) -> None:
         # Also reached from the constructor when the port is taken, before ``app`` exists.
         if self.app is not None:
+            self.app.autopilot.stop()       # the scheduler starts nothing more
             self.app.uploads.close()        # uploads still waiting are not kept once the app has closed
             self.app.backups.close()        # nor is a backup that was made or checked and then not fetched or restored
             self.app.remove_token_file()
@@ -2318,6 +2368,10 @@ def main(argv: Optional[List[str]] = None) -> int:
     # Asking GitHub for newer releases is for a run a person started: not for a trial of a package or of an
     # installer (which sets NO_UPDATE_CHECK_ENV or the window check), and never for a server a test made.
     server.app.update_checks = os.environ.get(NO_UPDATE_CHECK_ENV) != "1" and server.app.window_check is None
+    # The same for what the app does by itself (studio/autopilot.py): only in a run a person started, and then only
+    # what the creator switched on in the settings. The scheduler is started here and nowhere else.
+    server.app.autopilot_on = os.environ.get(NO_AUTOPILOT_ENV) != "1" and server.app.window_check is None
+    server.app.autopilot.start()            # starts nothing when the line above said no
     url = "http://127.0.0.1:%d/" % server.server_address[1]
     launch_url = "%s?token=%s" % (url, server.app.token) if server.app.require_token else url
     # Sent at once also when the output is not a window: whoever started the app is waiting for this address
