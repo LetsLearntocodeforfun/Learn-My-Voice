@@ -241,8 +241,8 @@ class McpProtocolTest(McpCase):
         names = [t["name"] for t in tools]
         self.assertEqual(len(names), len(set(names)))
         read_only = {t["name"] for t in tools if t["annotations"]["readOnlyHint"]}
-        self.assertEqual(read_only, {"get_script_brief", "check_script", "list_scripts", "get_script", "get_voice_profile",
-                                     "list_library", "get_voice_learning_brief", "get_topic_ideas_brief",
+        self.assertEqual(read_only, {"get_script_brief", "check_script", "list_scripts", "get_script", "list_script_revisions",
+                                     "get_voice_profile", "list_library", "get_voice_learning_brief", "get_topic_ideas_brief",
                                      "list_trends", "get_rednote_analytics", "get_tone_analysis", "list_video_plans",
                                      "get_autopilot_status", "get_script_timing_and_takes"})
         self.assertEqual({t["name"] for t in tools} - read_only,

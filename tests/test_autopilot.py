@@ -1969,7 +1969,7 @@ class DataVersionTest(RestoreCase):
         self.assertEqual(backup.DATA_VERSION, 5)
         self.assertNotEqual(backup.layout_fingerprint(), LAYOUT_OF_DATA_VERSION_3)
         self.assertEqual(sorted(set(backup.reference_layout()["tables"]) - set(rows(self.version_3_folder().db_path))),
-                         ["autopilot_runs", "idea_sets", "plan_suggestions", "script_takes", "trend_observations", "watched_files"])
+                         ["autopilot_runs", "idea_sets", "plan_suggestions", "script_revisions", "script_takes", "trend_observations", "watched_files"])
 
     def version_3_folder(self):
         """A data folder as the app at data version 3 makes it, with something in it."""
@@ -2006,7 +2006,7 @@ class DataVersionTest(RestoreCase):
                           preview["file"]["holds"]["samples"], preview["now"]["scripts"]), (3, True, 1, 1, 1))
         self.assertTrue(self.backups.restore(preview["restore_id"])["restored"])
         now = rows(self.store.db_path)
-        for added_table in ("autopilot_runs", "idea_sets", "plan_suggestions", "script_takes", "trend_observations", "watched_files"):
+        for added_table in ("autopilot_runs", "idea_sets", "plan_suggestions", "script_revisions", "script_takes", "trend_observations", "watched_files"):
             self.assertEqual(now.pop(added_table), [])                       # the tables this version adds are there, empty
         self.assertEqual([r[:-1] for r in now["video_plans"]], was.pop("video_plans"))
         self.assertEqual([r[-1] for r in now.pop("video_plans")], [""])      # video_plans gained basis = ''

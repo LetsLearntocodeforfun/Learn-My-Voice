@@ -485,11 +485,14 @@ def apply_draft(store: Store, result: Dict[str, Any], *, notes: str, target_sec:
                 inferred_title = first_opt.strip()[:60]
             elif isinstance(first_opt, dict) and isinstance(first_opt.get("title_zh"), str) and first_opt["title_zh"].strip():
                 inferred_title = first_opt["title_zh"].strip()[:60]
-    return store.create_script(
+    created = store.create_script(
         title=title.strip() or inferred_title, notes=notes, target_sec=target_sec, video_format=video_format,
         default_title=default_title, lines=normalize_lines(lines), post=post,
         from_ai=True, keywords=keywords, basis=basis, mode=mode,
     )
+    from . import revisions
+    revisions.snapshot_script(store, created["id"], kind="ai_draft")
+    return created
 
 
 def generate_script(store: Store, *, notes: str, target_sec: int, video_format: str,

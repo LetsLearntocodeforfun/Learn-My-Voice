@@ -55,7 +55,7 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
 from . import checks, corpus, creator, exports, keyword_import, llm, pipeline, textstats, timing, transcribe, trends
-from . import buildinfo, hooks, outside, posted, refs, suggest, video_ingest, wordlist
+from . import buildinfo, hooks, outside, posted, refs, revisions, suggest, video_ingest, wordlist
 from . import planner, recording, rednote_analytics, soundstats, sponsored, tone_analyzer, updater
 from . import autosuggest     # registers autopilot's tasks plans.suggest and ideas.refresh: on a list, nothing is started
 from . import setup as setup_status
@@ -1997,6 +1997,64 @@ class Handler(BaseHTTPRequestHandler):
                 raise ApiError(404, "not_found")
             return self._json(changes)
 
+        m = re.fullmatch(r"/api/scripts/([0-9a-f]{12})/revisions", path)
+        if m and method == "GET":
+            if store.get_script(m.group(1)) is None:
+                raise ApiError(404, "not_found")
+            return self._json({"revisions": _revising(lambda: revisions.list_revisions(store, m.group(1)))})
+        if m and method == "POST":
+            body = self._read_json()
+            saved_rev = _revising(
+                lambda: revisions.snapshot_script(
+                    store,
+                    m.group(1),
+                    kind="checkpoint",
+                    label=str(body.get("label") or ""),
+                )
+            )
+            return self._json(
+                {"revision": saved_rev, "revisions": revisions.list_revisions(store, m.group(1))},
+                201,
+            )
+
+        m = re.fullmatch(r"/api/scripts/([0-9a-f]{12})/revisions/([0-9]+)(/restore)?", path)
+        if m and method == "GET" and not m.group(3):
+            sid, rev_id = m.group(1), int(m.group(2))
+            return self._json(_revising(lambda: {
+                "revision": revisions.get_revision(store, sid, rev_id),
+                "diff": revisions.diff_revision(store, sid, rev_id),
+            }))
+        if m and method == "POST" and m.group(3) == "/restore":
+            self._read_json()
+            sid, rev_id = m.group(1), int(m.group(2))
+            restored = _revising(lambda: revisions.restore_revision(store, sid, rev_id))
+            restored_script = restored["script"]
+            lint_res = checks.lint_payload(
+                store,
+                restored_script["lines"],
+                restored_script["target_sec"],
+                restored_script.get("keywords"),
+                restored_script.get("post"),
+            )
+            return self._json({
+                "script": posted.with_posted(store, restored_script),
+                "check": lint_res,
+                "revisions": restored["revisions"],
+            })
+
+        m = re.fullmatch(r"/api/scripts/([0-9a-f]{12})/duplicate", path)
+        if m and method == "POST":
+            body = self._read_json()
+            cloned = _revising(
+                lambda: revisions.duplicate_script(
+                    store,
+                    m.group(1),
+                    label=str(body.get("label") or ""),
+                    lang=self._lang(body),
+                )
+            )
+            return self._json({"script": posted.with_posted(store, cloned)}, 201)
+
         m = re.fullmatch(r"/api/scripts/([0-9a-f]{12})/posted", path)
         if m and method in ("POST", "PUT"):
             # POST: mark the script as posted. It gets ONE library item, made from the script as it stands; when
@@ -2041,6 +2099,8 @@ class Handler(BaseHTTPRequestHandler):
             if not export_kind and method == "PUT":
                 body = self._read_json()
                 try:    # base_updated_at: the version this save was made from; absent: save whatever is stored
+                    if body.get("before_critic") is True:
+                        revisions.snapshot_script(store, script_id, kind="before_critic")
                     saved = store.update_script(script_id, body, base_updated_at=body.get("base_updated_at"))
                     return self._json(posted.with_posted(store, saved) if saved is not None else saved)
                 except StaleScript as exc:
@@ -2222,6 +2282,16 @@ def _referring(work: Any) -> Any:
         return work()
     except refs.RefsError as exc:
         raise ApiError(exc.status, exc.code, exc.message, exc.message_zh)
+
+
+def _revising(work: Any) -> Any:
+    """Run a step about script revisions or variant duplication, turning its refusals into bilingual API errors."""
+    try:
+        return work()
+    except revisions.RevisionError as exc:
+        raise ApiError(exc.status, exc.code, exc.message, exc.message_zh)
+    except TextTooLong as exc:
+        raise ApiError(413, exc.code, exc.message, exc.message_zh, extra={"limit": exc.limit})
 
 
 def _sponsoring(work: Any) -> Any:

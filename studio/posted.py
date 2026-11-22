@@ -344,6 +344,8 @@ def _create(store: Store, script: Dict[str, Any], body: Dict[str, Any]) -> Tuple
         if metrics_on < posted_on:
             raise PostedError("read_before_posted")
     link = clean_link(body.get("note_url"))
+    from . import revisions
+    revisions.snapshot_script(store, script["id"], kind="before_posted")
     try:
         item = store.create_sample(
             # A script drafted from a brand's brief is sponsored, whatever the request says (``from_brief``).
@@ -375,6 +377,9 @@ def _change(store: Store, script: Dict[str, Any], item: Dict[str, Any], body: Di
     changes = {key: body[key] for key in METRIC_FIELDS + ("is_sponsored",) if key in body}
     if "is_sponsored" in changes and from_brief(script):
         changes["is_sponsored"] = True          # marking never makes the item of such a script non-sponsored
+    if refresh:
+        from . import revisions
+        revisions.snapshot_script(store, script["id"], kind="before_posted")
     store.update_sample(item["id"], changes, posted=columns)
     if refresh:
         # New text is new wording: it waits again, and what an AI wrote of it is counted again.
