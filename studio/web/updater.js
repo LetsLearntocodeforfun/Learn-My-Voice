@@ -46,6 +46,27 @@ Object.assign(I18N.zh, {
   up_migrating: '正在复制…',
   up_migrated_ok: '已从旧版本复制 {sc} 篇脚本、{sa} 条素材与设置。本机转写环境未复制，如需使用请重新安装。',
   up_off: '这次运行没有开启检查更新：应用是用 LEARN_MY_VOICE_NO_UPDATE_CHECK=1 启动的，或者是由试运行的脚本启动的。所以这里不会向 GitHub 询问，也不提供下载。',
+  up_ai_comes: '它的 AI 连接会一起带过来：{what}。',
+  up_ai_came: '现在用的 AI 连接来自那个文件夹：{what}。如果这不是你自己设置的连接，请到「设置」里改掉。',
+  up_ai_cloud_key: '{service}（模型：{model}），带着密钥',
+  up_ai_cloud_nokey: '{service}（模型：{model}），没有密钥，密钥要在「设置」里填',
+  up_ai_local: '这台电脑上的模型，地址 {address}（模型：{model}）',
+  up_ai_local_noaddr: '这台电脑上的模型（模型：{model}），服务器地址要在「设置」里填',
+  up_ai_manual: '用聊天应用复制粘贴，不需要密钥',
+  up_ai_no_model: '还没选',
+  up_ai_other_keys: '{list} 的密钥也会一起带过来。',
+  up_ai_other_keys_came: '{list} 的密钥也一起带过来了。',
+  up_ai_keys_lost: '{list} 的密钥在这台电脑上打不开或者不能用，所以不会带过来，可以到「设置」里重新填。',
+  up_ai_not_carried: '以下内容按那边写的样子应用用不了，所以不会带过来：{list}。',
+  up_ai_nc_provider: '它写的 AI 服务',
+  up_ai_nc_model: '模型名称',
+  up_ai_nc_address: '模型服务器的地址（必须在这台电脑上）',
+  up_ai_kept_own: '当前文件夹已经有自己的 AI 连接，它会保持不变，那个文件夹的不会复制过来。',
+  up_ai_kept_own_after: '当前文件夹原有的 AI 连接保留了下来，那个文件夹的没有复制过来。',
+  up_ai_unreadable: '那个文件夹的设置读不出来，所以只复制数据，不复制设置。',
+  up_ai_unreadable_after: '那个文件夹的设置没能读出来，所以只复制了数据，没有复制设置。',
+  up_moved_title: '已从 {folder} 复制：{sc} 篇脚本、{sa} 条素材，以及设置。',
+  up_moved_ok: '知道了',
 });
 
 Object.assign(I18N.en, {
@@ -88,6 +109,27 @@ Object.assign(I18N.en, {
   up_migrating: 'Copying…',
   up_migrated_ok: 'Copied {sc} scripts, {sa} library items and settings. On-device transcription is not copied and must be set up again if needed.',
   up_off: 'Looking for updates is switched off for this run: the app was started with LEARN_MY_VOICE_NO_UPDATE_CHECK=1, or by a script that tries it. So nothing is asked of GitHub here, and no download is offered.',
+  up_ai_comes: 'Its AI connection comes along: {what}.',
+  up_ai_came: 'The AI connection now in use came from that folder: {what}. If that is not the connection {@name} set up, change it in Settings.',
+  up_ai_cloud_key: '{service} (model: {model}), with its key',
+  up_ai_cloud_nokey: '{service} (model: {model}), without a key: the key is entered in Settings',
+  up_ai_local: 'a model on this computer at {address} (model: {model})',
+  up_ai_local_noaddr: 'a model on this computer (model: {model}): the address of its server is entered in Settings',
+  up_ai_manual: 'copy and paste with a chat app, which needs no key',
+  up_ai_no_model: 'none chosen',
+  up_ai_other_keys: 'Keys for {list} come along as well.',
+  up_ai_other_keys_came: 'Keys for {list} came along as well.',
+  up_ai_keys_lost: 'The key for {list} cannot be opened or used on this computer, so it is not carried. It can be entered again in Settings.',
+  up_ai_not_carried: 'Not carried, because the app cannot use it as it is written there: {list}.',
+  up_ai_nc_provider: 'the AI service it names',
+  up_ai_nc_model: 'the model name',
+  up_ai_nc_address: 'the address of a model server (it has to be on this computer)',
+  up_ai_kept_own: 'This folder already has an AI connection of its own. It stays as it is; the other folder\'s is not copied.',
+  up_ai_kept_own_after: 'The AI connection this folder already had was kept. The other folder\'s was not copied.',
+  up_ai_unreadable: 'The other folder\'s settings cannot be read, so only its data is copied, not its settings.',
+  up_ai_unreadable_after: 'The other folder\'s settings could not be read, so only its data was copied, not its settings.',
+  up_moved_title: 'Copied from {folder}: {sc} scripts, {sa} library items, and settings.',
+  up_moved_ok: 'OK',
 });
 
 const upState = {
@@ -98,7 +140,45 @@ const upState = {
   manualScanned: false,
   startupDismissed: false,
   prevDismissed: false,
+  moved: null,            // what the last copy from another folder brought, until the notice about it is closed
 };
+
+const UP_SERVICES = { gemini: 'Google Gemini', openai: 'OpenAI', anthropic: 'Anthropic Claude' };
+
+/* What a copy from another folder does to the AI connection, as sentences: before it, and (`after`) once it is done.
+   `ai` is what the server worked out from that folder's settings (updater._settings_to_carry): a service the app
+   knows, a model name and an address it has checked, whether a key comes along. Never any part of a key. The
+   file it comes from may have been put there by somebody else, so every sentence goes through esc() where it is
+   shown, like everything else that comes from data. */
+function upAiLines(ai, after) {
+  if (!ai) return [];
+  const lines = [];
+  const listed = (names) => names.join(lang === 'zh' ? '、' : ', ');
+  const service = (name) => UP_SERVICES[name] || String(name);
+  if (ai.unreadable) lines.push(t(after ? 'up_ai_unreadable_after' : 'up_ai_unreadable'));
+  if (ai.kept_own) {
+    lines.push(t(after ? 'up_ai_kept_own_after' : 'up_ai_kept_own'));
+    return lines;
+  }
+  const left = Array.isArray(ai.not_carried) ? ai.not_carried : [];
+  const model = ai.model || t('up_ai_no_model');
+  let what = '';
+  if (ai.provider === 'manual') what = t('up_ai_manual');
+  else if (ai.provider === 'local') what = ai.address ? tf('up_ai_local', { address: ai.address, model }) : tf('up_ai_local_noaddr', { model });
+  else if (ai.provider) what = tf(ai.key ? 'up_ai_cloud_key' : 'up_ai_cloud_nokey', { service: service(ai.provider), model });
+  if (what) lines.push(tf(after ? 'up_ai_came' : 'up_ai_comes', { what }));
+  const others = Array.isArray(ai.other_keys) ? ai.other_keys : [];
+  if (others.length) lines.push(tf(after ? 'up_ai_other_keys_came' : 'up_ai_other_keys', { list: listed(others.map(service)) }));
+  const lost = (Array.isArray(ai.keys_not_carried) ? ai.keys_not_carried : []).concat(left.includes('key') && ai.provider ? [ai.provider] : []);
+  if (lost.length) lines.push(tf('up_ai_keys_lost', { list: listed(lost.map(service)) }));
+  const unusable = left.filter((name) => ['provider', 'model', 'address'].includes(name)).map((name) => t('up_ai_nc_' + name));
+  if (unusable.length) lines.push(tf('up_ai_not_carried', { list: listed(unusable) }));
+  return lines;
+}
+
+function upAiHtml(ai, after) {
+  return upAiLines(ai, after).map((line) => esc(line)).join(lang === 'zh' ? '' : ' ');
+}
 
 function upHasVerifiedPackage(latest) {
   return !!(latest && latest.asset && latest.asset.url && latest.checksum_asset && latest.checksum_asset.url);
@@ -184,9 +264,22 @@ function upMountStartupBanner() {
     cards.push(`<div class="banner" id="up-prev-banner" style="margin-bottom:16px">
       <div class="row" style="flex-wrap:wrap;gap:10px;align-items:center">
         <div class="spacer">${esc(tf('up_prev_banner', { folder: topPrev.folder_name, sc: topPrev.scripts, sa: topPrev.samples }))}</div>
-        <button type="button" class="btn primary" data-up-migrate="${esc(topPrev.path)}">${esc(t('up_migrate_btn'))}</button>
+        <button type="button" class="btn primary" data-up-migrate="${esc(topPrev.path)}" data-up-folder="${esc(topPrev.folder_name)}">${esc(t('up_migrate_btn'))}</button>
         <button type="button" class="btn" id="up-prev-later">${esc(t('up_later_btn'))}</button>
       </div>
+      ${upAiLines(topPrev.ai, false).length ? `<div id="up-prev-ai" style="margin-top:6px;font-size:13px">${upAiHtml(topPrev.ai, false)}</div>` : ''}
+      <div style="margin-top:6px;font-size:13px">${esc(t('up_whisper_note'))}</div>
+    </div>`);
+  }
+
+  if (upState.moved) {
+    const moved = upState.moved;
+    cards.push(`<div class="banner" id="up-moved-banner" style="margin-bottom:16px">
+      <div class="row" style="flex-wrap:wrap;gap:10px;align-items:center">
+        <div class="spacer"><strong>${esc(tf('up_moved_title', { folder: moved.folder, sc: moved.scripts, sa: moved.samples }))}</strong></div>
+        <button type="button" class="btn" id="up-moved-ok">${esc(t('up_moved_ok'))}</button>
+      </div>
+      ${upAiLines(moved.ai, true).length ? `<div id="up-moved-ai" style="margin-top:6px;font-size:13px">${upAiHtml(moved.ai, true)}</div>` : ''}
       <div style="margin-top:6px;font-size:13px">${esc(t('up_whisper_note'))}</div>
     </div>`);
   }
@@ -249,6 +342,10 @@ function upBindActions(root, rerender) {
   if ($prevLater) {
     $prevLater.onclick = () => { upState.prevDismissed = true; rerender(); };
   }
+  const $movedOk = root.querySelector('#up-moved-ok');
+  if ($movedOk) {
+    $movedOk.onclick = () => { upState.moved = null; rerender(); };
+  }
   root.querySelectorAll('[data-up-show]').forEach((b) => {
     b.onclick = () => api('POST', '/api/outside/show', { path: b.dataset.upShow }).catch(showError);
   });
@@ -283,6 +380,7 @@ function upBindActions(root, rerender) {
         }
         upState.prevDismissed = true;
         upState.status = null;
+        upState.moved = { folder: b.dataset.upFolder || '', scripts: res.scripts, samples: res.samples, ai: res.ai || null };
         toast(tf('up_migrated_ok', { sc: res.scripts, sa: res.samples }));
         await router();
       } catch (e) {
@@ -338,8 +436,8 @@ async function upPaintSettings(box) {
           <span class="mono" style="font-size:13.5px">${esc(p.folder_name)}</span>
           <span class="meta">${esc(tf('up_prev_counts', { sc: p.scripts, sa: p.samples }))}</span>
           <span class="spacer"></span>
-          ${st.data_empty ? `<button type="button" class="btn" data-up-migrate="${esc(p.path)}">${esc(t('up_migrate_btn'))}</button>` : ''}
-        </div>`).join('') + (st.data_empty
+          ${st.data_empty ? `<button type="button" class="btn" data-up-migrate="${esc(p.path)}" data-up-folder="${esc(p.folder_name)}">${esc(t('up_migrate_btn'))}</button>` : ''}
+        </div>${st.data_empty && upAiLines(p.ai, false).length ? `<p class="hint" data-up-ai style="margin:4px 0 0">${upAiHtml(p.ai, false)}</p>` : ''}`).join('') + (st.data_empty
           ? `<p class="hint" style="margin:8px 0 0">${esc(t('up_whisper_note'))}</p>`
           : `<p class="hint" id="up-prev-nonempty" style="margin:8px 0 0">${esc(t('up_prev_nonempty'))}</p>`);
       } else if (upState.manualScanned) {

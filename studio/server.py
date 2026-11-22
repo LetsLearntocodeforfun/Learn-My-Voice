@@ -1870,7 +1870,10 @@ class Handler(BaseHTTPRequestHandler):
             except updater.UpdateError as exc:
                 raise ApiError(exc.status, exc.code, exc.message, exc.message_zh, extra=exc.extra)
         if route == ("POST", "/api/update/settings"):
-            return self._json(updater.save_update_settings(store, self._read_json(), checks_on=app.update_checks))
+            try:
+                return self._json(updater.save_update_settings(store, self._read_json(), checks_on=app.update_checks))
+            except updater.UpdateError as exc:
+                raise ApiError(exc.status, exc.code, exc.message, exc.message_zh, extra=exc.extra)
         if route == ("POST", "/api/update/download"):
             try:
                 res = updater.download_release_asset(store, app.outside, checks_on=app.update_checks,
@@ -1880,16 +1883,9 @@ class Handler(BaseHTTPRequestHandler):
             app.remember_saved(Path(res["saved"]["path"]))
             return self._json(res, 201)
         if route == ("POST", "/api/update/migrate"):
-            raw_source = self._read_json().get("source_path")
-            wanted = raw_source.strip() if isinstance(raw_source, str) else ""
-            wanted_path = Path(wanted) if wanted else None
-            resolved_wanted = str(wanted_path.resolve()) if (wanted_path is not None and not wanted_path.is_symlink()) else ""
-            allowed = {item["path"] for item in updater.discover_previous_installations(store, explicit=True)}
-            if not resolved_wanted or resolved_wanted not in allowed:
-                raise ApiError(400, "bad_source", "Choose one of the detected earlier version folders.",
-                               "请选择检测到的旧版本应用文件夹。")
             try:
-                res = updater.migrate_from_previous_folder(store, Path(resolved_wanted), backups=app.backups, jobs=app.jobs)
+                res = updater.migrate_from_named_folder(store, self._read_json().get("source_path"),
+                                                        backups=app.backups, jobs=app.jobs)
             except updater.UpdateError as exc:
                 raise ApiError(exc.status, exc.code, exc.message, exc.message_zh, extra=exc.extra)
             return self._json(res)

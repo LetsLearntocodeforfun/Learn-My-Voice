@@ -15,15 +15,25 @@ Each class covers one thing the creator, or whoever runs a trial, can rely on:
   and never copies ``local_tools/whisper``;
 - unpacking a release ``.zip`` works in a sibling temporary directory under strict entry, size and path bounds and
   refuses when the destination folder already exists;
+- every connection on the database in the unpacked folder has been closed, not merely dropped, when the folder is
+  renamed into place (Windows refuses the rename otherwise), and a rename that is refused is tried again only
+  where and as long as ``updater._PLACE_TRIES`` says, then refused in two languages;
+- a copy from an earlier folder is all of it or none of it: stopped at any step, or with the app closed in the
+  middle, the folder it was going into is as it was;
+- a full disk, a folder that cannot be written to and a database another program holds are refusals in two
+  languages that say what is as it was, never the server's ``500 internal error``;
 - the page works in Chinese and English, in light and dark appearances, with zero browser console or 404 problems.
 
 No request leaves this computer in any of these tests.
 """
 import contextlib
+import errno
 import hashlib
 import http.client
+import http.server
 import importlib.util
 import io
+import itertools
 import json
 import os
 import re
@@ -37,12 +47,13 @@ import time
 import tracemalloc
 import unittest
 import urllib.error
+import urllib.parse
 import urllib.request
 import zipfile
 from pathlib import Path
 from unittest import mock
 
-from studio import backup, buildinfo, creator, mcp_server, outside, planner, server, updater
+from studio import backup, buildinfo, mcp_server, outside, pipeline, planner, server, updater
 from studio.store import ROOT, Store
 from tests import browser
 
@@ -107,6 +118,86 @@ def loopback_only():
 
     with mock.patch.object(socket.socket, "connect", connect), mock.patch.object(socket, "getaddrinfo", lookup):
         yield blocked
+
+
+def database_path(database):
+    """Where a database handed to ``sqlite3.connect`` is, also when it is named the ``file:`` way."""
+    name = os.fsdecode(os.fspath(database))
+    if name.startswith("file:"):
+        name = urllib.request.url2pathname(urllib.parse.urlsplit(name).path)
+    return os.path.normcase(os.path.realpath(name))
+
+
+@contextlib.contextmanager
+def watched_databases():
+    """Every database opened while this lasts, as ``[{"path", "closed"}]``: ``closed`` says ``close()`` was called.
+
+    A connection that is only dropped is closed by Python when it gets round to it: as the call returns before
+    Python 3.11, at the next collection of cycles since. Until then the file is open, and Windows refuses to
+    rename the folder it is in. So "dropped" is not "closed", and only ``close()`` counts here, on every system
+    and every Python. Nothing here keeps a connection alive: the connection holds its note, not the note the
+    connection.
+    """
+    notes = []
+    real_connect = sqlite3.connect
+
+    class Watched(sqlite3.Connection):
+        def close(self):
+            self.note["closed"] = True
+            super().close()
+
+    def connect(database, *args, **more):
+        more.setdefault("factory", Watched)
+        db = real_connect(database, *args, **more)
+        if isinstance(db, Watched):
+            db.note = {"path": database_path(database), "closed": False}
+            notes.append(db.note)
+        return db
+
+    with mock.patch.object(sqlite3, "connect", connect):
+        yield notes
+
+
+@contextlib.contextmanager
+def at_the_rename(notes):
+    """What ``notes`` say about ``data/studio.db`` in an unpacked folder, each time it is to be renamed into place."""
+    looks = []
+    real_rename = os.rename
+
+    def rename(source, target, *args, **more):
+        if ".unpacking-" in os.path.basename(os.fspath(source)):
+            unpacked = database_path(os.path.join(os.fspath(source), "data", "studio.db"))
+            looks.append([dict(note) for note in notes if note["path"] == unpacked])
+        return real_rename(source, target, *args, **more)
+
+    with mock.patch.object(os, "rename", rename):
+        yield looks
+
+
+def holds(store):
+    """What a data folder holds, to compare before and after: every row, every small file, the settings.
+
+    Left out: the app's own ``backups`` folder (work folders, the note of a copy under way, the name of the
+    data) and folders with nothing in them.
+    """
+    with contextlib.closing(sqlite3.connect(str(store.db_path))) as db:
+        tables = sorted(row[0] for row in db.execute("SELECT name FROM sqlite_master WHERE type = 'table'"))
+        rows = {table: db.execute("SELECT * FROM %s ORDER BY 1" % table).fetchall() for table in tables}
+    files = {}
+    for entry in sorted(store.data_dir.iterdir()):
+        if entry.name == "backups" or entry.name.startswith("studio.db"):
+            continue
+        if entry.is_dir():
+            inside = {inner.name: inner.read_bytes() for inner in sorted(entry.iterdir()) if inner.is_file()}
+            if inside:
+                files[entry.name + "/"] = inside
+        else:
+            files[entry.name] = entry.read_bytes()
+    return rows, files
+
+
+class Killed(BaseException):
+    """Stands in for the app being closed: nothing that catches an ordinary error catches this."""
 
 
 def found(version="9.0.0", *, notes="Faster exports and cleaner checks.", suffix=".zip", with_checksum=True):
@@ -209,6 +300,27 @@ class Case(unittest.TestCase):
             updates={"auto_check": True, "include_prereleases": True, "last_checked_at": time.time() - 60, "cached": rel}
         ))
 
+    def make_sibling(self, version="0.1.9", *, with_whisper=True):
+        sib = self.tmp / ("learn-my-voice-%s" % version)
+        sib_store = Store(sib / "data")
+        sib_store.update_config(lambda c: (
+            c.update(provider="anthropic", model="claude-sonnet-4-5", trend_weight="mine"),
+            c["keys"].update(anthropic="sk-ant-migrated-secret"),
+        ))
+        sib_store.keep_for_page({"lang": "en", "theme": "dark", "accent": "green"})
+        sib_store.save_creator({"name": "小林", "pronoun": "they"})
+        sib_store.save_dna(dict(EXAMPLE_DNA, persona_summary=dict(EXAMPLE_DNA["persona_summary"], one_line_essence_en="Earlier A")))
+        sib_store.save_dna(dict(EXAMPLE_DNA, persona_summary=dict(EXAMPLE_DNA["persona_summary"], one_line_essence_en="Current B")))
+        sib_store.create_script(title="旧版脚本", lines=[{"spoken_script_zh": "这周去超市买菜啦 / 拿了两盒水饺"}])
+        sib_store.create_sample(title="旧版素材", text="周末在家煮咖啡嘛 / 顺便收拾一下厨房啦")
+        sib_store.upsert_trends([{"keyword": "秋冬护肤", "heat": 12000}], source="manual")
+        planner.create_plan_item(sib_store, {"title": "下周拍早餐", "scheduled_for": "2026-11-28"})
+        if with_whisper:
+            fake_venv = sib / "local_tools" / "whisper" / "venv" / "bin"
+            fake_venv.mkdir(parents=True, exist_ok=True)
+            (fake_venv / "python3").write_bytes(b"fake-2gb-whisper-runtime")
+        return sib, sib_store
+
 
 class ServerCase(Case):
     def setUp(self):
@@ -249,6 +361,14 @@ class ServerCase(Case):
         self.assertRegex(answer.get("message_zh", ""), "[\u4e00-\u9fff]")
         self.assertRegex(answer["message"], "[A-Za-z]{4}")
         return answer["error"]
+
+    def save_zip(self, zip_bytes, name="learn-my-voice-0.3.0-beta.zip"):
+        """A package in the Downloads folder, as if the app had just downloaded it."""
+        self.world.downloads.mkdir(parents=True, exist_ok=True)
+        path = self.world.downloads / name
+        path.write_bytes(zip_bytes)
+        self.app.remember_saved(path)
+        return path
 
 
 # ---------------------------------------------------------------------------------------------- 1. U1: nothing leaves unless a person started the app
@@ -467,7 +587,15 @@ class TrialsTest(ServerCase):
 
 # ---------------------------------------------------------------------------------------------- 3. versions & hostile GitHub inputs
 class VersionAndHardeningTest(ServerCase):
-    def test_version_ordering_agrees_with_build_release_and_buildinfo(self):
+    # What tools/build_release.py makes from the version a changelog heading names.
+    @staticmethod
+    def builds_of(base):
+        """Oldest first: a local build, candidate 1, its second attempt, candidate 2, the release."""
+        return [build_release.version_for(base, None), build_release.version_for(base, 1, 1),
+                build_release.version_for(base, 1, 2), build_release.version_for(base, 2, 1),
+                build_release.version_for(base, None, release=True)]
+
+    def test_versions_come_in_the_order_they_are_made_in(self):
         ordered = [
             "0.2.0-alpha",
             "0.2.0-beta.dev",
@@ -480,6 +608,11 @@ class VersionAndHardeningTest(ServerCase):
             "0.2.0-beta.1",
             "0.2.0-beta.2",
             "0.2.0-beta.10",
+            "0.2.0-rc.1.dev",           # a pre-release that is itself named rc: the name, then the build marks
+            "0.2.0-rc.1.rc.1",
+            "0.2.0-rc.1.rc.1.2",
+            "0.2.0-rc.1",
+            "0.2.0-rc.2",
             "0.2.0.dev",
             "0.2.0.rc.1",
             "0.2.0.rc.1.2",
@@ -487,40 +620,115 @@ class VersionAndHardeningTest(ServerCase):
             "0.3.0-beta.rc.1",
             "0.3.0-beta",
             "0.3.0",
+            "1.0.0-RC.2.dev",
+            "1.0.0-RC.2.rc.3",
+            "1.0.0-RC.2",
+            "1.0.0",
         ]
-        for i in range(len(ordered)):
-            ver = ordered[i]
+        for i, ver in enumerate(ordered):
             self.assertIsNotNone(buildinfo._VERSION.fullmatch(ver), ver)
             self.assertIsNotNone(updater.parse_version(ver), ver)
             self.assertEqual(updater.parse_version("v" + ver), updater.parse_version(ver))
             self.assertFalse(updater.is_newer(ver, ver))
-            for j in range(i + 1, len(ordered)):
-                later = ordered[j]
+            for later in ordered[i + 1:]:
                 self.assertTrue(updater.is_newer(later, ver), (ver, later))
                 self.assertFalse(updater.is_newer(ver, later), (ver, later))
+        # The same version written another way is neither newer nor older.
+        for one, other in (("1.0.0-RC.2", "1.0.0-rc.2"), ("1.10.3+local", "1.10.3"), ("0.2.0-beta.RC.1", "0.2.0-beta.rc.1"),
+                           ("01.2.3", "1.2.3"), (" v0.2.0 ", "0.2.0")):
+            self.assertEqual(updater.parse_version(one), updater.parse_version(other), (one, other))
+            self.assertFalse(updater.is_newer(one, other) or updater.is_newer(other, one), (one, other))
+        # Only a plain X.Y.Z is a release; what is no version is treated as not one.
+        self.assertEqual([updater.is_prerelease_version(ver) for ver in
+                          ("0.2.0", "0.2.0+local", "0.2.0-beta", "0.2.0.dev", "0.2.0.rc.1", "0.3.0-rc.1", "0.2.0.1", "", None)],
+                         [False, False, True, True, True, True, True, True, True])
 
-        # Every build_release.version_for sequence for a base version orders dev < rc.1 < rc.1.2 < rc.2 < release.
-        for base in ("0.2.0-beta", "0.2.0-beta.2", "0.2.0", "1.4.0"):
-            seq = [
-                build_release.version_for(base, None),
-                build_release.version_for(base, 1, 1),
-                build_release.version_for(base, 1, 2),
-                build_release.version_for(base, 2, 1),
-                build_release.version_for(base, None, release=True),
-            ]
-            for a, b in zip(seq, seq[1:]):
-                self.assertIsNotNone(buildinfo._VERSION.fullmatch(a), a)
-                self.assertTrue(updater.is_newer(b, a), (a, b))
+    def test_every_version_a_changelog_heading_leads_to_is_read_as_the_build_file_reads_it_and_in_order(self):
+        """``tools/build_release.py`` makes the versions, ``studio/buildinfo.py`` says which a build file may hold.
 
-        # Build metadata accepted by buildinfo is parsed; hostile or oversized inputs return None without raising.
-        self.assertIsNotNone(updater.parse_version("1.10.3+local"))
-        for bad in (
-            None, 5, [], "", "v", "0.2", "0.2.0.0", "0.2.0+<script>", "0.2.0+",
-            "0.2.0-beta.rc.0", "0.2.0-beta.rc.1.0", "0.2.0-beta.rc.1.dev",
-            "9" * 6000 + ".0.0", "０.２.０", "0.2.0-" + "a" * 90,
-        ):
-            self.assertIsNone(updater.parse_version(bad), repr(bad))
+        For every heading tried, each of the five builds is a version here exactly when a build file may hold
+        it, and where all five are, they come in the order they are made in. Before, a heading such as
+        ``## v0.3.0-rc.1`` gave versions the build file held and the updater did not know: a copy with such a
+        version was never offered anything newer.
+        """
+        names = ("alpha", "beta", "rc", "RC", "dev", "x", "0", "1", "2", "10")
+        after = [""] + ["-" + ".".join(parts) for count in (1, 2, 3) for parts in itertools.product(names, repeat=count)]
+        after += [
+            "-rc1", "-Beta.RC.3", "-007", "-a.b.c.d.e", "-a.b.c.d.e.f",        # five parts leave room for .rc.N.M, six do not
+            "-a.b.c.d.e.f.g.h", "-a.b.c.d.e.f.g.h.i",                         # eight are a release and nothing else; nine nothing
+            "-a..b", "-.a", "-beta.", "-beta-2", "-bet\u00e9", "-" + "a" * 300,
+        ]
+        tried = held = whole = 0
+        for tail in after:
+            for core in ("1.2.3", "0.3.0"):
+                base = build_release.base_version("# Changes\n\n## v%s%s (not released yet)\n\n## v0.1.0\n" % (core, tail))
+                builds = self.builds_of(base)
+                keys = [updater.parse_version(version) for version in builds]
+                for version, key in zip(builds, keys):
+                    tried += 1
+                    held += key is not None
+                    self.assertEqual(key is not None, buildinfo._VERSION.fullmatch(version) is not None, version)
+                if None not in keys:
+                    whole += 1
+                    for earlier, later in zip(builds, builds[1:]):
+                        self.assertTrue(updater.is_newer(later, earlier), (earlier, later))
+                        self.assertFalse(updater.is_newer(earlier, later), (earlier, later))
+        # The headings tried are of both kinds: most lead to versions, some to none or to a release only.
+        self.assertGreater(whole, 2000)
+        self.assertGreater(tried - held, 20)
+        for base in ("0.3.0-rc.1", "1.0.0-RC.2", "0.3.0-beta.rc.1", "0.3.0-dev", "0.3.0-rc"):
+            self.assertNotIn(None, [updater.parse_version(version) for version in self.builds_of(base)], base)
+
+    def test_what_is_no_version_is_none_and_nothing_is_raised(self):
+        long_one = "1.2.3-" + "a" * updater.MAX_VERSION_CHARS
+        for bad in (None, 5, 1.5, [], b"1.2.3", "", " ", "v", "vv1.2.3", "0.2", "1.2.3.", "1.2.3-", "1.2.3+", "0.2.0+<script>",
+                    "0.2.0-a..b", "0.2.0 beta", "0.2.0-b\u00e9ta", "\uff10.\uff12.\uff10", "1.2.3" + ".x" * 9,
+                    "9" * 6000 + ".0.0", long_one, "1.2.3\x00", "<script>alert(1)</script>"):
+            self.assertIsNone(updater.parse_version(bad), repr(bad)[:60])
             self.assertFalse(updater.is_newer(str(bad), "0.2.0"))
+            self.assertFalse(updater.is_newer("9.9.9", str(bad)))
+            self.assertTrue(updater.is_prerelease_version(bad if isinstance(bad, str) else None))
+            if isinstance(bad, str) and bad not in (long_one, "vv1.2.3") and len(bad) < 100:
+                self.assertIsNone(buildinfo._VERSION.fullmatch(bad.strip()), repr(bad))
+        # The one thing a build file could hold in theory and this does not take: a version longer than a
+        # build file may be (buildinfo.MAX_BYTES), which therefore no build file holds.
+        self.assertEqual(updater.MAX_VERSION_CHARS, buildinfo.MAX_BYTES)
+        self.assertIsNotNone(buildinfo._VERSION.fullmatch(long_one))
+        self.assertIsNotNone(updater.parse_version("1.2.3-" + "a" * (updater.MAX_VERSION_CHARS - 6)))
+
+    def test_a_run_from_the_source_reads_the_heading_as_the_build_script_does(self):
+        self.assertEqual((updater._CHANGELOG_HEADING_RE.pattern, updater._CHANGELOG_HEADING_RE.flags),
+                         (build_release._VERSION_HEADING.pattern, build_release._VERSION_HEADING.flags))
+        for heading in ("## v0.3.0-rc.1 (not released yet)", "## v1.0.0-RC.2", "## v0.4.0 (1 December 2026)",
+                        "## v0.3.0-beta-2", "## v0.3.0-bet\u00e9", "## v0.3.0-beta.rc.1"):
+            changelog = "# Changes\n\nWhat changed.\n\n%s\n\n- one\n\n## v0.1.0 (earlier)\n" % heading
+            (self.tmp / "CHANGELOG.md").write_text(changelog, encoding="utf-8")
+            with mock.patch.object(updater, "ROOT", self.tmp), \
+                    mock.patch.object(buildinfo, "BUILD_FILE", self.tmp / "no-build.json"):
+                running = updater.current_version_info()
+            base = build_release.base_version(changelog)
+            self.assertEqual((running["from_source"], running["base_version"], running["version"]),
+                             (True, base, build_release.version_for(base, None)), heading)
+
+    def test_a_copy_whose_version_is_named_rc_is_offered_what_is_newer(self):
+        def release(tag, early=True):
+            return {"tag_name": tag, "draft": False, "prerelease": early, "assets": []}
+
+        self.packaged("0.3.0-rc.1")
+        self.app.update_checks = True
+        # Only older ones are out: the best of them is named, and nothing is offered.
+        older = [release("v0.3.0-rc.1.rc.4"), release("v0.3.0-beta"), release("v0.2.0", early=False)]
+        self.app.update_transport = lambda method, url, headers: json.dumps(older).encode("utf-8")
+        status, answer = self.send("GET", "/api/update?check=1&force=1")
+        self.assertEqual((status, answer["current"]["version"], answer["include_prereleases"]), (200, "0.3.0-rc.1", True))
+        self.assertEqual((answer["latest"]["version"], answer["update_available"]), ("0.3.0-rc.1.rc.4", False))
+        # A later pre-release of the same name, and a release, are offered.
+        for tags, best in (([release("v0.3.0-rc.2"), release("v0.3.0-rc.1")], "0.3.0-rc.2"),
+                           ([release("v1.0.0-RC.2"), release("v0.3.0", early=False)], "1.0.0-RC.2"),
+                           ([release("v0.3.0", early=False), release("v0.3.0-rc.1")], "0.3.0")):
+            self.app.update_transport = lambda method, url, headers, tags=tags: json.dumps(tags).encode("utf-8")
+            status, answer = self.send("GET", "/api/update?check=1&force=1")
+            self.assertEqual((status, answer["latest"]["version"], answer["update_available"]), (200, best, True), tags)
 
     def test_hostile_github_releases_json_and_urls_are_neutralized_or_refused(self):
         self.packaged("0.2.0")
@@ -609,7 +817,7 @@ class VersionAndHardeningTest(ServerCase):
         with loopback_only() as blocked:
             for bad_url in ("http://api.github.com/repos/x/y/releases", "https://evil.example/a.zip"):
                 with self.assertRaises(updater.UpdateError) as ctx:
-                    updater._default_transport("GET", bad_url, {})
+                    updater._read_bounded_bytes("GET", bad_url, {}, max_bytes=1024)
                 self.assertEqual(ctx.exception.code, "bad_url")
             self.assertEqual(blocked, [])
 
@@ -622,7 +830,7 @@ class VersionAndHardeningTest(ServerCase):
             proxy_url = "http://127.0.0.1:%d" % proxy_srv.server_address[1]
             with mock.patch.dict(os.environ, {"HTTPS_PROXY": proxy_url, "HTTP_PROXY": proxy_url}):
                 with self.assertRaises(updater.UpdateError) as net_err:
-                    updater._default_transport("GET", "https://api.github.com/repos/%s/releases" % REPO, {})
+                    updater._read_bounded_bytes("GET", "https://api.github.com/repos/%s/releases" % REPO, {}, max_bytes=1024)
                 self.assertEqual(net_err.exception.code, "update_network_error")
             self.assertEqual(proxy_hits, [])
             self.assertEqual(blocked, [("lookup", "api.github.com")])
@@ -770,27 +978,6 @@ class DownloadIntegrityTest(ServerCase):
 
 # ---------------------------------------------------------------------------------------------- 5. U2, U5, U6: sibling scan & safe empty-only migration
 class SiblingScanAndMigrationTest(ServerCase):
-    def make_sibling(self, version="0.1.9", *, with_whisper=True):
-        sib = self.tmp / ("learn-my-voice-%s" % version)
-        sib_store = Store(sib / "data")
-        sib_store.update_config(lambda c: (
-            c.update(provider="anthropic", model="claude-sonnet-4-5", trend_weight="heat"),
-            c["keys"].update(anthropic="sk-ant-migrated-secret"),
-        ))
-        sib_store.keep_for_page({"lang": "en", "theme": "dark", "accent": "green"})
-        sib_store.save_creator({"name": "小林", "pronoun": "they"})
-        sib_store.save_dna(dict(EXAMPLE_DNA, persona_summary=dict(EXAMPLE_DNA["persona_summary"], one_line_essence_en="Earlier A")))
-        sib_store.save_dna(dict(EXAMPLE_DNA, persona_summary=dict(EXAMPLE_DNA["persona_summary"], one_line_essence_en="Current B")))
-        sib_store.create_script(title="旧版脚本", lines=[{"spoken_script_zh": "这周去超市买菜啦 / 拿了两盒水饺"}])
-        sib_store.create_sample(title="旧版素材", text="周末在家煮咖啡嘛 / 顺便收拾一下厨房啦")
-        sib_store.upsert_trends([{"keyword": "秋冬护肤", "heat": 12000}], source="manual")
-        planner.create_plan_item(sib_store, {"title": "下周拍早餐", "scheduled_for": "2026-11-28"})
-        if with_whisper:
-            fake_venv = sib / "local_tools" / "whisper" / "venv" / "bin"
-            fake_venv.mkdir(parents=True, exist_ok=True)
-            (fake_venv / "python3").write_bytes(b"fake-2gb-whisper-runtime")
-        return sib, sib_store
-
     def test_routine_update_status_and_checks_scan_siblings_only_when_current_folder_is_empty(self):
         self.packaged("0.2.0")
         self.make_sibling("0.1.9")
@@ -810,16 +997,18 @@ class SiblingScanAndMigrationTest(ServerCase):
         self.store.create_script(title="已有脚本")
         self.app.update_checks = True
         self.app.update_transport = lambda m, u, h: b"[]"
-        with mock.patch.object(updater, "_safe_count_tables", wraps=updater._safe_count_tables) as spy:
+        with mock.patch.object(updater, "_safe_count_tables", wraps=updater._safe_count_tables) as spy, \
+                mock.patch.object(updater, "_settings_at", wraps=updater._settings_at) as settings_read:
             for path in ("/api/update", "/api/update?check=1", "/api/update?check=1&force=1"):
                 st, ans = self.send("GET", path)
                 self.assertEqual((st, ans["data_empty"], ans["previous_scanned"], ans["previous_versions"]), (200, False, False, []), path)
-            self.assertEqual(spy.call_count, 0)
+            # Neither a neighbour's database nor its settings were opened.
+            self.assertEqual((spy.call_count, settings_read.call_count), (0, 0))
             # Explicit ?scan=1 scans on demand and still reports data_empty=False.
             st_scan, ans_scan = self.send("GET", "/api/update?scan=1")
             self.assertEqual((st_scan, ans_scan["data_empty"], ans_scan["previous_scanned"]), (200, False, True))
             self.assertEqual(len(ans_scan["previous_versions"]), 1)
-            self.assertEqual(spy.call_count, 1)
+            self.assertEqual((spy.call_count, settings_read.call_count), (1, 1))
 
     def test_migrating_into_empty_folder_carries_data_keys_older_schema_and_never_copies_whisper(self):
         self.packaged("0.2.0")
@@ -835,7 +1024,7 @@ class SiblingScanAndMigrationTest(ServerCase):
 
         cfg = self.store.load_config()
         self.assertEqual((cfg["provider"], cfg["model"], cfg["keys"]["anthropic"], cfg["trend_weight"]),
-                         ("anthropic", "claude-sonnet-4-5", "sk-ant-migrated-secret", "heat"))
+                         ("anthropic", "claude-sonnet-4-5", "sk-ant-migrated-secret", "mine"))
         self.assertEqual(self.store.load_page_keeps(), {"lang": "en", "theme": "dark", "accent": "green"})
         self.assertEqual(self.store.load_creator()["name"], "小林")
         dna, is_ex = self.store.load_dna()
@@ -999,15 +1188,424 @@ class SiblingScanAndMigrationTest(ServerCase):
         self.assertTrue(updater.is_data_empty(self.store))
 
 
+# ---------------------------------------------------------------------------------------------- 5b. a copy is all of it or none of it
+class AllOrNothingTest(ServerCase):
+    """A copy from an earlier folder that cannot finish leaves the folder it was going into as it was."""
+
+    def setUp(self):
+        super().setUp()
+        self.packaged("0.2.0")
+        self.sib, _ = self.make_sibling("0.1.9", with_whisper=False)
+        self.backups = self.app.backups
+
+    def stop_at(self, step, error):
+        def before_step(name):
+            if name == step:
+                raise error
+        self.backups._before_step = before_step
+
+    def copy(self):
+        return self.send_full("POST", "/api/update/migrate", {"source_path": str(self.sib)})
+
+    def work_folders(self, backups=None):
+        folder = (backups or self.backups).folder
+        return [entry.name for entry in folder.iterdir() if entry.name.startswith("work-")] if folder.is_dir() else []
+
+    def test_a_copy_that_fails_at_any_step_leaves_the_folder_as_it_was_and_can_be_tried_again(self):
+        self.store.update_config(lambda config: config.update(trend_weight="mine"))     # settings of its own, and no work
+        before = holds(self.store)
+        self.assertEqual(updater.MOVE_STEPS[0], backup.DATABASE)
+        for step in updater.MOVE_STEPS:
+            self.stop_at(step, OSError(errno.ENOSPC, "No space left on device"))
+            status, answer, headers = self.copy()
+            self.assertEqual((status, self.said(answer)), (507, "move_failed"), step)
+            self.assertIn("the disk is full", answer["message"])
+            self.assertIn("as it was before", answer["message"])
+            self.assertIn("磁盘已满", answer["message_zh"])
+            self.assertEqual(holds(self.store), before, step)
+            self.assertTrue(updater.is_data_empty(self.store), step)
+            self.assertEqual((headers[backup.EPOCH_HEADER], self.backups._note_path.exists(), self.work_folders()),
+                             (backup.FIRST_EPOCH, False, []), step)
+        # A database that another program holds is named as that; nothing had been touched.
+        for held in (sqlite3.OperationalError("database is locked"),
+                     TimeoutError("the database stayed in use by another program")):
+            self.stop_at(backup.DATABASE, held)
+            status, answer, _ = self.copy()
+            self.assertEqual((status, self.said(answer)), (409, "move_failed"), held)
+            self.assertIn("in use by another program", answer["message"])
+            self.assertIn("占用", answer["message_zh"])
+            self.assertEqual(holds(self.store), before)
+        # Anything else is given as the system worded it.
+        self.stop_at(backup.PLAIN_FILES[1], PermissionError(errno.EACCES, "not allowed here"))
+        status, answer, _ = self.copy()
+        self.assertEqual((status, self.said(answer)), (500, "move_failed"))
+        self.assertIn("not allowed here", answer["message"])
+        self.assertIn("not allowed here", answer["message_zh"])
+        self.assertEqual(holds(self.store), before)
+        # Once nothing stands in the way, the same copy goes through.
+        self.backups._before_step = lambda name: None
+        status, answer, headers = self.copy()
+        self.assertEqual(status, 200, answer)
+        self.assertNotEqual(headers[backup.EPOCH_HEADER], backup.FIRST_EPOCH)
+        self.assertEqual([script["title"] for script in self.store.list_scripts()], ["旧版脚本"])
+        self.assertEqual(self.store.load_creator()["name"], "小林")
+        self.assertEqual((self.backups._note_path.exists(), self.work_folders()), (False, []))
+
+    def test_the_app_closed_in_the_middle_of_a_copy_starts_again_with_the_folder_as_it_was(self):
+        before = holds(self.store)
+        for step in (backup.PLAIN_FILES[0], backup.PLAIN_FILES[-1], backup.HISTORY_FOLDER, "config.json"):
+            backups = backup.Backups(self.store, self.app.jobs)
+
+            def before_step(name, step=step):
+                if name == step:
+                    raise Killed()
+            backups._before_step = before_step
+            with mock.patch.object(updater, "_put_back_as_it_was", side_effect=Killed()):   # nothing runs once it is closed
+                with self.assertRaises(Killed):
+                    updater.migrate_from_previous_folder(self.store, self.sib, backups=backups, jobs=self.app.jobs)
+            self.assertNotEqual(holds(self.store), before, step)                # part of the other folder is in it
+            self.assertFalse(updater.is_data_empty(self.store), step)
+            note = json.loads(backups._note_path.read_text(encoding="utf-8"))
+            self.assertIsNotNone(backup._WORK.fullmatch(note["work"]), note)   # a work folder ``Backups`` knows as its own
+            self.assertTrue((backups.folder / note["work"] / "old" / backup.DATABASE).is_file())
+            started = backup.Backups(self.store, self.app.jobs)                 # the app starts again
+            self.assertEqual(holds(self.store), before, step)
+            self.assertTrue(updater.is_data_empty(self.store), step)
+            self.assertTrue(started.put_back_at_start)
+            self.assertNotEqual(started.epoch, backup.FIRST_EPOCH)              # a page left open starts afresh
+            self.assertEqual((started._note_path.exists(), self.work_folders(started)), (False, []))
+        # And then the copy can be made.
+        again = backup.Backups(self.store, self.app.jobs)
+        self.assertFalse(again.put_back_at_start)
+        answer = updater.migrate_from_previous_folder(self.store, self.sib, backups=again, jobs=self.app.jobs)
+        self.assertEqual((answer["scripts"], answer["samples"]), (1, 1))
+        self.assertEqual(self.store.load_creator()["name"], "小林")
+
+    def test_closed_before_anything_was_put_in_place_there_is_nothing_to_undo(self):
+        before = holds(self.store)
+        self.stop_at(backup.DATABASE, Killed())
+        with self.assertRaises(Killed):
+            updater.migrate_from_previous_folder(self.store, self.sib, backups=self.backups, jobs=self.app.jobs)
+        self.assertEqual(holds(self.store), before)
+        self.assertEqual((self.backups._note_path.exists(), self.work_folders()), (False, []))
+        started = backup.Backups(self.store, self.app.jobs)
+        self.assertEqual((holds(self.store), started.put_back_at_start, started.epoch), (before, False, backup.FIRST_EPOCH))
+
+    def test_when_the_folder_cannot_be_put_back_the_creator_is_told_what_to_do_and_the_next_start_does_it(self):
+        before = holds(self.store)
+        self.stop_at(backup.HISTORY_FOLDER, OSError("the disk went away"))
+        with mock.patch.object(updater, "_put_back_as_it_was", side_effect=OSError("and it is still away")):
+            status, answer, headers = self.copy()
+        self.assertEqual((status, self.said(answer)), (500, "move_undo_failed"))
+        for part in ("the disk went away", "and it is still away", "Close the app and start it again", "was not changed"):
+            self.assertIn(part, answer["message"])
+        self.assertIn("重新打开", answer["message_zh"])
+        self.assertNotEqual(holds(self.store), before)
+        # A page that was open cannot write into what is half there.
+        self.assertNotEqual(headers[backup.EPOCH_HEADER], backup.FIRST_EPOCH)
+        status, stale = self.send("POST", "/api/scripts", {"title": "写进半截数据里"}, headers={backup.EPOCH_HEADER: backup.FIRST_EPOCH})
+        self.assertEqual((status, self.said(stale)), (409, "stale_data"))
+        self.assertTrue(self.backups._note_path.is_file())
+        started = backup.Backups(self.store, self.app.jobs)                     # the app starts again
+        self.assertEqual(holds(self.store), before)
+        self.assertTrue(started.put_back_at_start)
+        self.assertEqual((started._note_path.exists(), self.work_folders(started)), (False, []))
+
+    def test_the_folder_an_unpacked_package_is_filled_in_is_not_kept_or_put_back(self):
+        """Nobody works in it yet, and it is thrown away when the copy fails: the refusal says what it holds."""
+        target = Store(self.tmp / "elsewhere" / "learn-my-voice-0.3.0" / "data")
+        with mock.patch.object(updater, "_keep_as_it_is", side_effect=AssertionError("nothing is kept here")), \
+                mock.patch.object(Store, "_write_bytes", side_effect=OSError(errno.ENOSPC, "No space left on device")):
+            with self.assertRaises(updater.UpdateError) as refused:
+                updater.migrate_from_previous_folder(target, self.sib)
+        self.assertEqual((refused.exception.code, refused.exception.status), ("move_failed", 507))
+
+
+# ---------------------------------------------------------------------------------------------- 5c. the other folder's settings are a file from outside
+NOTHING_NAMED = {"kept_own": False, "unreadable": False, "provider": "", "model": "", "address": "", "key": False,
+                 "other_keys": [], "not_carried": [], "keys_not_carried": []}
+
+
+class SettingsFromOutsideTest(ServerCase):
+    """What a copy carries of another folder's ``config.json``, and what the page is told about it first.
+
+    A folder beside the app is the creator's own earlier one, or one somebody else put there. A copy carries
+    the settings and keys either way: that is what it is for. So each part is held to what the app would have
+    stored itself, the AI service and model are named before and after, and no part of a key is ever sent to
+    the page.
+    """
+
+    def setUp(self):
+        super().setUp()
+        self.packaged("0.2.0")
+
+    def beside(self, version, settings, script="旧版脚本"):
+        """A folder of an earlier version beside the app's, with one script and ``settings`` as its config.json."""
+        folder = self.tmp / ("learn-my-voice-%s" % version)
+        Store(folder / "data").create_script(title=script)
+        held = settings if isinstance(settings, bytes) else json.dumps(settings, ensure_ascii=False).encode("utf-8")
+        (folder / "data" / "config.json").write_bytes(held)
+        return folder
+
+    def listed(self):
+        status, answer = self.send("GET", "/api/update")
+        self.assertEqual((status, answer["previous_scanned"]), (200, True))
+        return answer
+
+    def copy(self, folder):
+        status, answer = self.send("POST", "/api/update/migrate", {"source_path": str(folder)})
+        self.assertEqual(status, 200, answer)
+        return answer
+
+    def stored(self):
+        return json.loads(self.store.config_path.read_text(encoding="utf-8"))
+
+    def test_a_service_and_key_another_folder_brings_are_named_before_the_copy_and_after_and_no_key_is_shown(self):
+        folder = self.beside("0.1.0", {"provider": "openai", "model": "gpt-planted", "keys": {"openai": "sk-planted-key-123"}})
+        named = dict(NOTHING_NAMED, provider="openai", model="gpt-planted", key=True)
+        before = self.listed()
+        self.assertEqual([entry["ai"] for entry in before["previous_versions"]], [named])
+        self.assertNotIn("sk-planted", json.dumps(before))
+        after = self.copy(folder)
+        self.assertEqual(after["ai"], named)
+        self.assertNotIn("sk-planted", json.dumps(after))
+        # It is carried, as the creator's own would be: the key sealed, as every key in this folder is.
+        config = self.store.load_config()
+        self.assertEqual((config["provider"], config["model"], config["keys"]), ("openai", "gpt-planted", {"openai": "sk-planted-key-123"}))
+        self.assertNotIn("sk-planted", self.store.config_path.read_text(encoding="utf-8"))
+        # And where a draft would go is then the service the page named, under that key (a stand-in takes it).
+        sent = []
+        pipeline.complete(self.store, "system", "user", transport=lambda method, url, headers, body: (
+            sent.append((url, headers)), {"choices": [{"message": {"content": "{}"}}]})[1])
+        self.assertEqual(sent, [("https://api.openai.com/v1/chat/completions", {"Authorization": "Bearer sk-planted-key-123"})])
+
+    def test_what_the_app_would_not_have_stored_itself_is_left_out_and_said(self):
+        hostile = {
+            "provider": "evil-service", "model": "x\ny", "local_base_url": "https://collect.example/v1",
+            "keys": {"openai": "sk with a space", "gemini": "g" * 600, "anthropic": "ok-key", "evil": "k"},
+            "keys_sealed": {"openai": "v1:not-sealed-here", "evil": "v1:x"},
+            "trend_weight": "heat", "wordlist": {"off": ["x" * 500, 7], "phrases": ["\u4e00" * 500]},
+            "page": {"lang": "en", "theme": "<script>", "evil": "1", "tp-pace": "12"},
+            "updates": {"auto_check": False, "dismissed_version": "<b>", "cached": {"version": "99.0.0"}, "last_checked_at": 1},
+            "another_setting": {"url": "https://collect.example"}, "autopilot": {"on": True},
+        }
+        folder = self.beside("0.1.0", hostile)
+        named = dict(NOTHING_NAMED, other_keys=["anthropic"], not_carried=["provider", "address"], keys_not_carried=["gemini", "openai"])
+        self.assertEqual(self.listed()["previous_versions"][0]["ai"], named)
+        self.assertEqual(self.copy(folder)["ai"], named)
+        written = self.store.config_path.read_text(encoding="utf-8")
+        for planted in ("collect.example", "another_setting", "autopilot", "evil", "sk with", "ggggg", "not-sealed-here", "heat",
+                        "script", "99.0.0", "xxxxx"):
+            self.assertNotIn(planted, written, planted)
+        config = self.store.load_config()
+        self.assertEqual((config["provider"], config["model"], config["local_base_url"], config["keys"], config["trend_weight"]),
+                         ("", "", "", {"anthropic": "ok-key"}, "balanced"))
+        self.assertNotIn("wordlist", config)
+        self.assertEqual(self.store.load_page_keeps(), {"lang": "en", "tp-pace": "12"})
+        self.assertEqual(updater._stored_settings(self.store)["auto_check"], False)       # a switch of the creator's: carried
+        self.assertEqual(updater._stored_settings(self.store)["dismissed_version"], "")
+        self.assertEqual(sorted(name for name in self.stored() if name not in ("provider", "model", "local_base_url", "keys",
+                                                                              "keys_sealed", "trend_weight", "page", "updates")), [])
+
+    def test_each_part_of_a_connection_is_held_to_the_check_settings_makes(self):
+        ours = {}
+        for theirs, expected in (
+            ({"provider": "gemini", "model": "a/b?c", "keys": {"gemini": "k1"}},
+             dict(NOTHING_NAMED, provider="gemini", key=True, not_carried=["model"])),
+            ({"provider": "openai", "model": "gpt-x", "keys_sealed": {"openai": "v1:sealed-on-another-computer"}},
+             dict(NOTHING_NAMED, provider="openai", model="gpt-x", not_carried=["key"])),
+            ({"provider": "local", "model": "Llama 3 8B", "local_base_url": "http://127.0.0.1:11434/v1/"},
+             dict(NOTHING_NAMED, provider="local", model="Llama 3 8B", address="http://127.0.0.1:11434/v1")),
+            ({"provider": "local", "model": "m", "local_base_url": "http://192.168.1.20:11434/v1"},
+             dict(NOTHING_NAMED, provider="local", model="m", not_carried=["address"])),
+            ({"provider": "local", "model": "m", "local_base_url": "http://localhost.collect.example/v1"},
+             dict(NOTHING_NAMED, provider="local", model="m", not_carried=["address"])),
+            ({"provider": "manual", "model": "ignored"}, dict(NOTHING_NAMED, provider="manual")),
+            ({"provider": ["openai"], "model": 7, "local_base_url": {"a": 1}, "keys": "all of them", "keys_sealed": [1]},
+             dict(NOTHING_NAMED, not_carried=["provider", "address"])),
+            ({"provider": "anthropic", "model": "claude-x", "keys": {"anthropic": "k-a", "openai": "k-o", "gemini": ""}},
+             dict(NOTHING_NAMED, provider="anthropic", model="claude-x", key=True, other_keys=["openai"])),
+            ({}, NOTHING_NAMED),
+        ):
+            settings, told = updater._settings_to_carry(theirs, ours)
+            self.assertEqual(told, expected, theirs)
+            if "address" in expected["not_carried"]:
+                self.assertEqual(settings["local_base_url"], "", theirs)
+            if "model" in expected["not_carried"]:
+                self.assertEqual(settings["model"], "", theirs)
+        # A key sealed in this folder's own way, on this computer, opens here and is carried as it is.
+        mine = Store(self.tmp / "learn-my-voice-0.1.5" / "data")
+        mine.update_config(lambda config: (config.update(provider="gemini", model="gemini-x"), config["keys"].update(gemini="sealed-here")))
+        theirs = json.loads(mine.config_path.read_text(encoding="utf-8"))
+        self.assertEqual((theirs["keys"], sorted(theirs["keys_sealed"])), ({}, ["gemini"]))
+        settings, told = updater._settings_to_carry(theirs, ours)
+        self.assertEqual((told, settings["keys_sealed"]), (dict(NOTHING_NAMED, provider="gemini", model="gemini-x", key=True), theirs["keys_sealed"]))
+
+    def test_an_ai_connection_entered_here_first_is_kept(self):
+        self.store.update_config(lambda config: (config.update(provider="gemini", model="gemini-mine"),
+                                                 config["keys"].update(gemini="my-own-key")))
+        own = dict(self.store.load_config())
+        folder = self.beside("0.1.0", {"provider": "openai", "model": "gpt-planted", "keys": {"openai": "sk-planted-key-123"},
+                                       "trend_weight": "mine", "local_base_url": "http://127.0.0.1:9/v1"})
+        kept = dict(NOTHING_NAMED, kept_own=True)
+        before = self.listed()
+        self.assertTrue(before["data_empty"])                               # settings are not work: the copy is still offered
+        self.assertEqual(before["previous_versions"][0]["ai"], kept)
+        self.assertNotIn("gpt-planted", json.dumps(before))
+        after = self.copy(folder)
+        self.assertEqual(after["ai"], kept)
+        config = self.store.load_config()
+        for name in ("provider", "model", "keys", "local_base_url"):
+            self.assertEqual(config[name], own[name], name)
+        self.assertEqual(config["trend_weight"], "mine")                    # the rest of the settings came along
+        self.assertEqual([script["title"] for script in self.store.list_scripts()], ["旧版脚本"])
+        written = self.store.config_path.read_text(encoding="utf-8")
+        self.assertNotIn("planted", written)
+        # A key alone, or the address of a model server alone, is a connection too.
+        for ours in ({"keys": {"openai": "k"}}, {"keys_sealed": {"gemini": "v1:x"}}, {"local_base_url": "http://127.0.0.1:1/v1"},
+                     {"provider": "manual"}):
+            settings, told = updater._settings_to_carry({"provider": "openai", "model": "gpt-planted", "keys": {"openai": "theirs"}}, ours)
+            self.assertEqual((told, {name: settings.get(name) for name in ours}), (kept, ours), ours)
+            self.assertNotIn("theirs", json.dumps(settings))
+        # And where the other folder names none, there is nothing to say.
+        self.assertEqual(updater._settings_to_carry({"trend_weight": "trend"}, {"provider": "manual"})[1], NOTHING_NAMED)
+
+    def test_settings_that_cannot_be_read_are_not_carried_and_the_data_is(self):
+        self.store.update_config(lambda config: config.update(trend_weight="trend"))
+        own = self.store.config_path.read_bytes()
+        unread = dict(NOTHING_NAMED, unreadable=True)
+        with mock.patch.object(updater, "MAX_SETTINGS_BYTES", 2000):
+            for number, held in enumerate((b"{cut short", b"\xff\xfe not text", b"[1, 2, 3]", b'"words"', b"", b"[" * 5000,
+                                           json.dumps({"provider": "openai", "pad": "x" * 3000}).encode("utf-8"))):
+                target = Store(self.tmp / ("into-%d" % number) / "learn-my-voice-0.2.0" / "data")
+                target.config_path.write_bytes(own)
+                folder = self.tmp / ("into-%d" % number) / "learn-my-voice-0.1.0"
+                Store(folder / "data").create_script(title="旧版脚本")
+                (folder / "data" / "config.json").write_bytes(held)
+                self.assertEqual(updater.discover_previous_installations(target, explicit=True)[0]["ai"], unread, held[:20])
+                answer = updater.migrate_from_previous_folder(target, folder, backups=backup.Backups(target))
+                self.assertEqual((answer["ai"], answer["scripts"], "config.json" in answer["copied"]), (unread, 1, False), held[:20])
+                self.assertEqual(target.config_path.read_bytes(), own, held[:20])
+        # A number no JSON has, which a version before 0.2.0 could store, is read as the app reads it.
+        folder = self.beside("0.1.0", b'{"provider": "manual", "trend_weight": "mine", "score": NaN}')
+        self.assertEqual(self.copy(folder)["ai"], dict(NOTHING_NAMED, provider="manual"))
+        self.assertEqual((self.store.load_config()["provider"], self.store.load_config()["trend_weight"]), ("manual", "mine"))
+        # A folder with no settings at all has nothing unreadable about it.
+        bare = self.tmp / "bare" / "learn-my-voice-0.1.0"
+        Store(bare / "data").create_script(title="x")
+        into = Store(self.tmp / "bare" / "learn-my-voice-0.2.0" / "data")
+        self.assertIsNone(updater.discover_previous_installations(into, explicit=True)[0]["ai"])
+        self.assertEqual(updater.migrate_from_previous_folder(into, bare)["ai"], NOTHING_NAMED)
+
+    def test_one_more_name_with_its_cleaner_is_one_more_line(self):
+        self.assertEqual([name for name, _ in updater.CARRIED_SETTINGS], ["trend_weight", "wordlist", "page"])
+        more = updater.CARRIED_SETTINGS + (("autopilot", lambda value: {"on": True} if isinstance(value, dict) and value.get("on") is True else None),)
+        with mock.patch.object(updater, "CARRIED_SETTINGS", more):
+            self.assertEqual(updater._settings_to_carry({"autopilot": {"on": True, "url": "https://collect.example"}}, {})[0]["autopilot"], {"on": True})
+            self.assertNotIn("autopilot", updater._settings_to_carry({"autopilot": "yes"}, {})[0])
+        self.assertNotIn("autopilot", updater._settings_to_carry({"autopilot": {"on": True}}, {})[0])
+
+
+# ---------------------------------------------------------------------------------------------- 5d. an earlier version's own files, and a full disk
+class OlderFilesTest(ServerCase):
+    """A copy reads the earlier folder's files the way the app reads its own, and blames the data only for the data."""
+
+    def setUp(self):
+        super().setUp()
+        self.packaged("0.2.0")
+        self.folder = self.tmp / "learn-my-voice-0.1.1"
+        self.there = Store(self.folder / "data")
+        self.there.create_script(title="旧版脚本")
+
+    def copy(self):
+        return self.send("POST", "/api/update/migrate", {"source_path": str(self.folder)})
+
+    def test_a_number_no_json_has_from_before_0_2_0_does_not_stop_the_copy(self):
+        own = dict(EXAMPLE_DNA, persona_summary=dict(EXAMPLE_DNA["persona_summary"], one_line_essence_en="Mine"))
+        self.there.save_dna(own)
+        self.there.save_dna(dict(own, persona_summary=dict(own["persona_summary"], one_line_essence_en="Mine, later")))
+        self.there.save_creator({"name": "小林", "pronoun": "they"})
+        # As a version before 0.2.0 could leave them: a model's NaN stored as it came.
+        for path in [self.there.dna_path, self.there.creator_path] + sorted(self.there.dna_history_dir.glob("*.json")):
+            held = path.read_text(encoding="utf-8")
+            path.write_text(held[:held.rindex("}")] + ', "score": NaN, "more": -Infinity}', encoding="utf-8")
+        self.assertFalse(self.there.dna_unreadable())               # the app reads these files, there
+        status, answer = self.copy()
+        self.assertEqual(status, 200, answer)
+        for name in ("voice_dna.json", "creator.json", backup.HISTORY_FOLDER):
+            self.assertIn(name, answer["copied"])
+        profile, example = self.store.load_dna()
+        self.assertEqual((example, profile["persona_summary"]["one_line_essence_en"], profile["score"]), (False, "Mine, later", None))
+        self.assertEqual(self.store.load_creator()["name"], "小林")
+        for path in [self.store.dna_path, self.store.creator_path] + sorted(self.store.dna_history_dir.glob("*.json")):
+            written = path.read_text(encoding="utf-8")
+            self.assertNotIn("NaN", written, path.name)             # written out afresh: every page can read it
+            self.assertNotIn("Infinity", written, path.name)
+        self.assertEqual(len(backup._history_names(self.store.dna_history_dir)), 1)
+
+    def test_a_file_the_app_cannot_read_is_carried_as_it_is_and_stops_nothing(self):
+        odd = {"creator.json": b"[1, 2, 3]", "voice_dna.json": b"{cut short", "voice_pending.json": b"\xff\xfe not text",
+               "recommendations.json": b"[" * 50000}
+        for name, held in odd.items():
+            (self.there.data_dir / name).write_bytes(held)
+        self.assertTrue(self.there.dna_unreadable())
+        status, answer = self.copy()
+        self.assertEqual(status, 200, answer)
+        self.assertEqual(answer["scripts"], 1)
+        # What cannot be read is as it was; what can be read, though it is no profile, was written out afresh.
+        for name in ("voice_dna.json", "voice_pending.json", "recommendations.json"):
+            self.assertEqual((self.store.data_dir / name).read_bytes(), odd[name], name)
+        self.assertEqual(json.loads((self.store.data_dir / "creator.json").read_text(encoding="utf-8")), [1, 2, 3])
+        # The new folder is where the old one was: the profile is said to be unreadable, and the app goes on.
+        self.assertTrue(self.store.dna_unreadable())
+        self.assertIsNone(self.store.load_creator())
+        self.assertEqual(self.send("GET", "/api/state")[0], 200)
+
+    def test_a_link_and_a_file_too_large_are_still_refused_and_named(self):
+        (self.there.data_dir / "voice_dna.json").write_bytes(b"{" + b" " * 5000 + b"}")
+        with mock.patch.object(backup, "MAX_SMALL_FILE_BYTES", 4096):
+            status, answer = self.copy()
+        self.assertEqual((status, self.said(answer)), (400, "bad_source_data"))
+        self.assertIn("voice_dna.json is larger", answer["message"])
+        (self.there.data_dir / "voice_dna.json").unlink()
+        elsewhere = self.tmp / "elsewhere.json"
+        elsewhere.write_text("{}", encoding="utf-8")
+        os.symlink(str(elsewhere), str(self.there.data_dir / "creator.json"))
+        status, answer = self.copy()
+        self.assertEqual((status, self.said(answer)), (400, "bad_source_data"))
+        self.assertIn("creator.json is not a plain file", answer["message"])
+        self.assertTrue(updater.is_data_empty(self.store))
+
+    def test_a_full_disk_and_a_database_in_use_are_named_as_that_and_not_as_bad_data(self):
+        full = sqlite3.OperationalError("database or disk is full")
+        for where, error, status_wanted, said in (
+            ("_copy_database", full, 507, ("the disk is full", "磁盘已满")),
+            ("_rebuild", full, 507, ("the disk is full", "磁盘已满")),
+            ("_try_out", OSError(errno.ENOSPC, "No space left on device"), 507, ("the disk is full", "磁盘已满")),
+            ("_copy_database", sqlite3.OperationalError("database is locked"), 409, ("in use by another program", "占用")),
+            ("_copy_database", TimeoutError("the database stayed in use by another program"), 409, ("in use by another program", "占用")),
+        ):
+            with mock.patch.object(backup, where, side_effect=error):
+                status, answer = self.copy()
+            self.assertEqual((status, self.said(answer)), (status_wanted, "move_failed"), (where, error))
+            self.assertIn(said[0], answer["message"])
+            self.assertIn(said[1], answer["message_zh"])
+            self.assertNotIn("safety checks", answer["message"])
+            self.assertIn("as it was before", answer["message"])
+            self.assertTrue(updater.is_data_empty(self.store))
+            self.assertEqual([entry.name for entry in self.app.backups.folder.iterdir() if entry.name.startswith("work-")], [])
+        # What is wrong with the data is still said to be wrong with the data.
+        with mock.patch.object(backup, "_copy_database", side_effect=sqlite3.DatabaseError("file is not a database")):
+            status, answer = self.copy()
+        self.assertEqual((status, self.said(answer)), (400, "bad_source_data"))
+        self.assertIn("safety checks", answer["message"])
+        # And with nothing in the way the copy is made.
+        status, answer = self.copy()
+        self.assertEqual((status, answer["scripts"]), (200, 1))
+
+
 # ---------------------------------------------------------------------------------------------- 6. U3 & U5: bounded apply-zip, never into an existing folder
 class ApplyZipTest(ServerCase):
-    def save_zip(self, zip_bytes, name="learn-my-voice-0.3.0-beta.zip"):
-        self.world.downloads.mkdir(parents=True, exist_ok=True)
-        path = self.world.downloads / name
-        path.write_bytes(zip_bytes)
-        self.app.remember_saved(path)
-        return path
-
     def test_apply_zip_unpacks_via_temp_folder_migrates_data_and_never_copies_whisper(self):
         self.packaged("0.2.0-beta")
         self.store.update_config(lambda c: (
@@ -1130,6 +1728,310 @@ class ApplyZipTest(ServerCase):
         self.assertEqual([p.name for p in self.tmp.iterdir() if ".unpacking-" in p.name], [])
 
 
+# ---------------------------------------------------------------------------------------------- 6b. the unpacked database is closed before the rename
+class HandlesTest(ServerCase):
+    """An unpacked folder is renamed into place with no connection left open on the database inside it.
+
+    On the Windows runners with Python 3.14 and 3.15 that rename was refused once, while 3.9 passed. Nothing
+    here runs on Windows; what is checked is what Windows needs, in a way every system can check.
+    """
+
+    def unpack(self, version):
+        package = self.save_zip(make_release_zip_bytes(version), name="learn-my-voice-%s.zip" % version)
+        return self.send("POST", "/api/update/apply-zip", {"zip_path": str(package)})
+
+    def leftovers(self):
+        return [path.name for path in self.tmp.iterdir() if ".unpacking-" in path.name]
+
+    def test_every_connection_on_the_unpacked_database_is_closed_before_the_folder_is_put_in_place(self):
+        self.packaged("0.2.0-beta")
+        self.store.create_script(title="Carry Me Over")
+        self.store.create_sample(title="素材", text="今天去买咖啡啦")
+        with watched_databases() as notes, at_the_rename(notes) as looks:
+            status, answer = self.unpack("0.3.0-beta")
+        self.assertEqual(status, 201, answer)
+        self.assertEqual(len(looks), 1)
+        # It was made, looked at to see that it is empty, filled, and counted: the watch saw that.
+        self.assertGreaterEqual(len(looks[0]), 3, looks[0])
+        self.assertEqual([note for note in looks[0] if not note["closed"]], [])
+        self.assertEqual((answer["migration"]["scripts"], answer["migration"]["samples"]), (1, 1))
+
+    def test_the_same_watch_notices_a_connection_that_is_only_dropped(self):
+        """Without this the test above would also pass if the watch saw nothing, or took dropped for closed."""
+        self.packaged("0.2.0-beta")
+        really_empty = updater.is_data_empty
+
+        def counts_first(store):
+            store.samples_count()           # ``with self._db() as db:`` commits and does not close
+            return really_empty(store)
+
+        with watched_databases() as notes, at_the_rename(notes) as looks, \
+                mock.patch.object(updater, "is_data_empty", counts_first):
+            status, answer = self.unpack("0.3.0-beta")
+        self.assertEqual(status, 201, answer)
+        self.assertEqual(len([note for note in looks[0] if not note["closed"]]), 1)
+
+    def test_a_refusal_that_ends_is_waited_out_and_one_that_lasts_is_said_in_two_languages(self):
+        self.packaged("0.2.0-beta")
+        real_rename = os.rename
+        tried = []
+
+        def refused(times, error, first=None):
+            """Stands in for ``os.rename``: the first ``times`` tries to place an unpacked folder raise ``error``."""
+            def rename(source, target, *args, **more):
+                if ".unpacking-" not in os.path.basename(os.fspath(source)):
+                    return real_rename(source, target, *args, **more)
+                tried.append(os.fspath(target))
+                if len(tried) <= times:
+                    if first is not None and len(tried) == 1:
+                        first(Path(os.fspath(target)))
+                    raise error
+                return real_rename(source, target, *args, **more)
+            return rename
+
+        held = PermissionError(errno.EACCES, "held by another program")
+
+        # Held for two tries, as by a program that is only looking: waited out, where waiting is on.
+        with mock.patch.object(updater, "_PLACE_TRIES", 4), mock.patch.object(os, "rename", refused(2, held)):
+            status, answer = self.unpack("0.3.1")
+        self.assertEqual((status, len(tried)), (201, 3), answer)
+        self.assertTrue((self.tmp / "learn-my-voice-0.3.1" / "data" / "studio.db").is_file())
+
+        # Held for good: every try is used, then it is said, and nothing is left behind.
+        del tried[:]
+        with mock.patch.object(updater, "_PLACE_TRIES", 4), mock.patch.object(os, "rename", refused(99, held)):
+            status, answer = self.unpack("0.3.2")
+        self.assertEqual((status, self.said(answer), len(tried)), (507, "save_failed", 4))
+        self.assertIn("held by another program", answer["message"])
+        self.assertFalse((self.tmp / "learn-my-voice-0.3.2").exists())
+        self.assertEqual(self.leftovers(), [])
+
+        # Where a refusal is a real one (every system but Windows) it is tried once.
+        del tried[:]
+        self.assertEqual(updater._PLACE_TRIES, 12 if os.name == "nt" else 1)
+        with mock.patch.object(updater, "_PLACE_TRIES", 1), mock.patch.object(os, "rename", refused(99, held)):
+            status, answer = self.unpack("0.3.3")
+        self.assertEqual((status, self.said(answer), len(tried)), (507, "save_failed", 1))
+        self.assertEqual(self.leftovers(), [])
+
+        # A folder of that name made by somebody else in the meantime is noticed, and left as it is.
+        del tried[:]
+        with mock.patch.object(updater, "_PLACE_TRIES", 4), \
+                mock.patch.object(os, "rename", refused(99, held, first=lambda target: target.mkdir())):
+            status, answer = self.unpack("0.3.4")
+        self.assertEqual((status, self.said(answer), len(tried)), (409, "destination_exists", 1))
+        self.assertEqual(list((self.tmp / "learn-my-voice-0.3.4").iterdir()), [])
+        self.assertEqual(self.leftovers(), [])
+
+        # Any other failure is not one that ends by itself: not tried again.
+        del tried[:]
+        elsewhere = OSError(errno.EXDEV, "another disk")
+        with mock.patch.object(updater, "_PLACE_TRIES", 4), mock.patch.object(os, "rename", refused(99, elsewhere)):
+            status, answer = self.unpack("0.3.5")
+        self.assertEqual((status, self.said(answer), len(tried)), (507, "save_failed", 1))
+        self.assertEqual(self.leftovers(), [])
+
+
+# ---------------------------------------------------------------------------------------------- 6c. plain failures are refusals
+class PlainFailuresTest(ServerCase):
+    """A full disk, a folder that cannot be written to, a database held by another program.
+
+    Each is said in two languages, with what is as it was, and never as the server's last resort
+    (``500 internal error``, English only): ``said`` checks that for every answer here.
+    """
+
+    def setUp(self):
+        super().setUp()
+        self.packaged("0.2.0-beta")
+        self.store.create_script(title="Mine")
+        self.store.update_config(lambda config: config.update(trend_weight="mine"))
+        self.before = holds(self.store)
+
+    def unpack(self, version, entries=None):
+        package = self.save_zip(make_release_zip_bytes(version, entries), name="learn-my-voice-%s.zip" % version)
+        return self.send("POST", "/api/update/apply-zip", {"zip_path": str(package)})
+
+    def nothing_happened(self, version):
+        self.assertFalse((self.tmp / ("learn-my-voice-%s" % version)).exists())
+        self.assertEqual([entry.name for entry in self.tmp.iterdir() if ".unpacking-" in entry.name], [])
+        self.assertEqual(holds(self.store), self.before)
+
+    def test_a_place_beside_this_folder_that_cannot_be_written_to_is_said(self):
+        real_mkdir = os.mkdir
+
+        def mkdir(name, *args, **more):
+            if ".unpacking-" in os.path.basename(os.fspath(name)):
+                raise PermissionError(errno.EACCES, "Permission denied")
+            return real_mkdir(name, *args, **more)
+
+        with mock.patch.object(os, "mkdir", mkdir):
+            status, answer = self.unpack("0.3.0")
+        self.assertEqual((status, self.said(answer)), (500, "unpack_failed"))
+        self.assertIn("Permission denied", answer["message"])
+        self.assertIn("Nothing in this folder was changed", answer["message"])
+        self.assertIn("Permission denied", answer["message_zh"])
+        self.nothing_happened("0.3.0")
+
+    def test_a_full_disk_while_unpacking_is_named_and_nothing_is_left(self):
+        real_open = os.open
+        written = []
+
+        def full_after(count):
+            def opened(name, flags, *args, **more):
+                if ".unpacking-" in os.fspath(name) and flags & os.O_CREAT:
+                    written.append(os.fspath(name))
+                    if len(written) > count:
+                        raise OSError(errno.ENOSPC, "No space left on device")
+                return real_open(name, flags, *args, **more)
+            return opened
+
+        # At the first file of the package, at its third and last, and at the first file of this copy's data
+        # that is written into the new folder.
+        for version, count, code in (("0.3.0", 0, "unpack_failed"), ("0.3.1", 2, "unpack_failed"),
+                                     ("0.3.2", 3, "unpack_copy_failed")):
+            del written[:]
+            with mock.patch.object(os, "open", full_after(count)):
+                status, answer = self.unpack(version, {"README.md": "# read me\n"})
+            self.assertEqual((status, self.said(answer)), (507, code), version)
+            self.assertIn("the disk is full", answer["message"])
+            self.assertIn("in this folder was changed", answer["message"])
+            self.assertIn("磁盘已满", answer["message_zh"])
+            self.assertEqual(len(written), count + 1)
+            self.nothing_happened(version)
+        # Without the full disk the same package is unpacked.
+        status, answer = self.unpack("0.3.0", {"README.md": "# read me\n"})
+        self.assertEqual(status, 201, answer)
+
+    def test_names_that_would_land_in_one_place_are_refused_before_anything_is_written(self):
+        def package(names):
+            top = "learn-my-voice-0.4.0"
+            held = io.BytesIO()
+            with zipfile.ZipFile(held, "w", zipfile.ZIP_DEFLATED) as archive:
+                archive.writestr("%s/studio/build.json" % top,
+                                 json.dumps({"version": "0.4.0", "commit": "a" * 40, "built_on": "2026-11-21"}))
+                for name in names:
+                    archive.writestr("%s/%s" % (top, name), b"x")
+            return held.getvalue()
+
+        made = []
+        real_mkdir = os.mkdir
+
+        def mkdir(name, *args, **more):
+            made.append(os.path.basename(os.fspath(name)))
+            return real_mkdir(name, *args, **more)
+
+        for label, names in (("a file and a folder of one name", ["a", "a/b"]),
+                             ("the folder first", ["a/b", "a"]),
+                             ("capitals", ["Notes.txt", "notes.TXT"]),
+                             ("an accent written two ways", ["caf\u00e9.txt", "cafe\u0301.txt"]),
+                             ("a folder that differs in capitals from a file", ["Docs/x", "docs"])):
+            path = self.save_zip(package(names), name="clash-%d.zip" % len(made))
+            with mock.patch.object(os, "mkdir", mkdir):
+                status, answer = self.send("POST", "/api/update/apply-zip", {"zip_path": str(path)})
+            self.assertEqual((status, self.said(answer)), (400, "bad_zip"), label)
+            self.assertEqual([name for name in made if ".unpacking-" in name], [], label)
+            self.nothing_happened("0.4.0")
+
+    def test_when_what_this_copy_holds_cannot_go_into_the_new_folder_that_folder_is_removed_and_it_is_said(self):
+        with mock.patch.object(updater, "_apply_staged_to_empty_store",
+                               side_effect=OSError(errno.ENOSPC, "No space left on device")):
+            status, answer = self.unpack("0.3.0")
+        self.assertEqual((status, self.said(answer)), (507, "unpack_copy_failed"))
+        for part in ("the disk is full", "new folder was removed again", "nothing in this folder was changed"):
+            self.assertIn(part, answer["message"])
+        self.assertIn("磁盘已满", answer["message_zh"])
+        self.nothing_happened("0.3.0")
+        # This copy's own database does not pass the checks a copy makes: said in words that fit this case.
+        with contextlib.closing(sqlite3.connect(str(self.store.db_path))) as db:
+            db.executescript("CREATE VIEW odd AS SELECT * FROM scripts;")
+        self.before = holds(self.store)
+        status, answer = self.unpack("0.3.1")
+        self.assertEqual((status, self.said(answer)), (400, "unpack_copy_failed"))
+        self.assertNotIn("earlier folder", answer["message"])
+        self.nothing_happened("0.3.1")
+
+    def test_unpacking_is_refused_while_something_runs(self):
+        release, started = threading.Event(), threading.Event()
+        self.app.jobs.start("transcribe", lambda progress: (started.set(), release.wait(10)))
+        self.assertTrue(started.wait(5))
+        try:
+            status, answer = self.unpack("0.3.0")
+            self.assertEqual((status, self.said(answer)), (409, "migrate_busy"))
+            self.nothing_happened("0.3.0")
+        finally:
+            release.set()
+
+    def test_what_the_page_names_as_the_folder_to_copy_from_can_be_anything(self):
+        empty = Store(self.tmp / "learn-my-voice-0.2.9" / "data")
+        httpd = server.make_server(0, empty, None, None, self.world)
+        thread = threading.Thread(target=httpd.serve_forever, kwargs={"poll_interval": 0.02}, daemon=True)
+        thread.start()
+        self.addCleanup(lambda: (httpd.shutdown(), httpd.server_close(), thread.join(5)))
+        real, _ = self.make_sibling("0.1.9", with_whisper=False)
+        linked = self.tmp / "learn-my-voice-0.1.8"
+        os.symlink(str(real), str(linked))
+        for named in ("x" * 5000, "/" + "y/" * 3000, "a\u0000b", 7, 1.5, None, True, [], [str(real)], {"path": str(real)}, "", "  ",
+                      str(self.tmp / "learn-my-voice-0.0.1"), str(self.tmp), str(linked), str(real / "data"), "..",
+                      str(real) + "/../learn-my-voice-0.2.9"):
+            connection = http.client.HTTPConnection("127.0.0.1", httpd.server_address[1], timeout=30)
+            try:
+                connection.request("POST", "/api/update/migrate", body=json.dumps({"source_path": named}).encode("utf-8"),
+                                   headers={"Content-Type": "application/json"})
+                response = connection.getresponse()
+                answer = json.loads(response.read().decode("utf-8"))
+            finally:
+                connection.close()
+            self.assertEqual((response.status, self.said(answer)), (400, "bad_source"), repr(named)[:60])
+            self.assertTrue(updater.is_data_empty(empty))
+
+    def test_settings_and_what_is_known_about_updates_that_cannot_be_kept_or_read_are_said(self):
+        self.app.update_checks = True
+        self.app.update_transport = lambda method, url, headers: b"[]"
+        full = OSError(errno.ENOSPC, "No space left on device")
+        with mock.patch.object(Store, "_write_bytes", side_effect=full):
+            status, answer = self.send("POST", "/api/update/settings", {"auto_check": False})
+            self.assertEqual((status, self.said(answer)), (507, "update_settings_unsaved"))
+            self.assertIn("磁盘已满", answer["message_zh"])
+            status, answer = self.send("GET", "/api/update?check=1&force=1")
+            self.assertEqual((status, self.said(answer)), (507, "update_state_unread"))
+        self.assertTrue(updater._stored_settings(self.store)["auto_check"])
+        with mock.patch.object(updater, "is_data_empty", side_effect=sqlite3.OperationalError("database is locked")):
+            for look in ("/api/update", "/api/update?check=1", "/api/update?scan=1"):
+                status, answer = self.send("GET", look)
+                self.assertEqual((status, self.said(answer)), (409, "update_state_unread"), look)
+                self.assertIn("in use by another program", answer["message"])
+
+    def test_a_download_with_nowhere_to_go_is_said(self):
+        self.keep_found("9.0.0")
+        self.app.update_checks = True
+        self.app.update_transport = lambda method, url, headers: (
+            ("%s  learn-my-voice-9.0.0.zip\n" % hashlib.sha256(b"package").hexdigest()).encode("utf-8")
+            if url.endswith(".sha256") else b"package")
+        with mock.patch.object(self.world, "downloads_folder", side_effect=PermissionError(errno.EACCES, "not for you")):
+            status, answer = self.send("POST", "/api/update/download", {})
+        self.assertEqual((status, self.said(answer)), (500, "save_failed"))
+        self.assertIn("not for you", answer["message"])
+
+    def test_a_copy_that_is_in_place_and_cannot_be_read_back_says_so(self):
+        empty = Store(self.tmp / "learn-my-voice-0.2.9" / "data")
+        real, _ = self.make_sibling("0.1.9", with_whisper=False)
+        live = empty.data_dir.resolve()
+
+        class Unreadable(Store):
+            def __init__(self, data_dir=None):
+                if Path(data_dir).resolve() == live:
+                    raise sqlite3.OperationalError("disk I/O error")
+                super().__init__(data_dir)
+
+        with mock.patch.object(updater, "Store", Unreadable):
+            with self.assertRaises(updater.UpdateError) as refused:
+                updater.migrate_from_previous_folder(empty, real, backups=backup.Backups(empty))
+        self.assertEqual((refused.exception.code, refused.exception.status), ("move_unread", 500))
+        self.assertIn("were copied into this folder", refused.exception.message)
+        self.assertRegex(refused.exception.message_zh, "[\u4e00-\u9fff]")
+        self.assertEqual([script["title"] for script in empty.list_scripts()], ["旧版脚本"])
+
+
 # ---------------------------------------------------------------------------------------------- 7. the page (Chrome E2E in zh/en, light/dark)
 class UpdaterCopyTest(unittest.TestCase):
     def test_both_languages_are_complete_and_assume_nothing_about_the_creator(self):
@@ -1177,6 +2079,83 @@ class PageOffTest(Case):
                         self.assertFalse(page.eval_js("Boolean(document.getElementById(%s))" % json.dumps(gone)), (lang, gone))
                     self.assertEqual(page.problems, [], lang)
         self.assertEqual(self.asked, [])
+
+
+@unittest.skipUnless(browser.AVAILABLE, browser.WHY_NOT)
+class PageNamesTheConnectionTest(Case):
+    """Before a copy from another folder and after it, the page says which AI service and model come with it."""
+
+    PLANTED = {"provider": "openai", "model": "<b>gpt</b>", "local_base_url": "https://collect.example/v1",
+               "keys": {"openai": "sk-planted-key-123", "gemini": "g-planted-456"}}
+
+    def two_folders(self, name, settings):
+        """An empty folder the app runs in, and beside it an earlier one with a script and ``settings``."""
+        store = Store(self.tmp / name / "learn-my-voice-0.2.0" / "data")
+        folder = self.tmp / name / "learn-my-voice-0.1.0"
+        Store(folder / "data").create_script(title="旧版脚本")
+        (folder / "data" / "config.json").write_text(json.dumps(settings), encoding="utf-8")
+        return store
+
+    def test_the_service_and_model_are_named_before_the_copy_and_after_it_and_never_a_key(self):
+        self.packaged("0.2.0")
+        said_before = {"en": ("Its AI connection comes along", "OpenAI (model: <b>gpt</b>), with its key",
+                              "Keys for Google Gemini come along as well", "the address of a model server"),
+                       "zh": ("AI 连接会一起带过来", "OpenAI（模型：<b>gpt</b>），带着密钥", "Google Gemini 的密钥也会一起带过来",
+                              "模型服务器的地址")}
+        said_after = {"en": ("came from that folder", "OpenAI (model: <b>gpt</b>), with its key", "change it in Settings",
+                             "Keys for Google Gemini came along as well"),
+                      "zh": ("来自那个文件夹", "OpenAI（模型：<b>gpt</b>），带着密钥", "请到「设置」里改掉", "Google Gemini 的密钥也一起带过来了")}
+        with loopback_only() as blocked:
+            for lang, theme in (("en", "light"), ("zh", "dark")):
+                store = self.two_folders(lang, self.PLANTED)
+                with browser.open_app(store, lang=lang, theme=theme) as page:
+                    page.go("#/", "Boolean(document.getElementById('up-prev-ai'))")
+                    before = page.eval_js("document.getElementById('up-prev-ai').textContent")
+                    for words in said_before[lang]:
+                        self.assertIn(words, before, lang)
+                    # What the other folder names is text on the page, never markup of it.
+                    self.assertEqual(page.eval_js("document.querySelectorAll('#up-prev-banner b').length"), 0, lang)
+                    self.assertNotIn("planted", page.eval_js("document.documentElement.outerHTML"), lang)
+                    # The same is said in Settings, under the folder the copy is offered from.
+                    page.go("#/settings", "Boolean(document.querySelector('#up-prev-section [data-up-ai]'))")
+                    self.assertEqual(page.eval_js("document.querySelector('#up-prev-section [data-up-ai]').textContent"), before, lang)
+                    page.eval_js("document.querySelector('#up-prev-section [data-up-migrate]').click()")
+                    page.wait_for("Boolean(document.getElementById('up-moved-ai'))")
+                    after = page.eval_js("document.getElementById('up-moved-banner').textContent")
+                    for words in said_after[lang] + ("learn-my-voice-0.1.0",):
+                        self.assertIn(words, after, lang)
+                    self.assertEqual(page.eval_js("document.querySelectorAll('#up-moved-banner b').length"), 0, lang)
+                    self.assertNotIn("planted", page.eval_js("document.documentElement.outerHTML"), lang)
+                    self.assertEqual(store.load_config()["provider"], "openai")
+                    # The notice stays on other pages until it is closed.
+                    page.go("#/trends", "Boolean(document.getElementById('up-moved-banner'))")
+                    page.eval_js("document.getElementById('up-moved-ok').click()")
+                    page.wait_for("!document.getElementById('up-moved-banner')")
+                    self.assertEqual(page.problems, [], lang)
+        self.assertEqual(blocked, [])
+
+    def test_a_connection_entered_here_first_is_said_to_stay_and_stays(self):
+        self.packaged("0.2.0")
+        store = self.two_folders("own", self.PLANTED)
+        store.update_config(lambda config: (config.update(provider="gemini", model="gemini-mine"),
+                                            config["keys"].update(gemini="my-own-key")))
+        with loopback_only() as blocked:
+            with browser.open_app(store, lang="en") as page:
+                page.go("#/", "Boolean(document.getElementById('up-prev-ai'))")
+                before = page.eval_js("document.getElementById('up-prev-ai').textContent")
+                self.assertEqual(before, "This folder already has an AI connection of its own. It stays as it is; "
+                                         "the other folder's is not copied.")
+                page.eval_js("document.querySelector('#up-prev-banner [data-up-migrate]').click()")
+                page.wait_for("Boolean(document.getElementById('up-moved-ai'))")
+                self.assertEqual(page.eval_js("document.getElementById('up-moved-ai').textContent"),
+                                 "The AI connection this folder already had was kept. The other folder's was not copied.")
+                html = page.eval_js("document.documentElement.outerHTML")
+                for hidden in ("planted", "my-own-key", "<b>gpt</b>", "&lt;b&gt;gpt"):
+                    self.assertNotIn(hidden, html, hidden)
+                self.assertEqual(page.problems, [])
+        config = store.load_config()
+        self.assertEqual((config["provider"], config["model"], config["keys"]), ("gemini", "gemini-mine", {"gemini": "my-own-key"}))
+        self.assertEqual(blocked, [])
 
 
 @unittest.skipUnless(browser.AVAILABLE, browser.WHY_NOT)

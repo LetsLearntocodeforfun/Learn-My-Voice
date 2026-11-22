@@ -35,11 +35,20 @@ How data stays across versions:
   - ``migrate_from_previous_folder`` copies an earlier sibling folder's ``data/`` into the current folder ONLY
     when the current data folder is empty (no script, no library item, no creator profile, no custom voice profile,
     no tracked keyword, no plan, no sponsor brief, no remembered edit or topic ideas), and never while a background
-    job or another write runs. Incoming JSON files are checked as strict JSON, ``studio.db`` is rebuilt and checked
-    through ``studio.backup`` (plain tables only, integrity check, column types, script shapes, ``_try_out``), and
+    job or another write runs. The small files beside the database are read the way the app reads its own (a
+    ``NaN`` from before 0.2.0 comes out as ``null``; one the app cannot read is carried as it is, as a backup
+    carries it), ``studio.db`` is rebuilt and checked through ``studio.backup`` (plain tables only, integrity
+    check, column types, script shapes, ``_try_out``), and
     ``Backups``'s data epoch advances so any page opened before migration is refused if it tries to save over what
     arrived. When the current folder already holds work, migration is refused and points to Backup and restore in
     Settings.
+  - Of the other folder's settings (``config.json``) a copy carries the names the app stores and nothing else,
+    each held to what the app would have stored itself (``_settings_to_carry``): a service it knows, a model
+    name that service takes, the address of a model server on this computer, keys that can be keys. Carrying
+    the creator's own connection and keys to a new version is what a copy is for. Whose a key is cannot be
+    known without asking the service, and a copy asks nobody; so the page names the AI service and the model
+    before the copy and again after it (never any part of a key), and an AI connection entered in this folder
+    before the copy stays as it is.
   - ``unpack_and_migrate_zip`` unpacks a downloaded release ``.zip`` into a sibling temporary directory (bounded in
     entry count and uncompressed bytes, refusing symlinks, traversal, ``data/``, ``local_tools/`` and Windows-unsafe
     names), copies ``data/`` into that temporary directory, and renames it into place ONLY when the destination
@@ -56,6 +65,8 @@ Standard library only.
 from __future__ import annotations
 
 import contextlib
+import errno
+import functools
 import gc
 import hashlib
 import json
@@ -78,7 +89,7 @@ import zlib
 from pathlib import Path
 from typing import Any, Callable, Dict, Iterator, List, Optional, Sequence, Tuple, Union
 
-from . import backup, buildinfo, creator, llm, outside
+from . import backup, buildinfo, creator, keystore, llm, outside, wordlist
 from . import store as store_module
 from .store import ROOT, Store, _owner_only
 
@@ -102,15 +113,18 @@ MAX_ZIP_ENTRY_BYTES = 128 * 1024 * 1024
 MAX_ZIP_DIRECTORY_BYTES = 2 * 1024 * 1024
 MAX_REDIRECTS = 5
 _CHUNK = 256 * 1024
+# Windows refuses to rename a folder while any file in it is open, also by another program that is only looking
+# at it (a virus scanner, the search index). Such a refusal ends by itself, so there the rename that puts an
+# unpacked folder in place is tried again for a little over a second. Elsewhere a refusal is a real one.
+_PLACE_TRIES = 12 if os.name == "nt" else 1
 
-_CORE_VER_RE = re.compile(
-    r"^(?P<major>[0-9]{1,9})\.(?P<minor>[0-9]{1,9})\.(?P<patch>[0-9]{1,9})(?P<rest>.*)$",
-    re.ASCII,
-)
-_RC_TAIL_RE = re.compile(r"^\.rc\.(?P<rc>[0-9]{1,9})(?:\.(?P<attempt>[0-9]{1,9}))?$", re.ASCII)
-_PRE_PART_RE = re.compile(r"^[0-9A-Za-z-]{1,32}$", re.ASCII)
-_BUILD_META_RE = re.compile(r"^[0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+){0,7}$", re.ASCII)
-_CHANGELOG_HEADING_RE = re.compile(r"^## v([0-9]{1,9}\.[0-9]{1,9}\.[0-9]{1,9}(?:-[0-9A-Za-z.-]{1,40})?)\b", re.M | re.ASCII)
+# A build file is at most buildinfo.MAX_BYTES long, so no version the app can be running as is longer than this.
+MAX_VERSION_CHARS = buildinfo.MAX_BYTES
+_VERSION_SPLIT_RE = re.compile(r"([0-9]+)\.([0-9]+)\.([0-9]+)(.*)", re.S)
+# The first heading of the changelog names the version being worked towards. Letter for letter the pattern
+# tools/build_release.py takes it with (_VERSION_HEADING), flags included, so that a run from the source and a
+# package built from the same commit read the same base version. tests/test_updater.py holds the two together.
+_CHANGELOG_HEADING_RE = re.compile(r"^## v([0-9]+\.[0-9]+\.[0-9]+(?:-[0-9A-Za-z.]+)?)\b", re.M)
 _SHA256_LINE_RE = re.compile(r"^([0-9a-fA-F]{64})(?:[ \t]+\*?(\S.*))?$", re.ASCII)
 _REPO_RE = re.compile(r"^[A-Za-z0-9_.-]{1,100}/[A-Za-z0-9_.-]{1,100}$", re.ASCII)
 _SIBLING_DIR_RE = re.compile(r"^learn-my-voice-([0-9]{1,9}\.[0-9]{1,9}\.[0-9]{1,9}(?:[-.][0-9A-Za-z]+){0,8})$", re.ASCII)
@@ -124,23 +138,74 @@ _WORK_TABLES = (
     "lessons", "sample_beats", "sample_comments", "sample_sentiments", "metric_snapshots",
 )
 
-VersionPrePart = Union[Tuple[int, int], Tuple[int, str]]
-VersionKey = Tuple[int, int, int, int, Tuple[VersionPrePart, ...], int, int, int]
+# One part of what follows X.Y.Z in a version, as (what kind it is, its number, its word). The kinds are
+# numbered in the order they sort in: see parse_version.
+VersionPart = Tuple[int, int, str]
+VersionKey = Tuple[int, int, int, int, Tuple[VersionPart, ...]]
+_PART_DEV, _PART_RC, _PART_END, _PART_NUMBER, _PART_WORD = range(5)
+_VERSION_END: VersionPart = (_PART_END, 0, "")
 UpdateStream = Union[bytes, bytearray, Iterator[bytes], Any]
 UpdateTransport = Callable[[str, str, Dict[str, str]], UpdateStream]
 
 
 class UpdateError(Exception):
-    """An update check, download, unpack, or migration step was refused. Nothing was half-written."""
+    """A look for updates, a download, an unpacking or a copy from another folder was refused.
+
+    ``code`` names the refusal, ``message`` and ``message_zh`` say it to the creator, ``status`` is the HTTP
+    status and ``extra`` goes into the answer beside them. What the refusal leaves behind is said in its own
+    sentence: nearly always nothing; ``move_undo_failed`` is the one that says otherwise. ``why`` is, where
+    there is one, the bare reason as ``(English, Chinese)``, for a caller that words the rest differently.
+    """
 
     def __init__(self, code: str, message: str, message_zh: str, status: int = 400,
-                 extra: Optional[Dict[str, Any]] = None) -> None:
+                 extra: Optional[Dict[str, Any]] = None, why: Optional[Tuple[str, str]] = None) -> None:
         super().__init__(message)
         self.code = code
         self.message = message
         self.message_zh = message_zh
         self.status = status
         self.extra = dict(extra or {})
+        self.why = why
+
+
+def _why(exc: BaseException) -> Tuple[str, str, int]:
+    """What stopped a write or a read, as ``(English, Chinese, HTTP status)``, in words a person can act on.
+
+    A full disk and a database that another program holds are named as what they are: both happen, and both are
+    for the creator to put right, not signs that something is wrong with the data. Anything else is given as
+    the system worded it, cut short.
+    """
+    said = str(exc)
+    low = said.lower()
+    full = (isinstance(exc, OSError) and exc.errno in (errno.ENOSPC, getattr(errno, "EDQUOT", errno.ENOSPC))) \
+        or (isinstance(exc, sqlite3.Error) and "full" in low)                  # SQLite: "database or disk is full"
+    if full:
+        return "the disk is full", "磁盘已满", 507
+    if isinstance(exc, TimeoutError) or (isinstance(exc, sqlite3.Error) and ("locked" in low or "busy" in low)):
+        return ("the database is in use by another program, such as a second copy of the app or an AI app connected to it",
+                "数据库正被另一个程序占用，比如另一个打开的工作台，或连着它的 AI 应用", 409)
+    shown = ("%s: %s" % (type(exc).__name__, said[:160])) if said else type(exc).__name__
+    return shown, shown, 500
+
+
+def _refusing(code: str, english: str, chinese: str) -> Callable[[Callable[..., Any]], Callable[..., Any]]:
+    """For a function a route calls: where the disk or the database fails it, it refuses in two languages.
+
+    Each such function says what it can about a failure where it happens (what is as it was, what to do).
+    This is for the failure nobody thought of: without it the server answers with its last resort, ``500
+    internal error``, in English only and with nothing a person can act on. ``english`` and ``chinese`` each
+    take the reason (``_why``) at ``%s``. They say that it did not work and why, and claim nothing more.
+    """
+    def wrap(function: Callable[..., Any]) -> Callable[..., Any]:
+        @functools.wraps(function)
+        def run(*args: Any, **more: Any) -> Any:
+            try:
+                return function(*args, **more)
+            except (OSError, sqlite3.Error) as exc:
+                why, why_zh, status = _why(exc)
+                raise UpdateError(code, english % why, chinese % why_zh, status, why=(why, why_zh))
+        return run
+    return wrap
 
 
 def _allowed_https_url(url: Any, *, hosts: Sequence[str]) -> bool:
@@ -191,78 +256,59 @@ def repo_name() -> str:
 # ---- version parsing & ordering (agrees with tools/build_release.py & studio/buildinfo.py) ----
 
 def parse_version(raw: Any) -> Optional[VersionKey]:
-    """Parse a release or build version into a strictly comparable tuple, or None when invalid.
+    """A version as something that can be compared, or None when ``raw`` is not a version.
 
-    Accepts every version ``tools/build_release.py`` builds and ``studio/buildinfo.py`` reads:
-    ``X.Y.Z``, ``X.Y.Z-pre``, ``X.Y.Z-pre.N``, ``<base>.dev``, ``<base>.rc.N``, ``<base>.rc.N.M``,
-    optional leading ``v``, and optional ``+build`` metadata.
+    What counts as a version is what ``studio/buildinfo.py`` reads from a build file (``buildinfo._VERSION``),
+    with an optional ``v`` in front as a tag has it, and nothing longer than MAX_VERSION_CHARS. So every version
+    this app can be running as is one, and so is every version ``tools/build_release.py`` makes from a changelog
+    heading that a build file can hold: ``<base>`` for a release, ``<base>.dev`` for a local build,
+    ``<base>.rc.N`` and ``<base>.rc.N.M`` for a release candidate and its later attempts, where ``<base>`` is
+    ``X.Y.Z`` or ``X.Y.Z-<parts with dots between them>``.
 
-    Ordering within the same ``X.Y.Z``:
-    ``0.2.0-alpha < 0.2.0-beta.dev < 0.2.0-beta.rc.1 < 0.2.0-beta.rc.1.2 < 0.2.0-beta
-      < 0.2.0-beta.1 < 0.2.0-beta.2 < 0.2.0-beta.10 < 0.2.0.dev < 0.2.0.rc.1 < 0.2.0``
+    How two versions compare:
+
+    - ``X.Y.Z`` first, as numbers.
+    - Then a version with ``-...`` after ``X.Y.Z`` (a pre-release such as ``0.2.0-beta``) comes before every
+      version without, whatever else follows: ``0.2.0-beta.10 < 0.2.0.dev < 0.2.0``.
+    - Then the parts after ``X.Y.Z``, split at the dots, one by one. Where two versions differ first decides:
+      a part ``dev`` comes first, then a part ``rc``, then the version that has no further part, then a
+      number (by its value), then any other word (by its letters, capitals counting as small letters). So a
+      build made on the way to a version comes before that version, and a version with more to its name
+      comes after the shorter one, as Semantic Versioning has it:
+      ``0.2.0-beta.dev < 0.2.0-beta.rc.1 < 0.2.0-beta.rc.1.2 < 0.2.0-beta.rc.2 < 0.2.0-beta < 0.2.0-beta.1``.
+    - The first part of a pre-release is always a word or a number, never one of the two build marks: in
+      ``0.3.0-rc.1`` the ``rc`` is the name of the pre-release, as ``beta`` is in ``0.3.0-beta``, and
+      ``0.3.0-beta < 0.3.0-rc.1 < 0.3.0-rc.1.1``. A candidate built on the way to it is ``0.3.0-rc.1.rc.1``.
+    - Anything from a ``+`` on says how a build was made and does not order it.
+
+    The same text is the same version however it came about: ``0.3.0-beta.rc.1`` is one place in the order,
+    whether it was built as the first candidate of ``0.3.0-beta`` or from a heading that reads that way.
     """
     if not isinstance(raw, str):
         return None
     cleaned = raw.strip()
-    if not cleaned or len(cleaned) > 80 or not cleaned.isascii():
-        return None
     if cleaned.startswith("v"):
         cleaned = cleaned[1:]
-    if "+" in cleaned:
-        core, meta = cleaned.split("+", 1)
-        if not _BUILD_META_RE.fullmatch(meta):
-            return None
-    else:
-        core = cleaned
-    m = _CORE_VER_RE.fullmatch(core)
-    if not m:
+    if not cleaned or len(cleaned) > MAX_VERSION_CHARS or not cleaned.isascii():
         return None
-    major = int(m.group("major"))
-    minor = int(m.group("minor"))
-    patch = int(m.group("patch"))
-    rest = m.group("rest")
-
-    # Determine build substage suffix (.dev vs .rc.N[.M] vs final of base).
-    substage = 2
-    rc_num = 0
-    rc_att = 0
-    if rest.endswith(".dev"):
-        substage = 0
-        rest = rest[:-4]
-    else:
-        rc_pos = rest.rfind(".rc.")
-        if rc_pos != -1:
-            rc_match = _RC_TAIL_RE.fullmatch(rest[rc_pos:])
-            if not rc_match:
-                return None
-            substage = 1
-            rc_num = int(rc_match.group("rc"))
-            rc_att = int(rc_match.group("attempt")) if rc_match.group("attempt") is not None else 1
-            if rc_num < 1 or rc_att < 1:
-                return None
-            rest = rest[:rc_pos]
-
-    if not rest:
-        has_pre = 1
-        pre_key: Tuple[VersionPrePart, ...] = ()
-    elif rest.startswith("-") and len(rest) > 1:
-        parts = rest[1:].split(".")
-        if len(parts) > 8 or not all(_PRE_PART_RE.fullmatch(p) and p.lower() != "rc" for p in parts):
-            return None
-        has_pre = 0
-        parsed_parts: List[VersionPrePart] = []
-        for p in parts:
-            if p.isdigit():
-                if len(p) > 9:
-                    return None
-                parsed_parts.append((0, int(p)))
-            else:
-                parsed_parts.append((1, p.lower()))
-        pre_key = tuple(parsed_parts)
-    else:
+    if buildinfo._VERSION.fullmatch(cleaned) is None:
         return None
-
-    return (major, minor, patch, has_pre, pre_key, substage, rc_num, rc_att)
+    found = _VERSION_SPLIT_RE.fullmatch(cleaned.split("+", 1)[0])
+    if found is None:
+        return None
+    rest = found.group(4)
+    pre_release = rest.startswith("-")
+    parts: List[VersionPart] = []
+    for index, name in enumerate(rest[1:].split(".") if rest else []):
+        word = name.lower()
+        if word in ("dev", "rc") and not (pre_release and index == 0):
+            parts.append((_PART_DEV if word == "dev" else _PART_RC, 0, ""))
+        elif name.isdigit():
+            parts.append((_PART_NUMBER, int(name), ""))
+        else:
+            parts.append((_PART_WORD, 0, word))
+    parts.append(_VERSION_END)
+    return (int(found.group(1)), int(found.group(2)), int(found.group(3)), 0 if pre_release else 1, tuple(parts))
 
 
 def is_newer(candidate: str, current: str) -> bool:
@@ -274,10 +320,11 @@ def is_newer(candidate: str, current: str) -> bool:
 
 
 def is_prerelease_version(ver: Optional[str]) -> bool:
+    """Whether ``ver`` is anything but a plain ``X.Y.Z`` (with or without ``+...``). What is no version counts as one."""
     parsed = parse_version(ver or "")
     if parsed is None:
         return True
-    return not (parsed[3] == 1 and parsed[5] == 2)
+    return not (parsed[3] == 1 and parsed[4] == (_VERSION_END,))
 
 
 def current_version_info() -> Dict[str, Any]:
@@ -460,13 +507,6 @@ def _read_bounded_bytes(method: str, url: str, headers: Dict[str, str], *,
         return b"".join(chunks)
 
 
-def _default_transport(method: str, url: str, headers: Dict[str, str]) -> bytes:
-    """Default small-response reader; kept as the single module-level network hook tests may patch."""
-    is_api = _validate_request_url(url)
-    limit = MAX_RELEASES_JSON_BYTES if is_api else MAX_ASSET_BYTES
-    return _read_bounded_bytes(method, url, headers, max_bytes=limit, transport=None)
-
-
 # ---- sanitizing release metadata from GitHub or disk ------------------------
 
 def _clean_notes(raw: Any) -> str:
@@ -627,6 +667,7 @@ def _stored_settings(store: Store, target: Optional[Dict[str, str]] = None) -> D
     }
 
 
+@_refusing("update_settings_unsaved", "The update settings could not be saved: %s.", "更新设置没能保存：%s。")
 def save_update_settings(store: Store, changes: Dict[str, Any], *, checks_on: bool = False) -> Dict[str, Any]:
     """Persist startup check preference or skipped version inside ``config.json["updates"]``. Asks GitHub nothing."""
     def mutate(cfg: Dict[str, Any]) -> None:
@@ -644,6 +685,7 @@ def save_update_settings(store: Store, changes: Dict[str, Any], *, checks_on: bo
     return status_payload(store, checks_on=checks_on)
 
 
+@_refusing("update_state_unread", "What is known about updates could not be read or kept: %s.", "更新信息没能读取或保存：%s。")
 def check_for_updates(store: Store, *, checks_on: bool = False, force: bool = False,
                       scan_previous: bool = False,
                       transport: Optional[UpdateTransport] = None,
@@ -683,11 +725,7 @@ def check_for_updates(store: Store, *, checks_on: bool = False, force: bool = Fa
             "X-GitHub-Api-Version": "2022-11-28",
         }
         try:
-            if transport is None:
-                raw_bytes = _default_transport("GET", url, headers)
-            else:
-                raw_bytes = _read_bounded_bytes("GET", url, headers,
-                                                max_bytes=MAX_RELEASES_JSON_BYTES, transport=transport)
+            raw_bytes = _read_bounded_bytes("GET", url, headers, max_bytes=MAX_RELEASES_JSON_BYTES, transport=transport)
             parsed_json = llm.loads_strict(raw_bytes.decode("utf-8"))
             latest = _pick_best_release(
                 parsed_json,
@@ -720,6 +758,7 @@ def check_for_updates(store: Store, *, checks_on: bool = False, force: bool = Fa
                            checks_on=True, scan_previous=scan_previous)
 
 
+@_refusing("update_state_unread", "What is known about updates could not be read: %s.", "更新信息没能读取：%s。")
 def status_payload(store: Store, *, checks_on: bool = False, scan_previous: bool = False) -> Dict[str, Any]:
     """What is known about updates from local storage alone. Asks GitHub nothing, whatever ``checks_on`` is."""
     cur = current_version_info()
@@ -929,28 +968,18 @@ def _stream_to_destination(url: str, headers: Dict[str, str], asset_name: str, e
         try:
             with os.fdopen(fd, "wb") as handle:
                 fd = None
-                if transport is None and _default_transport is not _ORIG_DEFAULT_TRANSPORT:
-                    # A test patched updater._default_transport directly (e.g. to assert nothing is called).
-                    data = _default_transport("GET", url, headers)
-                    if len(data) > MAX_ASSET_BYTES:
-                        raise UpdateError("too_large", "Update response exceeded the size limit.",
-                                          "下载的数据超过了大小上限。", 502)
-                    hasher.update(data)
-                    handle.write(data)
-                    total = len(data)
-                else:
-                    with _open_stream("GET", url, headers, max_bytes=MAX_ASSET_BYTES, transport=transport) as chunks:
-                        for chunk in chunks:
-                            if not chunk:
-                                continue
-                            total += len(chunk)
-                            if total > MAX_ASSET_BYTES:
-                                raise UpdateError("too_large", "Downloaded file exceeded the %d MB size limit."
-                                                  % (MAX_ASSET_BYTES // (1024 * 1024)),
-                                                  "下载的安装包超过了 %d MB 的大小上限。"
-                                                  % (MAX_ASSET_BYTES // (1024 * 1024)), 502)
-                            hasher.update(chunk)
-                            handle.write(chunk)
+                with _open_stream("GET", url, headers, max_bytes=MAX_ASSET_BYTES, transport=transport) as chunks:
+                    for chunk in chunks:
+                        if not chunk:
+                            continue
+                        total += len(chunk)
+                        if total > MAX_ASSET_BYTES:
+                            raise UpdateError("too_large", "Downloaded file exceeded the %d MB size limit."
+                                              % (MAX_ASSET_BYTES // (1024 * 1024)),
+                                              "下载的安装包超过了 %d MB 的大小上限。"
+                                              % (MAX_ASSET_BYTES // (1024 * 1024)), 502)
+                        hasher.update(chunk)
+                        handle.write(chunk)
                 handle.flush()
                 os.fsync(handle.fileno())
         except OSError as exc:
@@ -992,9 +1021,7 @@ def _stream_to_destination(url: str, headers: Dict[str, str], asset_name: str, e
             backup._remove(part_path)
 
 
-_ORIG_DEFAULT_TRANSPORT = _default_transport
-
-
+@_refusing("save_failed", "The download could not be saved: %s.", "下载的文件没能保存：%s。")
 def download_release_asset(store: Store, outside_mod: Any, *, checks_on: bool = False,
                            transport: Optional[UpdateTransport] = None,
                            on_progress: Optional[Callable[[str], None]] = None) -> Dict[str, Any]:
@@ -1059,11 +1086,7 @@ def download_release_asset(store: Store, outside_mod: Any, *, checks_on: bool = 
     headers = {"User-Agent": "learn-my-voice-updater", "Accept": "application/octet-stream"}
     if on_progress:
         on_progress("verifying_checksum")
-    if transport is None and _default_transport is not _ORIG_DEFAULT_TRANSPORT:
-        raw_sum = _default_transport("GET", checksum_asset["url"], headers)
-    else:
-        raw_sum = _read_bounded_bytes("GET", checksum_asset["url"], headers,
-                                      max_bytes=MAX_CHECKSUM_BYTES, transport=transport)
+    raw_sum = _read_bounded_bytes("GET", checksum_asset["url"], headers, max_bytes=MAX_CHECKSUM_BYTES, transport=transport)
     expected_sha256 = _parse_sha256_sidecar(raw_sum, wanted_name)
     if expected_sha256 is None:
         raise UpdateError(
@@ -1196,7 +1219,15 @@ def discover_previous_installations(store: Store, search_root: Optional[Path] = 
         }))
 
     found.sort(key=lambda pair: pair[0], reverse=True)
-    return [item for _, item in found[:10]]
+    listed = [item for _, item in found[:10]]
+    # What a copy from each would do to the AI connection, worked out the way the copy itself works it out
+    # (_settings_to_carry), so that the page can say it before anything is copied. This reads each listed
+    # folder's config.json, bounded like the rest of this look, and nothing else of it.
+    ours = store._read_raw_config_dict()
+    for item in listed:
+        item["ai"] = _settings_to_carry(_settings_at(Path(item["path"]) / "data" / "config.json"), ours)[1] \
+            if item["has_config"] else None
+    return listed
 
 
 def _data_not_empty_error() -> UpdateError:
@@ -1225,15 +1256,250 @@ def _bad_source_data_error(detail_en: str, detail_zh: str) -> UpdateError:
         "bad_source_data",
         "The earlier folder's data did not pass the safety checks (%s), so nothing here was changed." % detail_en,
         "旧版本文件夹里的数据没有通过安全检查（%s），当前内容没有改动。" % detail_zh,
-        400,
+        400, why=(detail_en, detail_zh),
     )
 
 
-def _clean_migrated_config(src_cfg: Dict[str, Any], target_existing_cfg: Dict[str, Any]) -> Dict[str, Any]:
-    """Keep the earlier folder's settings and sealed API keys, without carrying over stale release caches."""
-    out = dict(src_cfg)
-    old_updates = out.get("updates") if isinstance(out.get("updates"), dict) else {}
-    cur_updates = target_existing_cfg.get("updates") if isinstance(target_existing_cfg.get("updates"), dict) else {}
+def _move_failed_error(exc: BaseException, as_before: bool = True) -> UpdateError:
+    """The copy did not go through. ``as_before``: the folder it was going into is as it was before."""
+    english, chinese, status = _why(exc)
+    if as_before:
+        return UpdateError(
+            "move_failed",
+            "Copying from the earlier folder could not be finished: %s. This folder is as it was before, with "
+            "nothing from the other folder in it, and the other folder was not changed. You can try again." % english,
+            "从旧版本文件夹复制没有完成：%s。当前文件夹和复制之前一样，里面没有留下旧文件夹的任何内容，旧文件夹也没有改动。可以再试一次。"
+            % chinese,
+            status, why=(english, chinese),
+        )
+    return UpdateError(
+        "move_failed",
+        "Copying from the earlier folder could not be finished: %s. The folder it was going into holds part of the "
+        "data. The earlier folder was not changed." % english,
+        "从旧版本文件夹复制没有完成：%s。目标文件夹里留有一部分内容。旧文件夹没有改动。" % chinese,
+        status, why=(english, chinese),
+    )
+
+
+def _move_undo_failed_error(exc: BaseException, failed: BaseException, at_next_start: bool) -> UpdateError:
+    """The copy did not go through, and what it had already written could not be taken out again."""
+    english, chinese, _ = _why(exc)
+    undo_english, undo_chinese, _ = _why(failed)
+    if at_next_start:
+        then = "Close the app and start it again: it then puts this folder back as it was before the copy."
+        then_zh = "请关闭应用再重新打开：它会把当前文件夹放回复制之前的样子。"
+    else:
+        then = "Part of the other folder's data is in it now."
+        then_zh = "里面现在留有旧文件夹的一部分内容。"
+    return UpdateError(
+        "move_undo_failed",
+        "Copying from the earlier folder failed (%s), and this folder could not be put back as it was (%s). %s "
+        "The earlier folder was not changed." % (english, undo_english, then),
+        "从旧版本文件夹复制失败了（%s），当前文件夹也没能放回复制之前的样子（%s）。%s旧文件夹没有改动。"
+        % (chinese, undo_chinese, then_zh),
+        500,
+    )
+
+
+# ---- the settings a copy from another folder carries --------------------------
+MAX_SETTINGS_BYTES = 1024 * 1024        # another folder's config.json: far more than the app ever writes into one
+MAX_KEY_CHARS = 512                     # an API key as a service hands it out is well under this
+MAX_SEALED_CHARS = 4096                 # the same key, sealed
+_CONNECTION_NAMES = ("provider", "model", "local_base_url", "keys", "keys_sealed")
+
+
+def _as_a_backup_carries(name: str) -> Callable[[Any], Any]:
+    """For a setting a backup carries too: cleaned exactly as a backup cleans it (``backup._carried``)."""
+    return lambda value: backup._carried({name: value}).get(name)
+
+
+def _page_keeps(value: Any) -> Optional[Dict[str, str]]:
+    """What the page had kept (language, look, teleprompter): only names and values the page may keep."""
+    if not isinstance(value, dict):
+        return None
+    kept: Dict[str, str] = {}
+    for name in list(value)[:64]:
+        fits = store_module.kept_value(name, value[name])
+        if fits is not None:
+            kept[name] = fits
+    return kept or None
+
+
+# The settings a copy from another folder carries, besides the AI connection and what is kept about updates
+# (those two have rules of their own, in _settings_to_carry): each name config.json holds, with what turns a
+# value from outside into one the app would have stored itself, or into None, which leaves it out. A name
+# that is not here is not carried. One more name with its cleaner is one more line.
+CARRIED_SETTINGS: Tuple[Tuple[str, Callable[[Any], Any]], ...] = (
+    ("trend_weight", _as_a_backup_carries("trend_weight")),
+    (wordlist.KEY, _as_a_backup_carries(wordlist.KEY)),
+    ("page", _page_keeps),
+)
+
+
+def _key_fits(value: Any) -> bool:
+    """Whether ``value`` can be an API key: text of a sensible length that can stand in a request header."""
+    return isinstance(value, str) and 0 < len(value) <= MAX_KEY_CHARS and all(33 <= ord(ch) <= 126 for ch in value)
+
+
+def _settings_at(path: Path) -> Optional[Dict[str, Any]]:
+    """What the ``config.json`` at ``path`` holds, or None when there is none that can be read.
+
+    Read as the app reads its own (``store.loads_stored``). None also for a link, for a file larger than
+    MAX_SETTINGS_BYTES and for one that does not hold an object: the app itself goes on with no settings then.
+    """
+    if not backup._is_plain_file(path):
+        return None
+    try:
+        with open(str(path), "rb") as handle:
+            raw = handle.read(MAX_SETTINGS_BYTES + 1)
+        if len(raw) > MAX_SETTINGS_BYTES:
+            return None
+        loaded = store_module.loads_stored(raw.decode("utf-8"))
+    except (OSError, ValueError, RecursionError):
+        return None
+    return loaded if isinstance(loaded, dict) else None
+
+
+def _has_connection(config: Dict[str, Any]) -> bool:
+    """Whether settings name an AI connection: a service, the address of a model server, or a key."""
+    if config.get("provider") or config.get("local_base_url"):
+        return True
+    return any(isinstance(config.get(name), dict) and any(config[name].values()) for name in ("keys", "keys_sealed"))
+
+
+def _connection_named(config: Dict[str, Any]) -> Tuple[Dict[str, Any], Dict[str, Any]]:
+    """The AI connection that settings from another folder name, checked the way the Settings routes check one.
+
+    Returns ``(kept, told)``.
+
+    ``kept`` holds, under the names of ``config.json``, only what the app would have stored itself:
+
+    - a service it knows (``store.PROVIDERS``, or copy-and-paste);
+    - a model name that service takes (``llm.validate_model_name``);
+    - the address of a model server on this computer (``llm.normalize_local_base``): an address anywhere else
+      is left out. (It would be refused at every use anyway, by the same check; left in, Settings would show
+      a connection that cannot work.)
+    - for each cloud service a key that can be one (``_key_fits``): in plain text, as versions before 0.2.0
+      kept it, or sealed, when the seal opens on this computer and account.
+
+    Whether a key works, and whose it is, is not known: Settings keeps a key once the service has accepted
+    it, and a copy asks nobody anything. A folder that somebody else put beside the app can therefore bring a
+    service and a key of its own, and drafts would then go to that service under that key. That is why the
+    page names the service and the model before the copy and again after it (``told``), and why a connection
+    this folder already has is never replaced (``_settings_to_carry``).
+
+    ``told`` is for the page and never holds any part of a key: ``{"provider", "model", "address", "key",
+    "other_keys", "not_carried", "keys_not_carried"}``. ``key``: a key for the named service comes along.
+    ``other_keys``: the other services a key comes along for. ``not_carried``: which of ``provider``,
+    ``model``, ``address``, ``key`` the other folder names in a form the app cannot use; those are left out.
+    ``keys_not_carried``: the other services whose key is left out.
+    """
+    not_carried: List[str] = []
+    provider = config.get("provider")
+    if not isinstance(provider, str) or provider not in store_module.PROVIDERS + (store_module.MANUAL_PROVIDER,):
+        if provider not in (None, ""):
+            not_carried.append("provider")
+        provider = ""
+    model = config.get("model")
+    if provider in store_module.PROVIDERS and isinstance(model, str) and model.strip():
+        try:
+            model = llm.validate_model_name(model, provider)
+        except llm.LLMError:
+            not_carried.append("model")
+            model = ""
+    else:
+        if provider in store_module.PROVIDERS and model not in (None, ""):
+            not_carried.append("model")
+        model = ""
+    address = config.get("local_base_url")
+    if isinstance(address, str) and address.strip():
+        try:
+            address = llm.normalize_local_base(address)
+        except llm.LLMError:
+            not_carried.append("address")
+            address = ""
+    else:
+        if address not in (None, ""):
+            not_carried.append("address")
+        address = ""
+    plain_there = config.get("keys") if isinstance(config.get("keys"), dict) else {}
+    sealed_there = config.get("keys_sealed") if isinstance(config.get("keys_sealed"), dict) else {}
+    plain: Dict[str, str] = {}
+    sealed: Dict[str, str] = {}
+    left_out: List[str] = []
+    for name in store_module.CLOUD_PROVIDERS:
+        if plain_there.get(name) not in (None, ""):                 # the plain one is the newer one: see Store
+            if _key_fits(plain_there[name]):
+                plain[name] = plain_there[name]
+            else:
+                left_out.append(name)
+        elif sealed_there.get(name) not in (None, ""):
+            token = sealed_there[name]
+            opened = keystore.unseal(token) if isinstance(token, str) and len(token) <= MAX_SEALED_CHARS else None
+            if _key_fits(opened):
+                sealed[name] = token
+            else:
+                left_out.append(name)
+    kept: Dict[str, Any] = {"provider": provider, "model": model, "local_base_url": address, "keys": plain}
+    if sealed:
+        kept["keys_sealed"] = sealed
+    carried = [name for name in store_module.CLOUD_PROVIDERS if name in plain or name in sealed]
+    told = {
+        "provider": provider,
+        "model": model,
+        "address": address if provider == "local" else "",
+        "key": provider in carried,
+        "other_keys": [name for name in carried if name != provider],
+        "not_carried": not_carried + (["key"] if provider in left_out else []),
+        "keys_not_carried": [name for name in left_out if name != provider],
+    }
+    return kept, told
+
+
+def _settings_to_carry(theirs: Optional[Dict[str, Any]], ours: Dict[str, Any]) -> Tuple[Dict[str, Any], Dict[str, Any]]:
+    """The settings a folder has after a copy from another one, and what the page is told about the AI connection.
+
+    ``theirs`` is what the other folder's ``config.json`` holds, or None when it has none that can be read;
+    ``ours`` is what the settings of the folder being filled hold now. Returns ``(settings, told)``.
+
+    Nothing of ``theirs`` is taken as it stands. A file from another folder is a file from outside: a backup
+    refuses to carry an AI connection at all for that reason. A copy carries one, because bringing the
+    creator's settings and keys to a new version is what it is for, and holds each part to what the app would
+    have stored itself:
+
+    - CARRIED_SETTINGS, each through its cleaner. What the page keeps is added to what it keeps here already.
+    - The AI connection (``_connection_named``), and only when this folder has none of its own: a connection
+      entered here before the copy stays as it is, whatever the other folder names.
+    - Of what is kept about updates: the two switches and the version that was skipped. What was last found,
+      and when, stays this folder's own.
+    - Any other name the other folder's settings hold is left out. What ``ours`` holds stays.
+
+    ``told`` is ``_connection_named``'s, with ``kept_own`` (this folder has a connection and keeps it; the
+    other folder's, if it names one, is not carried) and ``unreadable`` (there were no settings to read).
+    """
+    out = dict(ours)
+    told: Dict[str, Any] = {
+        "kept_own": False, "unreadable": theirs is None, "provider": "", "model": "", "address": "", "key": False,
+        "other_keys": [], "not_carried": [], "keys_not_carried": [],
+    }
+    theirs = theirs or {}
+    for name, clean in CARRIED_SETTINGS:
+        value = clean(theirs[name]) if name in theirs else None
+        if value is None:
+            continue
+        if name == "page" and isinstance(out.get(name), dict):
+            value = dict(out[name], **value)
+        out[name] = value
+    if _has_connection(ours):
+        told["kept_own"] = _has_connection(theirs)
+    else:
+        kept, named = _connection_named(theirs)
+        for name in _CONNECTION_NAMES:
+            out.pop(name, None)
+        out.update(kept)
+        told.update(named)
+    old_updates = theirs.get("updates") if isinstance(theirs.get("updates"), dict) else {}
+    cur_updates = ours.get("updates") if isinstance(ours.get("updates"), dict) else {}
     merged_updates: Dict[str, Any] = {}
     for key in ("auto_check", "include_prereleases"):
         if isinstance(old_updates.get(key), bool):
@@ -1250,41 +1516,73 @@ def _clean_migrated_config(src_cfg: Dict[str, Any], target_existing_cfg: Dict[st
         out["updates"] = merged_updates
     else:
         out.pop("updates", None)
-    return out
+    return out, told
 
 
-def _read_checked_json_dict(path: Path, label: str) -> Dict[str, Any]:
+def _small_file_to_carry(path: Path, label: str) -> bytes:
+    """What a copy puts in place for one of the other folder's small files: a profile, the ideas, an earlier profile.
+
+    Refused: a link or anything else that is no file of its own, and a file larger than a small file of this
+    app may be (``backup.MAX_SMALL_FILE_BYTES``).
+
+    Apart from that the file is read the way the app reads its own (``store.loads_stored``) and written out
+    afresh. A number no JSON has (``NaN``, which a version before 0.2.0 could store from a model's reply)
+    comes out as ``null``, as it does wherever the app reads it. A file the app cannot read at all is carried
+    as it is, the way a backup carries it: the app then goes on without it in the new folder as it did in the
+    old one and says so where it would show it, and nothing of the creator's is dropped on the way.
+    ``backup._try_out`` reads the whole copy as the pages will before any of it is put in place.
+    """
     if not backup._is_plain_file(path):
         raise _bad_source_data_error("%s is not a plain file" % label, "%s 不是普通文件" % label)
     try:
-        size = os.lstat(str(path)).st_size
-        if size > backup.MAX_SMALL_FILE_BYTES:
-            raise _bad_source_data_error("%s exceeds size limit" % label, "%s 超过大小上限" % label)
-        parsed = llm.loads_strict(path.read_bytes().decode("utf-8"))
-    except UpdateError:
-        raise
-    except (OSError, UnicodeDecodeError, ValueError, RecursionError):
-        raise _bad_source_data_error("%s is not readable JSON" % label, "%s 不是有效的 JSON" % label)
-    if not isinstance(parsed, dict):
-        raise _bad_source_data_error("%s is not a JSON object" % label, "%s 格式无效" % label)
-    return parsed
+        with open(str(path), "rb") as handle:
+            raw = handle.read(backup.MAX_SMALL_FILE_BYTES + 1)
+    except OSError as exc:
+        raise _bad_source_data_error("%s cannot be read: %s" % (label, str(exc)[:80]),
+                                     "%s 读不出来：%s" % (label, str(exc)[:80]))
+    if len(raw) > backup.MAX_SMALL_FILE_BYTES:
+        limit = backup.MAX_SMALL_FILE_BYTES // (1024 * 1024)
+        raise _bad_source_data_error("%s is larger than such a file of this app may be (%d MB)" % (label, limit),
+                                     "%s 超过了这类文件的大小上限（%d MB）" % (label, limit))
+    try:
+        return Store._encode(store_module.loads_stored(raw.decode("utf-8")))
+    except (ValueError, RecursionError):        # not text, not JSON, nested too deeply, or text that cannot be written out
+        return raw
 
 
-def _stage_folder_migration(src_data: Path, work: Path, target_existing_cfg: Dict[str, Any]) -> Tuple[Store, List[str], Optional[bytes]]:
-    """Validate and stage ``src_data`` into ``work / 'new'`` using ``backup._rebuild`` and ``backup._try_out``."""
+def _not_the_datas_fault(exc: BaseException) -> bool:
+    """Whether what stopped a copy is for the creator to put right, not a sign of bad data: a full disk, a database in use."""
+    return _why(exc)[2] in (507, 409)
+
+
+def _stage_folder_migration(src_data: Path, work: Path, target_existing_cfg: Dict[str, Any]
+                            ) -> Tuple[Store, List[str], Optional[bytes], Dict[str, Any]]:
+    """Check ``src_data`` and lay out in ``work / 'new'`` what a copy of it puts in place.
+
+    Returns ``(the store on that folder, the names that are copied, the settings as the bytes of config.json
+    or None when the other folder has none that can be read, what the page is told about the AI connection)``.
+    """
     arrived = work / "in"
     new_dir = work / "new"
     arrived.mkdir(mode=0o700, parents=True)
     new_dir.mkdir(mode=0o700)
     copied: List[str] = []
 
-    # 1. Check and stage config.json (preserving sealed API keys & UI preferences).
+    # 1. The settings: what the other folder's config.json holds, each part held to what the app would have
+    # stored itself (_settings_to_carry). A link in its place is refused, like a link anywhere else in the
+    # folder. Settings that cannot be read are not carried, and the copy goes on with the data: the app itself
+    # starts with no settings when its own cannot be read.
     cfg_bytes: Optional[bytes] = None
     src_cfg = src_data / "config.json"
+    theirs: Optional[Dict[str, Any]] = None
     if os.path.lexists(str(src_cfg)):
-        parsed_cfg = _read_checked_json_dict(src_cfg, "config.json")
-        cleaned_cfg = _clean_migrated_config(parsed_cfg, target_existing_cfg)
-        cfg_bytes = Store._encode(cleaned_cfg)
+        if not backup._is_plain_file(src_cfg):
+            raise _bad_source_data_error("config.json is not a plain file", "config.json 不是普通文件")
+        theirs = _settings_at(src_cfg)
+    carried_settings, ai_told = _settings_to_carry(theirs, target_existing_cfg)
+    ai_told["unreadable"] = theirs is None and os.path.lexists(str(src_cfg))
+    if theirs is not None:
+        cfg_bytes = Store._encode(carried_settings)
         Store._write_bytes(new_dir / "config.json", cfg_bytes, mode=0o600)
         copied.append("config.json")
 
@@ -1292,8 +1590,7 @@ def _stage_folder_migration(src_data: Path, work: Path, target_existing_cfg: Dic
     for name in backup.PLAIN_FILES:
         src_f = src_data / name
         if os.path.lexists(str(src_f)):
-            parsed_obj = _read_checked_json_dict(src_f, name)
-            Store._write_bytes(new_dir / name, Store._encode(parsed_obj), mode=0o600)
+            Store._write_bytes(new_dir / name, _small_file_to_carry(src_f, name), mode=0o600)
             copied.append(name)
 
     # 3. Check and stage Voice DNA history.
@@ -1311,8 +1608,7 @@ def _stage_folder_migration(src_data: Path, work: Path, target_existing_cfg: Dic
             for hname in names:
                 hpath = src_hist / hname
                 if hname.endswith(".json"):
-                    parsed_hist = _read_checked_json_dict(hpath, hname)
-                    Store._write_bytes(dst_hist / hname, Store._encode(parsed_hist), mode=0o600)
+                    Store._write_bytes(dst_hist / hname, _small_file_to_carry(hpath, hname), mode=0o600)
                 else:
                     if os.lstat(str(hpath)).st_size <= backup.MAX_SMALL_FILE_BYTES:
                         Store._write_bytes(dst_hist / hname, hpath.read_bytes(), mode=0o600)
@@ -1346,6 +1642,10 @@ def _stage_folder_migration(src_data: Path, work: Path, target_existing_cfg: Dic
         except backup.Refused as exc:
             raise _bad_source_data_error(exc.message, exc.message_zh)
         except (OSError, sqlite3.Error, TimeoutError) as exc:
+            if _not_the_datas_fault(exc):
+                # The disk the copy is being made on is full, or the other folder's database is held by another
+                # program (the earlier copy of the app still running, say). Nothing is wrong with the data.
+                raise _move_failed_error(exc)
             raise _bad_source_data_error("database could not be read: %s" % str(exc)[:80],
                                          "数据库无法安全读取：%s" % str(exc)[:80])
         copied.append(backup.DATABASE)
@@ -1358,6 +1658,8 @@ def _stage_folder_migration(src_data: Path, work: Path, target_existing_cfg: Dic
     except backup.Refused as exc:
         raise _bad_source_data_error(exc.message, exc.message_zh)
     except (OSError, sqlite3.Error, ValueError) as exc:
+        if _not_the_datas_fault(exc):
+            raise _move_failed_error(exc)
         raise _bad_source_data_error("staged data failed verification: %s" % str(exc)[:80],
                                      "迁移后的数据未通过读取检查：%s" % str(exc)[:80])
 
@@ -1365,30 +1667,108 @@ def _stage_folder_migration(src_data: Path, work: Path, target_existing_cfg: Dic
     if (new_dir / "config.json").is_file():
         cfg_bytes = (new_dir / "config.json").read_bytes()
 
-    return staged, copied, cfg_bytes
+    return staged, copied, cfg_bytes, ai_told
 
 
-def _apply_staged_to_empty_store(target_store: Store, new_dir: Path, cfg_bytes: Optional[bytes]) -> None:
-    """Copy verified staged data into ``target_store`` (replacing DB content via SQLite backup, never unlinking DB)."""
-    backup._copy_database(new_dir / backup.DATABASE, target_store.db_path)
+MOVE_STEPS = (backup.DATABASE,) + tuple(backup.PLAIN_FILES) + (backup.HISTORY_FOLDER, "config.json")
+
+
+def _keep_as_it_is(target_store: Store, old: Path) -> bool:
+    """Copy what the (empty) data folder of ``target_store`` holds into ``old``. Returns whether it had settings.
+
+    The copies are laid out the way ``Backups`` keeps what was there before a restore (``<work>/old``): the
+    database as a snapshot, the small files that are there, ``config.json``. So the same folder serves two
+    ways back: ``_put_back_as_it_was`` when a copy fails, and ``Backups.recover`` when the app is closed in
+    the middle of one and started again.
+    """
+    old.mkdir(mode=0o700)
+    backup._snapshot(target_store.db_path, old / backup.DATABASE)
     with store_module._DNA_LOCK:
         for name in backup.PLAIN_FILES:
+            there = target_store.data_dir / name
+            if backup._is_plain_file(there):
+                Store._write_bytes(old / name, there.read_bytes())
+        earlier = backup._history_names(target_store.dna_history_dir)
+        if earlier:
+            (old / backup.HISTORY_FOLDER).mkdir(mode=0o700)
+        for name in earlier:
+            Store._write_bytes(old / backup.HISTORY_FOLDER / name, (target_store.dna_history_dir / name).read_bytes())
+    with store_module._CONFIG_LOCK:
+        settings = target_store.config_path.read_bytes() if backup._is_plain_file(target_store.config_path) else None
+    if settings is not None:
+        Store._write_bytes(old / "config.json", settings)
+    return settings is not None
+
+
+def _put_back_as_it_was(target_store: Store, old: Path, had_settings: bool) -> None:
+    """Make the data folder of ``target_store`` hold exactly what ``_keep_as_it_is`` copied into ``old``.
+
+    Step for step what ``Backups._put_back`` does, so that the result is the same whichever of the two runs.
+    """
+    backup._copy_database(old / backup.DATABASE, target_store.db_path)
+    with store_module._DNA_LOCK:
+        for name in backup.PLAIN_FILES:
+            kept, there = old / name, target_store.data_dir / name
+            if backup._is_plain_file(kept):
+                Store._write_bytes(there, kept.read_bytes())
+            elif os.path.lexists(str(there)):
+                there.unlink()
+        kept_earlier = backup._history_names(old / backup.HISTORY_FOLDER)
+        for name in backup._history_names(target_store.dna_history_dir):
+            if name not in kept_earlier:
+                (target_store.dna_history_dir / name).unlink()
+        if kept_earlier:
+            target_store.dna_history_dir.mkdir(mode=0o700, exist_ok=True)
+        for name in kept_earlier:
+            Store._write_bytes(target_store.dna_history_dir / name, (old / backup.HISTORY_FOLDER / name).read_bytes())
+    with store_module._CONFIG_LOCK:
+        if backup._is_plain_file(old / "config.json"):
+            Store._write_bytes(target_store.config_path, (old / "config.json").read_bytes())
+        elif not had_settings and os.path.lexists(str(target_store.config_path)):
+            target_store.config_path.unlink()
+    target_store.__dict__.pop("_voice_reference", None)
+
+
+def _apply_staged_to_empty_store(target_store: Store, new_dir: Path, cfg_bytes: Optional[bytes],
+                                 step: Callable[[str], None] = lambda name: None,
+                                 done: Optional[List[str]] = None) -> None:
+    """Put the checked copy in ``new_dir`` into the data folder of ``target_store``, one of MOVE_STEPS after another.
+
+    The database first: SQLite replaces its content in one step and leaves it as it was when that step cannot
+    finish, and the file itself is never removed. Then the small files, the earlier voice profiles and the
+    settings. ``step`` is called with the name of each step before it is taken (a test raises there to stop a
+    copy halfway); ``done`` receives the name of each step once it has changed something. Any failure is the
+    caller's to undo.
+    """
+    done = [] if done is None else done
+    step(backup.DATABASE)
+    backup._copy_database(new_dir / backup.DATABASE, target_store.db_path)
+    done.append(backup.DATABASE)
+    with store_module._DNA_LOCK:
+        for name in backup.PLAIN_FILES:
+            step(name)
             staged_f = new_dir / name
             if backup._is_plain_file(staged_f):
                 Store._write_bytes(target_store.data_dir / name, staged_f.read_bytes(), mode=0o600)
+                done.append(name)
+        step(backup.HISTORY_FOLDER)
         staged_hist = new_dir / backup.HISTORY_FOLDER
         earlier = backup._history_names(staged_hist)
         if earlier:
             target_store.dna_history_dir.mkdir(mode=0o700, exist_ok=True)
+            done.append(backup.HISTORY_FOLDER)
             for hname in earlier:
                 Store._write_bytes(target_store.dna_history_dir / hname, (staged_hist / hname).read_bytes(), mode=0o600)
+    step("config.json")
     if cfg_bytes is not None:
         with store_module._CONFIG_LOCK:
             Store._write_bytes(target_store.config_path, cfg_bytes, mode=0o600)
+        done.append("config.json")
     target_store.__dict__.pop("_voice_reference", None)
     _owner_only(target_store.data_dir)
 
 
+@_refusing("move_failed", "Copying from the earlier folder could not be done: %s.", "从旧版本文件夹复制没能进行：%s。")
 def migrate_from_previous_folder(target_store: Store, source_app_dir: Path, *,
                                  backups: Optional[backup.Backups] = None,
                                  jobs: Any = None) -> Dict[str, Any]:
@@ -1399,6 +1779,16 @@ def migrate_from_previous_folder(target_store: Store, source_app_dir: Path, *,
     - Respects ``Backups``'s gate and advances ``Backups.epoch`` so a page open before migration cannot overwrite
       what arrived.
     - Validates and rebuilds ``studio.db`` through ``studio.backup`` before anything in ``target_store`` is touched.
+    - With ``backups`` (the folder the running app works in): all of it or none of it, the way a restore is
+      (``Backups._replace``). What the folder holds is copied aside first, and a note in ``<data>/backups``
+      says a copy has begun. A failure at any step puts the folder back as it was and is refused as
+      ``move_failed``: the folder is still empty and the copy can be tried again. If the app is closed in the
+      middle, the next start finds the note and puts the folder back (``Backups.recover``). Only when putting
+      back fails as well is the refusal ``move_undo_failed``, which says what to do. The data epoch advances
+      when the copy is in place, not before.
+    - Without ``backups`` (a folder nobody works in yet: the one ``unpack_and_migrate_zip`` is filling, which
+      it throws away when this fails) nothing is copied aside and nothing is put back; ``move_failed`` then
+      says that the folder holds part of the data.
     - Never copies ``local_tools/whisper``; reports ``whisper_copied=False`` and ``had_whisper`` so the caller/page
       can state plainly that local transcription must be set up again in a new ``.zip`` folder.
     """
@@ -1421,32 +1811,92 @@ def migrate_from_previous_folder(target_store: Store, source_app_dir: Path, *,
         active_jobs = jobs if jobs is not None else (backups.jobs if backups is not None else None)
         if active_jobs is not None and active_jobs.unfinished():
             raise _migrate_busy_error()
-        if not is_data_empty(target_store):
+        try:
+            empty = is_data_empty(target_store)
+        except (OSError, sqlite3.Error) as exc:
+            raise _move_failed_error(exc)
+        if not empty:
             raise _data_not_empty_error()
 
         work_parent = backups.folder if backups is not None else dst_data
-        work_parent.mkdir(mode=0o700, parents=True, exist_ok=True)
-        work = Path(tempfile.mkdtemp(dir=str(work_parent), prefix="work-migrate-"))
+        work: Optional[Path] = None
+        work_is_needed = False              # true only when the next start has to put the folder back from it
         try:
-            existing_cfg = target_store._read_raw_config_dict()
-            _staged, copied_files, cfg_bytes = _stage_folder_migration(src_data, work, existing_cfg)
-            del _staged
+            try:
+                work_parent.mkdir(mode=0o700, parents=True, exist_ok=True)
+                # Named so that ``Backups.recover`` knows the folder as one of its work folders (backup._WORK).
+                work = Path(tempfile.mkdtemp(dir=str(work_parent), prefix="work-migrate_"))
+                existing_cfg = target_store._read_raw_config_dict()
+                _staged, copied_files, cfg_bytes, ai_told = _stage_folder_migration(src_data, work, existing_cfg)
+                old = work / "old"
+                had_settings = False
+                if backups is not None:
+                    had_settings = _keep_as_it_is(target_store, old)
+                    Store._write_bytes(backups._note_path, Store._encode(
+                        {"work": work.name, "had_settings": had_settings, "started_at": time.time()}))
+            except (OSError, sqlite3.Error) as exc:
+                if backups is not None:
+                    backup._remove(backups._note_path)
+                raise _move_failed_error(exc)           # nothing in the folder has been touched yet
+
             if backups is not None:
                 backups.gate.keep_everyone_out()
-            _apply_staged_to_empty_store(target_store, work / "new", cfg_bytes)
+            done: List[str] = []
+            try:
+                _apply_staged_to_empty_store(target_store, work / "new", cfg_bytes,
+                                             backups._before_step if backups is not None else (lambda name: None), done)
+                if backups is not None:
+                    backups._set_state(dict(backups._state, epoch=uuid.uuid4().hex[:12]))
+            except BaseException as exc:
+                if backups is None:
+                    if isinstance(exc, UpdateError) or not isinstance(exc, Exception):
+                        raise
+                    raise _move_failed_error(exc, as_before=not done)
+                try:
+                    # When the first step, the database, could not be taken, SQLite left it as it was and
+                    # nothing else was touched: there is nothing to put back.
+                    if done:
+                        _put_back_as_it_was(target_store, old, had_settings)
+                except BaseException as failed:
+                    work_is_needed = True   # the note names it: the next start puts the folder back from there
+                    if not isinstance(failed, Exception):
+                        raise
+                    try:                    # a page open before must not write into what is half there
+                        backups._set_state(dict(backups._state, epoch=uuid.uuid4().hex[:12]))
+                    except Exception:  # noqa: BLE001 - the refusal below says what matters
+                        pass
+                    raise _move_undo_failed_error(exc, failed, at_next_start=True)
+                backup._remove(backups._note_path)
+                if isinstance(exc, UpdateError) or not isinstance(exc, Exception):
+                    raise
+                raise _move_failed_error(exc)
             if backups is not None:
-                backups._set_state(dict(backups._state, epoch=uuid.uuid4().hex[:12]))
+                backup._remove(backups._note_path)
         finally:
-            backup._remove_folder(work)
+            if work is not None and not work_is_needed:
+                backup._remove_folder(work)
 
-        upgraded = Store(dst_data)
-        with contextlib.closing(upgraded._db()) as db:
-            script_count = int(db.execute("SELECT COUNT(*) FROM scripts").fetchone()[0])
-            sample_count = int(db.execute("SELECT COUNT(*) FROM samples").fetchone()[0])
-        settings = upgraded.public_settings()
-        del upgraded
+        try:
+            upgraded = Store(dst_data)
+            # Counted through a connection that is closed here, not through Store.list_scripts() and
+            # Store.samples_count(): those leave closing to Python, and when this store is the one in a folder
+            # that is about to be renamed (unpack_and_migrate_zip), a connection still open refuses the rename
+            # on Windows.
+            with contextlib.closing(upgraded._db()) as db:
+                script_count = int(db.execute("SELECT COUNT(*) FROM scripts").fetchone()[0])
+                sample_count = int(db.execute("SELECT COUNT(*) FROM samples").fetchone()[0])
+            settings = upgraded.public_settings()
+        except (OSError, sqlite3.Error) as exc:
+            english, chinese, status = _why(exc)
+            raise UpdateError(
+                "move_unread",
+                "The data and settings were copied into this folder, but could not be read back just now: %s. "
+                "Close the app and start it again." % english,
+                "数据和设置已经复制到当前文件夹，但刚才没能读出来：%s。请关闭应用再重新打开。" % chinese,
+                status, why=(english, chinese),
+            )
         if os.name == "nt":
-            gc.collect()
+            gc.collect()                    # kept as it passed on the Windows runners: see unpack_and_migrate_zip
         whisper_venv = src_root / "local_tools" / "whisper" / "venv"
         had_whisper = whisper_venv.is_dir() and not whisper_venv.is_symlink()
         return {
@@ -1465,6 +1915,8 @@ def migrate_from_previous_folder(target_store: Store, source_app_dir: Path, *,
             "scripts": script_count,
             "samples": sample_count,
             "settings": settings,
+            # What became of the AI connection, for the page to say: see _settings_to_carry.
+            "ai": ai_told,
         }
 
     if backups is None:
@@ -1484,6 +1936,36 @@ def migrate_from_previous_folder(target_store: Store, source_app_dir: Path, *,
         if exc.code == "backup_busy":
             raise _migrate_busy_error()
         raise UpdateError(exc.code, exc.message, exc.message_zh, exc.status)
+
+
+MAX_NAMED_PATH_CHARS = 4096
+
+
+def migrate_from_named_folder(store: Store, named: Any, *, backups: Optional[backup.Backups] = None,
+                              jobs: Any = None) -> Dict[str, Any]:
+    """What ``POST /api/update/migrate`` does: copy from the folder ``named``, when it is one a look beside this one finds.
+
+    ``named`` is what the page sent: anything. Only a folder that ``discover_previous_installations`` lists is
+    taken, by the path it lists it under; everything else is ``bad_source``, also what is no text, is too long
+    to be a path, or cannot be looked up.
+    """
+    chosen = ""
+    wanted = named.strip() if isinstance(named, str) else ""
+    if wanted and len(wanted) <= MAX_NAMED_PATH_CHARS and "\x00" not in wanted:
+        try:
+            candidate = Path(wanted)
+            if not candidate.is_symlink():
+                chosen = str(candidate.resolve())
+        except (OSError, ValueError, RuntimeError):
+            chosen = ""
+    try:
+        allowed = {item["path"] for item in discover_previous_installations(store, explicit=True)}
+    except (OSError, sqlite3.Error):
+        allowed = set()
+    if not chosen or chosen not in allowed:
+        raise UpdateError("bad_source", "Choose one of the detected earlier version folders.",
+                          "请选择检测到的旧版本应用文件夹。", 400)
+    return migrate_from_previous_folder(store, Path(chosen), backups=backups, jobs=jobs)
 
 
 # ---- Strict bounded .zip unpacking into a new sibling folder ----------------
@@ -1541,6 +2023,33 @@ def _destination_exists_error(folder_name: str) -> UpdateError:
     )
 
 
+def _unpack_failed_error(exc: BaseException, left: Optional[Path] = None) -> UpdateError:
+    """The package could not be unpacked. ``left``: the folder it was being unpacked into, where that is still there."""
+    english, chinese, status = _why(exc)
+    still, still_zh = "", ""
+    if left is not None and os.path.lexists(str(left)):
+        still = " A folder named %s was left beside this one and can be deleted." % left.name
+        still_zh = "旁边留下了一个名为 %s 的文件夹，可以删掉。" % left.name
+    return UpdateError(
+        "unpack_failed",
+        "The package could not be unpacked: %s. Nothing in this folder was changed.%s You can try again, or unpack "
+        "the zip yourself." % (english, still),
+        "压缩包没能解压：%s。当前文件夹没有改动。%s可以再试一次，或者自己手动解压。" % (chinese, still_zh),
+        status, why=(english, chinese),
+    )
+
+
+def _name_key(name: str) -> str:
+    """One key for the ways of writing a path that some system takes for the same file.
+
+    Windows and macOS do not tell capitals from small letters; macOS does not tell a letter with an accent
+    from the letter followed by the accent. Two entries with one key would land in one file there.
+    """
+    return unicodedata.normalize("NFC", name).casefold()
+
+
+@_refusing("unpack_failed", "The package could not be unpacked: %s. Nothing in this folder was changed.",
+           "压缩包没能解压：%s。当前文件夹没有改动。")
 def unpack_and_migrate_zip(current_store: Store, zip_path: Path, *,
                            dest_parent: Optional[Path] = None,
                            jobs: Any = None) -> Dict[str, Any]:
@@ -1580,6 +2089,7 @@ def unpack_and_migrate_zip(current_store: Store, zip_path: Path, *,
         raise UpdateError("save_failed", "Destination parent folder is not available.",
                           "目标上级目录不可用。", 507)
 
+    staging_dir: Optional[Path] = None
     try:
         with zipfile.ZipFile(str(pkg), "r") as zf:
             infos = zf.infolist()
@@ -1590,6 +2100,8 @@ def unpack_and_migrate_zip(current_store: Store, zip_path: Path, *,
 
             tops = set()
             seen_names = set()
+            file_names = set()
+            folder_names = set()
             declared_total = 0
             for info in infos:
                 name = info.filename
@@ -1615,11 +2127,14 @@ def unpack_and_migrate_zip(current_store: Store, zip_path: Path, *,
                 if len(parts) > 16 or not all(_is_windows_safe_part(part) for part in parts):
                     raise UpdateError("bad_zip", "Archive contains a path name that is unsafe on Windows or POSIX.",
                                       "压缩包内包含不安全或不兼容 Windows 的文件名。", 400)
-                norm_key = trimmed.lower()
+                norm_key = _name_key(trimmed)
                 if norm_key in seen_names:
                     raise UpdateError("bad_zip", "Archive contains duplicate or case-colliding file names.",
                                       "压缩包内包含重复或大小写冲突的文件名。", 400)
                 seen_names.add(norm_key)
+                if not info.is_dir():
+                    file_names.add(norm_key)
+                folder_names.update(_name_key("/".join(parts[:depth])) for depth in range(1, len(parts)))
                 tops.add(parts[0])
                 if len(parts) > 1:
                     rel_check = "/".join(parts[1:]) + ("/" if info.is_dir() else "")
@@ -1634,6 +2149,9 @@ def unpack_and_migrate_zip(current_store: Store, zip_path: Path, *,
                     raise UpdateError("zip_too_large", "Archive unpacks to more than the allowed size limit.",
                                       "压缩包解压总大小超过上限。", 413)
 
+            if file_names & folder_names:
+                raise UpdateError("bad_zip", "Archive holds one name both as a file and as a folder.",
+                                  "压缩包里有同一个名字既是文件又是文件夹。", 400)
             if len(tops) != 1:
                 raise UpdateError("bad_zip", "Package must contain a single version folder.",
                                   "压缩包必须只包含一个版本根目录。", 400)
@@ -1644,7 +2162,7 @@ def unpack_and_migrate_zip(current_store: Store, zip_path: Path, *,
                                   "压缩包根目录名异常：%s" % top_folder[:80], 400)
             expected_ver = m_top.group(1)
             build_member = "%s/%s" % (top_folder, "studio/build.json")
-            if build_member.lower() not in seen_names:
+            if _name_key(build_member) not in seen_names:
                 raise UpdateError("bad_zip", "Package has no studio/build.json.",
                                   "压缩包缺少 studio/build.json。", 400)
 
@@ -1660,9 +2178,21 @@ def unpack_and_migrate_zip(current_store: Store, zip_path: Path, *,
                 candidate = parent / (".%s.unpacking-%s" % (top_folder, uuid.uuid4().hex[:8]))
                 try:
                     # Owner-only while it is being filled, as tempfile.mkdtemp made it. On Windows no mode is
-                    # passed: from Python 3.12.4 a 0o700 mkdir sets an owner-only ACL there. Whether that ACL or
-                    # a database handle not yet closed refused the rename on the 3.14/3.15 runners was not
-                    # isolated; both were changed together.
+                    # passed: from Python 3.12.4 a 0o700 mkdir sets an owner-only ACL there, and that would stay
+                    # on the new app folder after the rename.
+                    #
+                    # On the Windows runners with Python 3.14 and 3.15 the rename below was refused (WinError 5)
+                    # while Python 3.9 passed. The cause as it was READ, NOT RUN (there was no Windows and no
+                    # Python 3.11 or later where this was written): the move used to end with
+                    # Store.list_scripts() and Store.samples_count() on the store in this folder. Both leave
+                    # their connection for Python to close. Before 3.11 that happens as the call returns (this
+                    # half was run, on 3.9). Since 3.11 a connection and its statement cache refer to each
+                    # other, so it stays open until cycles are next collected, and Windows refuses to rename a
+                    # folder while a file inside it is open. By that reading the fix is the explicitly closed
+                    # connection in migrate_from_previous_folder, and tests/test_updater.py (HandlesTest) holds
+                    # every connection on the unpacked database to a close() before the rename, on any system.
+                    # This plain mkdir, the gc.collect() calls and the retry below were changed in the same
+                    # commit. They are kept because that combination is the only one seen to pass there.
                     if os.name == "nt":
                         os.mkdir(str(candidate))
                     else:
@@ -1687,10 +2217,15 @@ def unpack_and_migrate_zip(current_store: Store, zip_path: Path, *,
                     out_file = (staging_resolved / rel).resolve()
                     if not str(out_file).startswith(str(staging_resolved) + os.sep):
                         raise UpdateError("bad_zip", "Path traversal refused.", "拒绝越界解压路径。", 400)
-                    out_file.parent.mkdir(parents=True, exist_ok=True)
+                    try:
+                        out_file.parent.mkdir(parents=True, exist_ok=True)
+                        made = os.open(str(out_file), os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o644)
+                    except (FileExistsError, NotADirectoryError, IsADirectoryError):
+                        # Two names that this system takes for one, in a way the checks above do not know of.
+                        raise UpdateError("bad_zip", "Archive holds names that are one and the same on this system.",
+                                          "压缩包里有在这台电脑上会重名的文件。", 400)
                     written = 0
-                    with zf.open(info, "r") as src_entry, \
-                            open(os.open(str(out_file), os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o644), "wb") as dst_entry:
+                    with open(made, "wb") as dst_entry, zf.open(info, "r") as src_entry:
                         while True:
                             block = src_entry.read(_CHUNK)
                             if not block:
@@ -1719,14 +2254,27 @@ def unpack_and_migrate_zip(current_store: Store, zip_path: Path, *,
 
                 # Copy current data/ into the newly unpacked staging folder before moving it into place.
                 staged_new_store = Store(staging_resolved / "data")
-                mig = migrate_from_previous_folder(staged_new_store, current_app_dir, jobs=jobs)
-                del staged_new_store
+                try:
+                    mig = migrate_from_previous_folder(staged_new_store, current_app_dir, jobs=jobs)
+                except UpdateError as exc:
+                    if exc.why is None:
+                        raise                   # busy: said in its own words
+                    # Its sentences speak of "the earlier folder" and "this folder". Here the earlier one is the
+                    # folder in use and the other is thrown away, so the reason is said in words that fit.
+                    raise UpdateError(
+                        "unpack_copy_failed",
+                        "The package was unpacked, but what this copy holds could not be copied into the new folder: "
+                        "%s. The new folder was removed again, and nothing in this folder was changed." % exc.why[0],
+                        "压缩包已经解压，但当前的数据没能复制到新文件夹里：%s。新文件夹已经删掉，当前文件夹没有改动。"
+                        % exc.why[1],
+                        exc.status, why=exc.why,
+                    )
                 if os.name == "nt":
-                    gc.collect()
+                    gc.collect()            # kept as it passed on the Windows runners: see the note above
 
                 if os.path.lexists(str(target_dir)):
                     raise _destination_exists_error(top_folder)
-                rename_tries = 12 if os.name == "nt" else 1
+                rename_tries = _PLACE_TRIES
                 wait = 0.01
                 for attempt in range(1, rename_tries + 1):
                     try:
@@ -1757,6 +2305,10 @@ def unpack_and_migrate_zip(current_store: Store, zip_path: Path, *,
     except (zipfile.BadZipFile, zipfile.LargeZipFile, zlib.error, EOFError, struct.error):
         raise UpdateError("bad_zip", "Downloaded file is not a valid zip archive.",
                           "下载的文件不是有效的 zip 压缩包。", 400)
+    except (OSError, sqlite3.Error) as exc:
+        # The disk is full, the folder beside this one cannot be written to, the database of the new folder
+        # could not be made. The unpacking folder was removed on the way out (see the ``finally`` above).
+        raise _unpack_failed_error(exc, staging_dir)
 
     resolved_target = target_dir.resolve()
     mig["migrated_from"] = str(current_app_dir)
