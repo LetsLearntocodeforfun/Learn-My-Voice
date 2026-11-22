@@ -1467,12 +1467,7 @@ def _vision_json(provider: str, api_key: str, model: str, images: List[Tuple[str
                 "generationConfig": {"responseMimeType": "application/json", "temperature": 0.1},
             },
         )
-        try:
-            cand_parts = data["candidates"][0]["content"]["parts"]
-            text = "".join(p.get("text", "") for p in cand_parts if isinstance(p, dict) and isinstance(p.get("text"), str))
-        except (KeyError, IndexError, TypeError, AttributeError):
-            raise llm.LLMError("Unexpected Gemini vision response shape", "bad_response")
-        return llm.parse_json_text(text)
+        return llm.parse_json_text(llm.gemini_text(data), pasted=False)
 
     if provider == "anthropic":
         safe_model = llm.validate_model_name(model, "anthropic")
@@ -1493,17 +1488,7 @@ def _vision_json(provider: str, api_key: str, model: str, images: List[Tuple[str
                 "messages": [{"role": "user", "content": blocks}],
             },
         )
-        try:
-            resp_blocks = data["content"]
-            text = "".join(
-                b.get("text", "") for b in resp_blocks
-                if isinstance(b, dict) and b.get("type") == "text" and isinstance(b.get("text"), str)
-            )
-            if not text.strip():
-                raise ValueError("empty content")
-        except (KeyError, IndexError, TypeError, ValueError, AttributeError):
-            raise llm.LLMError("Unexpected Anthropic vision response shape", "bad_response")
-        return llm.parse_json_text(text)
+        return llm.parse_json_text(llm.anthropic_text(data), pasted=False)
 
     base, headers = llm._openai_style(provider, api_key, base_url)
     safe_model = llm.validate_model_name(model, provider)
@@ -1523,13 +1508,7 @@ def _vision_json(provider: str, api_key: str, model: str, images: List[Tuple[str
             "response_format": {"type": "json_object"},
         },
     )
-    try:
-        text = data["choices"][0]["message"]["content"]
-        if not isinstance(text, str):
-            raise TypeError("content is not text")
-    except (KeyError, IndexError, TypeError, AttributeError):
-        raise llm.LLMError("Unexpected vision response shape from %s" % provider, "bad_response")
-    return llm.parse_json_text(text)
+    return llm.parse_json_text(llm.openai_text(data, provider), pasted=False)
 
 
 def read_comments_from_screenshots_ai(store: Store, body: Dict[str, Any],
