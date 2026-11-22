@@ -172,6 +172,36 @@ class AnthropicClientHardeningTest(unittest.TestCase):
             llm.complete_json("anthropic", "sk-ant-fake-0001", "claude-sonnet-4-5", "sys", "usr", bad_req_transport)
         self.assertEqual(non_token_attempts, [8192])
 
+        # Named integer cap (< requested and >= 1024) on HTTP 400 or 422 is parsed instead of blindly using 4096,
+        # while falling back to 4096 when no such integer is named in the message.
+        parsed_caps = []
+
+        def cap_6000_on_422(method, url, headers, body):
+            parsed_caps.append(body["max_tokens"])
+            if body["max_tokens"] > 6000:
+                raise llm.LLMError("HTTP 422: max_tokens (8192) exceeds model limit of 6000 (min 1024) for claude-custom-2025", "http")
+            return {"stop_reason": "end_turn", "content": [{"type": "text", "text": '{"cap": 6000}'}]}
+
+        self.assertEqual(
+            llm.complete_json("anthropic", "sk-ant-fake-0001", "claude-custom-2025", "sys", "usr", cap_6000_on_422),
+            {"cap": 6000},
+        )
+        self.assertEqual(parsed_caps, [8192, 6000])
+
+        fallback_caps = []
+
+        def unnamed_cap_on_422(method, url, headers, body):
+            fallback_caps.append(body["max_tokens"])
+            if body["max_tokens"] > 4096:
+                raise llm.LLMError("HTTP 422: max_tokens is too high for this model", "http")
+            return {"stop_reason": "end_turn", "content": [{"type": "text", "text": '{"cap": 4096}'}]}
+
+        self.assertEqual(
+            llm.complete_json("anthropic", "sk-ant-fake-0001", "claude-3-haiku", "sys", "usr", unnamed_cap_on_422),
+            {"cap": 4096},
+        )
+        self.assertEqual(fallback_caps, [8192, 4096])
+
     def test_wire_http_400_scrubs_sk_ant_keys_and_refuses_redirects(self) -> None:
         secret = "sk-ant-api03-FakeSecretKey987654321"
 
@@ -400,6 +430,7 @@ class StageTemperatureAndFallbackTest(unittest.TestCase):
         self.assertEqual(llm.STAGE_TEMPERATURES["hooks"], 0.55)
         self.assertEqual(llm.STAGE_TEMPERATURES["rewrite"], 0.55)
         self.assertEqual(llm.STAGE_TEMPERATURES["sentiment"], 0.2)
+        self.assertEqual(llm.STAGE_TEMPERATURES["comment_ocr"], 0.1)
 
     def test_pipeline_and_suggest_pass_stage_temperatures_including_local_server(self) -> None:
         tmp = Path(tempfile.mkdtemp(prefix="lmv-temps-"))
@@ -577,6 +608,35 @@ class StageTemperatureAndFallbackTest(unittest.TestCase):
         self.assertEqual(json.loads(seen[0]["body"]).get("temperature"), 0.55)
         self.assertNotIn("temperature", json.loads(seen[1]["body"]))
 
+        # 7. HTTP 422 temperature retry-once works on complete_json and rednote_analytics._vision_json
+        picture = [("aGVsbG8=", "image/png")]
+        for provider in ("gemini", "openai", "anthropic", "local"):
+            vis_calls = []
+
+            def vis_422(method, url, headers, body, prov=provider, vis_calls=vis_calls):
+                vis_calls.append(dict(body))
+                has_temp = ("temperature" in body["generationConfig"]) if prov == "gemini" else ("temperature" in body)
+                if prov == "anthropic" and body.get("max_tokens", 0) > 3072:
+                    raise llm.LLMError("HTTP 422: max_tokens must be <= 3072", "http")
+                if has_temp:
+                    raise llm.LLMError("HTTP 422: temperature is not supported by this model", "http")
+                return _answer(prov, '{"comments": [{"text": "好用！", "likes": 3}]}')
+
+            vis_out = rednote_analytics._vision_json(
+                provider, "sk-fake-00000000", "model-v", picture, transport=vis_422,
+                base_url="http://127.0.0.1:11434/v1" if provider == "local" else None,
+            )
+            self.assertEqual(vis_out["comments"][0]["text"], "好用！")
+            if provider == "gemini":
+                self.assertEqual(vis_calls[0]["generationConfig"].get("temperature"), 0.1)
+                self.assertNotIn("temperature", vis_calls[-1]["generationConfig"])
+            elif provider == "anthropic":
+                self.assertEqual([(c.get("max_tokens"), c.get("temperature")) for c in vis_calls],
+                                 [(8192, 0.1), (3072, 0.1), (3072, None)])
+            else:
+                self.assertEqual(vis_calls[0].get("temperature"), 0.1)
+                self.assertNotIn("temperature", vis_calls[-1])
+
 
 # A draft reply that stops inside its second line. Its first line stands whole inside it.
 CUT_DRAFT = ('{"title": "周末", "script_lines": [{"line_no": 1, "spoken_script_zh": "第一句"}, '
@@ -703,10 +763,17 @@ class StoppedAndCutOffAnswersTest(unittest.TestCase):
             self.assert_said(caught.exception, "cut_off")
 
     def test_the_fields_these_rest_on_are_listed_as_never_checked(self) -> None:
-        for listed, names in ((llm.GEMINI_UNCHECKED, ("finishReason", "MAX_TOKENS", "promptFeedback.blockReason")),
-                              (llm.OPENAI_UNCHECKED, ("finish_reason", "'length'", "content_filter", "message.refusal"))):
+        for listed, names in (
+            (llm.GEMINI_UNCHECKED, ("finishReason", "MAX_TOKENS", "promptFeedback.blockReason")),
+            (llm.OPENAI_UNCHECKED, ("finish_reason", "'length'", "content_filter", "message.refusal")),
+            (llm.ANTHROPIC_UNCHECKED, ("stop_reason", "max_tokens", "refusal")),
+        ):
             for name in names:
                 self.assertIn(name, " ".join(listed))
+        self.assertEqual(
+            llm.PROVIDER_STOP_REASON_UNCHECKED,
+            llm.GEMINI_UNCHECKED + llm.OPENAI_UNCHECKED + llm.ANTHROPIC_UNCHECKED,
+        )
 
 
 if __name__ == "__main__":

@@ -31,12 +31,18 @@ GEMINI_BASE = "https://generativelanguage.googleapis.com/v1beta"
 ANTHROPIC_BASE = "https://api.anthropic.com/v1"
 ANTHROPIC_VERSION = "2023-06-01"
 ANTHROPIC_MAX_TOKENS = 8192
-ANTHROPIC_FALLBACK_MAX_TOKENS = 4096        # older Claude models cap output at 4,096 tokens
+ANTHROPIC_MIN_FALLBACK_TOKENS = 1024
+# 4,096 is from memory of older Claude models' output cap (not verified against live Anthropic docs in this session);
+# used only when an HTTP 400/422 error about max_tokens names no specific integer limit >= 1024 and < requested.
+ANTHROPIC_FALLBACK_MAX_TOKENS = 4096
 SEARCH_PROVIDERS = ("gemini", "openai")     # the providers whose API can search the web while answering
 
-# Per-stage temperatures matching the markdown blueprints in prompts/ so code and blueprints stay in step:
-# prompts/02 (0.2), prompts/03 (0.3), prompts/04 (0.55), prompts/05 & 08 CRITIC (0.2),
-# prompts/06 low temperature (0.3), prompts/08 HOOKS/REWRITE (0.55) & SHORTEN (0.3), prompts/09 (0.2).
+# Per-stage temperatures:
+# - Explicit numbers stated in prompts/: prompts/02 (voice: 0.2), prompts/03 (sponsored_brief: 0.3),
+#   prompts/04 (draft: 0.55), prompts/05 (critic: 0.2), and prompts/09 (sentiment: 0.2).
+# - Code defaults where the prompt states no number: ideas (0.3; prompts/06 asks only for "a low temperature"),
+#   hooks/rewrite (0.55) and shorten (0.3) in prompts/08 (which states no temperature numbers), and
+#   comment_ocr (0.1; inline screenshot prompt in studio/rednote_analytics.py).
 STAGE_TEMPERATURES: Dict[str, float] = {
     "voice": 0.2,
     "sponsored_brief": 0.3,
@@ -47,6 +53,7 @@ STAGE_TEMPERATURES: Dict[str, float] = {
     "rewrite": 0.55,
     "shorten": 0.3,
     "sentiment": 0.2,
+    "comment_ocr": 0.1,
 }
 GEMINI_API_REVISION = "2026-05-20"          # the revision of Gemini's Interactions API that ``search_json`` is written for
 DEFAULT_LOCAL_BASE = "http://127.0.0.1:11434/v1"  # Ollama's OpenAI-compatible endpoint
@@ -1116,6 +1123,12 @@ OPENAI_UNCHECKED = (
     "this computer that speak like it: Ollama, LM Studio, llama.cpp, mlx-lm)",
     "that an answer the service withheld carries finish_reason 'content_filter', or a text under choices[0].message.refusal",
 )
+ANTHROPIC_UNCHECKED = (
+    "that an answer cut off for length carries stop_reason 'max_tokens'",
+    "that an answer the service withheld carries stop_reason 'refusal', or a block of type 'refusal' in content[]",
+    "that an HTTP 400 or 422 error about max_tokens names the model's cap (with 4,096 as the fallback from memory)",
+)
+PROVIDER_STOP_REASON_UNCHECKED = GEMINI_UNCHECKED + OPENAI_UNCHECKED + ANTHROPIC_UNCHECKED
 _GEMINI_WITHHELD = ("SAFETY", "RECITATION", "BLOCKLIST", "PROHIBITED_CONTENT", "SPII")
 
 
@@ -1228,20 +1241,57 @@ def anthropic_text(data: Any) -> str:
     return text
 
 
-def _is_http_400_mentioning(exc: LLMError, term: str) -> bool:
-    """True when ``exc`` is an HTTP 400 error whose message names ``term``."""
-    return exc.code == "http" and str(exc).startswith("HTTP 400:") and term.lower() in str(exc).lower()
+def _is_http_400_or_422_mentioning(exc: LLMError, term: str) -> bool:
+    """True when ``exc`` is an HTTP 400 or 422 error whose message names ``term``."""
+    msg = str(exc)
+    return (
+        exc.code == "http"
+        and (msg.startswith("HTTP 400:") or msg.startswith("HTTP 422:"))
+        and term.lower() in msg.lower()
+    )
 
 
-def complete_json(provider: str, api_key: str, model: str, system: str, user: str,
-                  transport: Optional[Transport] = None, base_url: Optional[str] = None,
-                  temperature: Optional[float] = None) -> Dict[str, Any]:
-    """Send one system+user exchange and return the reply parsed as a JSON object."""
+def _fallback_anthropic_max_tokens(exc: LLMError, requested: int, model: str = "") -> Optional[int]:
+    """Parse the largest integer ``>= 1024`` and ``< requested`` from an HTTP 400/422 ``max_tokens`` error.
+
+    Falls back to ``ANTHROPIC_FALLBACK_MAX_TOKENS`` (4,096, from memory) only when no qualifying integer
+    appears in the error message and 4,096 is below ``requested``.
+    """
+    if not _is_http_400_or_422_mentioning(exc, "max_tokens"):
+        return None
+    detail = re.sub(r"^HTTP (?:400|422):\s*", "", str(exc))
+    if model:
+        detail = detail.replace(model, " ")
+    detail = re.sub(r"(?<=[0-9]),(?=[0-9]{3}\b)", "", detail)
+    candidates = [
+        val for val in (int(tok) for tok in re.findall(r"\b[0-9]{1,9}\b", detail))
+        if ANTHROPIC_MIN_FALLBACK_TOKENS <= val < requested
+    ]
+    if candidates:
+        return max(candidates)
+    if ANTHROPIC_FALLBACK_MAX_TOKENS < requested:
+        return ANTHROPIC_FALLBACK_MAX_TOKENS
+    return None
+
+
+def _exchange_json(
+    provider: str,
+    api_key: str,
+    model: str,
+    system: str,
+    user_payload: Any,
+    *,
+    transport: Optional[Transport] = None,
+    base_url: Optional[str] = None,
+    temperature: Optional[float] = None,
+) -> Dict[str, Any]:
+    """Shared JSON exchange across text and vision requests with temperature, max_tokens, and stop_reason handling."""
     call = transport or _http
     temp_val: Optional[float] = None
     if temperature is not None and not isinstance(temperature, bool) and isinstance(temperature, (int, float)):
         if math.isfinite(float(temperature)):
             temp_val = max(0.0, min(1.0, float(temperature)))
+
     if provider == "gemini":
         safe_model = _gemini_model_segment(model)
         gem_url = "%s/models/%s:generateContent" % (GEMINI_BASE, safe_model)
@@ -1249,15 +1299,16 @@ def complete_json(provider: str, api_key: str, model: str, system: str, user: st
         gen_cfg: Dict[str, Any] = {"responseMimeType": "application/json"}
         if temp_val is not None:
             gen_cfg["temperature"] = temp_val
+        gem_parts = user_payload if isinstance(user_payload, list) else [{"text": user_payload}]
         gem_body: Dict[str, Any] = {
             "systemInstruction": {"parts": [{"text": system}]},
-            "contents": [{"role": "user", "parts": [{"text": user}]}],
+            "contents": [{"role": "user", "parts": gem_parts}],
             "generationConfig": dict(gen_cfg),
         }
         try:
             data = call("POST", gem_url, gem_headers, gem_body)
         except LLMError as exc:
-            if "temperature" in gen_cfg and _is_http_400_mentioning(exc, "temperature"):
+            if "temperature" in gen_cfg and _is_http_400_or_422_mentioning(exc, "temperature"):
                 no_temp_cfg = {k: v for k, v in gen_cfg.items() if k != "temperature"}
                 data = call("POST", gem_url, gem_headers, dict(gem_body, generationConfig=no_temp_cfg))
             else:
@@ -1277,7 +1328,7 @@ def complete_json(provider: str, api_key: str, model: str, system: str, user: st
                 "model": safe_model,
                 "max_tokens": cur_max_tokens,
                 "system": system + "\n\nReturn ONLY a single valid JSON object with no surrounding prose.",
-                "messages": [{"role": "user", "content": user}],
+                "messages": [{"role": "user", "content": user_payload}],
             }
             if cur_temp is not None:
                 req_body["temperature"] = cur_temp
@@ -1286,11 +1337,13 @@ def complete_json(provider: str, api_key: str, model: str, system: str, user: st
                 break
             except LLMError as exc:
                 adjusted = False
-                if not retried_tokens and cur_max_tokens == ANTHROPIC_MAX_TOKENS and _is_http_400_mentioning(exc, "max_tokens"):
-                    cur_max_tokens = ANTHROPIC_FALLBACK_MAX_TOKENS
-                    retried_tokens = True
-                    adjusted = True
-                if not retried_temp and cur_temp is not None and _is_http_400_mentioning(exc, "temperature"):
+                if not retried_tokens:
+                    next_tokens = _fallback_anthropic_max_tokens(exc, cur_max_tokens, safe_model)
+                    if next_tokens is not None:
+                        cur_max_tokens = next_tokens
+                        retried_tokens = True
+                        adjusted = True
+                if not retried_temp and cur_temp is not None and _is_http_400_or_422_mentioning(exc, "temperature"):
                     cur_temp = None
                     retried_temp = True
                     adjusted = True
@@ -1302,7 +1355,7 @@ def complete_json(provider: str, api_key: str, model: str, system: str, user: st
     safe_model = validate_model_name(model, provider)
     oai_body: Dict[str, Any] = {
         "model": safe_model,
-        "messages": [{"role": "system", "content": system}, {"role": "user", "content": user}],
+        "messages": [{"role": "system", "content": system}, {"role": "user", "content": user_payload}],
         "response_format": {"type": "json_object"},
     }
     if temp_val is not None:
@@ -1310,9 +1363,19 @@ def complete_json(provider: str, api_key: str, model: str, system: str, user: st
     try:
         data = call("POST", base + "/chat/completions", headers, dict(oai_body))
     except LLMError as exc:
-        if "temperature" in oai_body and _is_http_400_mentioning(exc, "temperature"):
+        if "temperature" in oai_body and _is_http_400_or_422_mentioning(exc, "temperature"):
             no_temp_body = {k: v for k, v in oai_body.items() if k != "temperature"}
             data = call("POST", base + "/chat/completions", headers, no_temp_body)
         else:
             raise
     return parse_json_text(openai_text(data, provider), pasted=False)
+
+
+def complete_json(provider: str, api_key: str, model: str, system: str, user: str,
+                  transport: Optional[Transport] = None, base_url: Optional[str] = None,
+                  temperature: Optional[float] = None) -> Dict[str, Any]:
+    """Send one system+user exchange and return the reply parsed as a JSON object."""
+    return _exchange_json(
+        provider, api_key, model, system, user,
+        transport=transport, base_url=base_url, temperature=temperature,
+    )

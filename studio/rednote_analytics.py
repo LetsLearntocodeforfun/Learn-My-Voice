@@ -1448,67 +1448,35 @@ def _vision_json(provider: str, api_key: str, model: str, images: List[Tuple[str
                  transport: Optional[llm.Transport] = None, base_url: Optional[str] = None) -> Dict[str, Any]:
     """Send 1..4 screenshot images to a vision-capable model and parse the JSON reply.
 
-    Written from each provider's documentation (Gemini ``generateContent`` inlineData, OpenAI / local
-    ``chat/completions`` ``image_url`` data URIs, Anthropic ``messages`` base64 image blocks) and NEVER run
-    against a live service in this project.
+    Routed through ``llm._exchange_json`` so ``STAGE_TEMPERATURES["comment_ocr"]``, HTTP 400/422
+    ``temperature`` / ``max_tokens`` retry-once handling, and provider ``stop_reason`` checks apply
+    uniformly across Gemini, OpenAI, Anthropic, and local OpenAI-compatible servers.
     """
-    call = transport or llm._http
     if provider == "gemini":
-        safe_model = llm._gemini_model_segment(model)
-        parts: List[Dict[str, Any]] = [{"inlineData": {"mimeType": mime, "data": b64}} for b64, mime in images]
-        parts.append({"text": SCREENSHOT_OCR_USER})
-        data = call(
-            "POST",
-            "%s/models/%s:generateContent" % (llm.GEMINI_BASE, safe_model),
-            {"x-goog-api-key": api_key},
-            {
-                "systemInstruction": {"parts": [{"text": SCREENSHOT_OCR_SYSTEM}]},
-                "contents": [{"role": "user", "parts": parts}],
-                "generationConfig": {"responseMimeType": "application/json", "temperature": 0.1},
-            },
-        )
-        return llm.parse_json_text(llm.gemini_text(data), pasted=False)
-
-    if provider == "anthropic":
-        safe_model = llm.validate_model_name(model, "anthropic")
-        blocks: List[Dict[str, Any]] = [
+        user_payload: List[Dict[str, Any]] = [{"inlineData": {"mimeType": mime, "data": b64}} for b64, mime in images]
+        user_payload.append({"text": SCREENSHOT_OCR_USER})
+    elif provider == "anthropic":
+        user_payload = [
             {"type": "image", "source": {"type": "base64", "media_type": mime, "data": b64}}
             for b64, mime in images
         ]
-        blocks.append({"text": SCREENSHOT_OCR_USER, "type": "text"})
-        data = call(
-            "POST",
-            llm.ANTHROPIC_BASE + "/messages",
-            {"x-api-key": api_key, "anthropic-version": llm.ANTHROPIC_VERSION},
-            {
-                "model": safe_model,
-                "max_tokens": 4096,
-                "temperature": 0.1,
-                "system": SCREENSHOT_OCR_SYSTEM + "\n\nReturn ONLY a single valid JSON object with no surrounding prose.",
-                "messages": [{"role": "user", "content": blocks}],
-            },
-        )
-        return llm.parse_json_text(llm.anthropic_text(data), pasted=False)
-
-    base, headers = llm._openai_style(provider, api_key, base_url)
-    safe_model = llm.validate_model_name(model, provider)
-    content: List[Dict[str, Any]] = [
-        {"type": "image_url", "image_url": {"url": "data:%s;base64,%s" % (mime, b64)}}
-        for b64, mime in images
-    ]
-    content.append({"type": "text", "text": SCREENSHOT_OCR_USER})
-    data = call(
-        "POST",
-        base + "/chat/completions",
-        headers,
-        {
-            "model": safe_model,
-            "temperature": 0.1,
-            "messages": [{"role": "system", "content": SCREENSHOT_OCR_SYSTEM}, {"role": "user", "content": content}],
-            "response_format": {"type": "json_object"},
-        },
+        user_payload.append({"text": SCREENSHOT_OCR_USER, "type": "text"})
+    else:
+        user_payload = [
+            {"type": "image_url", "image_url": {"url": "data:%s;base64,%s" % (mime, b64)}}
+            for b64, mime in images
+        ]
+        user_payload.append({"type": "text", "text": SCREENSHOT_OCR_USER})
+    return llm._exchange_json(
+        provider,
+        api_key,
+        model,
+        SCREENSHOT_OCR_SYSTEM,
+        user_payload,
+        transport=transport,
+        base_url=base_url,
+        temperature=llm.STAGE_TEMPERATURES["comment_ocr"],
     )
-    return llm.parse_json_text(llm.openai_text(data, provider), pasted=False)
 
 
 def read_comments_from_screenshots_ai(store: Store, body: Dict[str, Any],
