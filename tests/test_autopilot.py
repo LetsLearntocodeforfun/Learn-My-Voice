@@ -1964,7 +1964,8 @@ class DataVersionTest(RestoreCase):
         self.assertNotIn("autopilot_runs", SCHEMA_AT_309D9F4)
         self.assertEqual(backup.DATA_VERSION, 4)
         self.assertNotEqual(backup.layout_fingerprint(), LAYOUT_OF_DATA_VERSION_3)
-        self.assertEqual(sorted(set(backup.reference_layout()["tables"]) - set(rows(self.version_3_folder().db_path))), ["autopilot_runs"])
+        self.assertEqual(sorted(set(backup.reference_layout()["tables"]) - set(rows(self.version_3_folder().db_path))),
+                         ["autopilot_runs", "trend_observations"])
 
     def version_3_folder(self):
         """A data folder as the app at data version 3 makes it, with something in it."""
@@ -1995,7 +1996,8 @@ class DataVersionTest(RestoreCase):
                           preview["file"]["holds"]["samples"], preview["now"]["scripts"]), (3, True, 1, 1, 1))
         self.assertTrue(self.backups.restore(preview["restore_id"])["restored"])
         now = rows(self.store.db_path)
-        self.assertEqual(now.pop("autopilot_runs"), [])                      # the table this version adds is there, with nothing in it
+        self.assertEqual(now.pop("autopilot_runs"), [])                      # the tables this version adds are there, with nothing in them
+        self.assertEqual(now.pop("trend_observations"), [])
         self.assertEqual(now, was)                                           # and every row of that backup is, as it was
         self.assertEqual([script["title"] for script in self.store.list_scripts()], ["版本三写的"])
         # Autopilot works on what was restored, and the folder can be backed up and restored again as version 4.

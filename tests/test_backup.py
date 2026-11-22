@@ -42,7 +42,7 @@ import zipfile
 from pathlib import Path
 from unittest import mock
 
-from studio import autopilot, backup, creator, mcp_server, outside, posted, server, wordlist
+from studio import autopilot, backup, creator, mcp_server, outside, posted, server, trends, wordlist
 from studio.jobs import Jobs
 from studio.store import ROOT, Store
 
@@ -58,7 +58,7 @@ OWN = [
 MARKUP = "<img src=x onerror=alert(1)>"
 ASSUMES = re.compile(r"\b(she|her|hers|herself|husband|wife|couple)\b", re.I)
 # The layout of the database this version of the data stands for (backup.layout_fingerprint()).
-LAYOUT_OF_DATA_VERSION = {1: "dc489db00a5395ce", 2: "b0612eef1d02873d", 3: "d5c2a68c0ed818d4", 4: "bc8828c370d2a5aa"}
+LAYOUT_OF_DATA_VERSION = {1: "dc489db00a5395ce", 2: "b0612eef1d02873d", 3: "d5c2a68c0ed818d4", 4: "5e3fb2b59114780e"}
 
 # The tables as the code at 3fdd3a6 creates them: the commit this feature was built on.
 SCHEMA_AT_3FDD3A6 = """
@@ -230,6 +230,9 @@ def fill(store, tag="甲"):
     posted.mark(store, typed["id"], {"likes": 5, "posted_on": "2026-11-10"})     # a posted script has its item in the library
     store.upsert_trends([{"keyword": "秋冬护肤", "heat": 125000}], source="manual")
     store.upsert_trends([{"keyword": "早餐吃什么", "source_url": "https://example.com/a", "note_zh": "查到的"}], source="ai")
+    # One sighting of that keyword by an automatic source (a page the creator named), with the place the page showed.
+    trends.store_found(store, trends.prepare_found([{"keyword": "早餐吃什么", "rank": 3}], row_source=trends.AI, seen_by="page",
+                                                   now=1795305600.0, origin="https://example.com/list", link="https://example.com/list"))
     store.add_lesson(script_id=drafted["id"], ai="因此我强烈推荐", final="所以我真的很推荐嘛", note="口语一点")
     store.save_brief("draft", {"notes": "入冬换面霜", "samples": ["素材一"]}, fingerprint="f1")
     # One run in autopilot's log, with a change it says how to reverse, written by a look of the scheduler itself.
@@ -439,7 +442,8 @@ class ContentsTest(Case):
         self.assertEqual(rows(inside), rows(self.store.db_path))
         self.assertEqual(sorted(rows(inside)), ["ai_suggestions", "autopilot_runs", "briefs", "lessons", "metric_snapshots",
                                                 "sample_beats", "sample_comments", "sample_sentiments", "samples",
-                                                "script_pins", "scripts", "sponsor_briefs", "trends", "video_plans"])
+                                                "script_pins", "scripts", "sponsor_briefs", "trend_observations", "trends",
+                                                "video_plans"])
         for table, found in rows(inside).items():
             self.assertTrue(found, table)                                    # the made-up folder has something in every table
         self.assertEqual(json.loads(held["settings.json"].decode("utf-8")),
@@ -630,10 +634,11 @@ class RoundTripTest(Case):
         layout = backup.reference_layout()
         self.assertEqual(sorted(layout["tables"]), ["ai_suggestions", "autopilot_runs", "briefs", "lessons", "metric_snapshots",
                                                     "sample_beats", "sample_comments", "sample_sentiments", "samples",
-                                                    "script_pins", "scripts", "sponsor_briefs", "trends", "video_plans"])
+                                                    "script_pins", "scripts", "sponsor_briefs", "trend_observations", "trends",
+                                                    "video_plans"])
         self.assertEqual(sorted(layout["indexes"]), ["ai_suggestions_by_script", "metric_snapshots_by_sample",
                                                      "sample_beats_by_sample", "sample_comments_by_sample",
-                                                     "samples_by_script"])
+                                                     "samples_by_script", "trend_observations_by_key"])
         columns = {name: [column for column, _kind, _written in found if column] for name, found in layout["tables"].items()}
         self.assertEqual(columns["scripts"][:3], ["id", "title", "mode"])
         self.assertEqual(columns["ai_suggestions"], ["script_id", "text", "created_at"])

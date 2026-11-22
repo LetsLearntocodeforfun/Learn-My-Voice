@@ -1043,7 +1043,7 @@ class EarlierVersionTest(unittest.TestCase):
         store = Store(self.tmp)
         self.assertEqual(self.tables(), sorted(self.OLD_TABLES + (
             "script_pins", "metric_snapshots", "sample_beats", "sample_comments", "sample_sentiments", "video_plans", "sponsor_briefs",
-            "autopilot_runs"
+            "autopilot_runs", "trend_observations"
         )))
         added = {table: [name for name in self.columns(table) if name not in columns_then[table]] for table in self.OLD_TABLES}
         self.assertEqual({table: names for table, names in added.items() if names}, self.ADDED_SINCE)   # the columns named above, no other

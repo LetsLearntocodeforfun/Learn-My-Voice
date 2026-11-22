@@ -58,7 +58,7 @@ from . import checks, corpus, creator, exports, keyword_import, llm, pipeline, t
 from . import buildinfo, hooks, outside, posted, refs, suggest, video_ingest, wordlist
 from . import planner, rednote_analytics, soundstats, sponsored, tone_analyzer, updater
 from . import setup as setup_status
-from . import autopilot, backup
+from . import autopilot, backup, trend_sources
 from .jobs import JobError, Jobs, Progress
 from .store import (
     HISTORY_ID,
@@ -1346,6 +1346,8 @@ class Handler(BaseHTTPRequestHandler):
           calls and their limit, the run under way, the newest lines of the log (``Autopilot.status``).
         - ``POST /api/autopilot/settings`` ``{"enabled", "level", "daily_model_calls", "tasks": {name: bool}}``, any
           of them: change the creator's settings. Answers with the state as it then is.
+        - ``GET /api/autopilot/sources`` / ``POST /api/autopilot/sources``: read or update background trend-source
+          settings (``studio/trend_sources.py``).
         - ``POST /api/autopilot/run`` ``{"task"}``: run one task now. Answers at once (202) with ``{"run", "job"}``;
           the job is followed like any other (``GET /api/jobs/<id>``). Refused while either switch is off.
         - ``POST /api/autopilot/runs/<id>/undo``: reverse what one run changed, once.
@@ -1359,12 +1361,18 @@ class Handler(BaseHTTPRequestHandler):
                 return self._json(pilot.status())
             if route == ("POST", "/api/autopilot/settings"):
                 return self._json(pilot.save_settings(self._read_json()))
+            if route == ("GET", "/api/autopilot/sources"):
+                return self._json(trend_sources.get_source_settings(self.app.store))
+            if route == ("POST", "/api/autopilot/sources"):
+                return self._json(trend_sources.save_source_settings(self.app.store, self._read_json()))
             if route == ("POST", "/api/autopilot/run"):
                 return self._json(pilot.run_now(self._read_json().get("task")), 202)
             m = re.fullmatch(r"/api/autopilot/runs/([0-9a-f]{12})/undo", path)
             if m and method == "POST":
                 return self._json(pilot.undo(m.group(1)))
         except autopilot.AutopilotError as exc:
+            raise ApiError(exc.status, exc.code, exc.message, exc.message_zh, extra=exc.extra)
+        except trend_sources.SourceError as exc:
             raise ApiError(exc.status, exc.code, exc.message, exc.message_zh, extra=exc.extra)
         raise ApiError(404, "not_found")
 
