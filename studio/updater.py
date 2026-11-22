@@ -40,6 +40,13 @@ How data stays across versions:
     ``Backups``'s data epoch advances so any page opened before migration is refused if it tries to save over what
     arrived. When the current folder already holds work, migration is refused and points to Backup and restore in
     Settings.
+  - Of the other folder's settings (``config.json``) a copy carries the names the app stores and nothing else,
+    each held to what the app would have stored itself (``_settings_to_carry``): a service it knows, a model
+    name that service takes, the address of a model server on this computer, keys that can be keys. Carrying
+    the creator's own connection and keys to a new version is what a copy is for. Whose a key is cannot be
+    known without asking the service, and a copy asks nobody; so the page names the AI service and the model
+    before the copy and again after it (never any part of a key), and an AI connection entered in this folder
+    before the copy stays as it is.
   - ``unpack_and_migrate_zip`` unpacks a downloaded release ``.zip`` into a sibling temporary directory (bounded in
     entry count and uncompressed bytes, refusing symlinks, traversal, ``data/``, ``local_tools/`` and Windows-unsafe
     names), copies ``data/`` into that temporary directory, and renames it into place ONLY when the destination
@@ -80,7 +87,7 @@ import zlib
 from pathlib import Path
 from typing import Any, Callable, Dict, Iterator, List, Optional, Sequence, Tuple, Union
 
-from . import backup, buildinfo, creator, llm, outside
+from . import backup, buildinfo, creator, keystore, llm, outside, wordlist
 from . import store as store_module
 from .store import ROOT, Store, _owner_only
 
@@ -1238,7 +1245,15 @@ def discover_previous_installations(store: Store, search_root: Optional[Path] = 
         }))
 
     found.sort(key=lambda pair: pair[0], reverse=True)
-    return [item for _, item in found[:10]]
+    listed = [item for _, item in found[:10]]
+    # What a copy from each would do to the AI connection, worked out the way the copy itself works it out
+    # (_settings_to_carry), so that the page can say it before anything is copied. This reads each listed
+    # folder's config.json, bounded like the rest of this look, and nothing else of it.
+    ours = store._read_raw_config_dict()
+    for item in listed:
+        item["ai"] = _settings_to_carry(_settings_at(Path(item["path"]) / "data" / "config.json"), ours)[1] \
+            if item["has_config"] else None
+    return listed
 
 
 def _data_not_empty_error() -> UpdateError:
@@ -1312,11 +1327,205 @@ def _move_undo_failed_error(exc: BaseException, failed: BaseException, at_next_s
     )
 
 
-def _clean_migrated_config(src_cfg: Dict[str, Any], target_existing_cfg: Dict[str, Any]) -> Dict[str, Any]:
-    """Keep the earlier folder's settings and sealed API keys, without carrying over stale release caches."""
-    out = dict(src_cfg)
-    old_updates = out.get("updates") if isinstance(out.get("updates"), dict) else {}
-    cur_updates = target_existing_cfg.get("updates") if isinstance(target_existing_cfg.get("updates"), dict) else {}
+# ---- the settings a copy from another folder carries --------------------------
+MAX_SETTINGS_BYTES = 1024 * 1024        # another folder's config.json: far more than the app ever writes into one
+MAX_KEY_CHARS = 512                     # an API key as a service hands it out is well under this
+MAX_SEALED_CHARS = 4096                 # the same key, sealed
+_CONNECTION_NAMES = ("provider", "model", "local_base_url", "keys", "keys_sealed")
+
+
+def _as_a_backup_carries(name: str) -> Callable[[Any], Any]:
+    """For a setting a backup carries too: cleaned exactly as a backup cleans it (``backup._carried``)."""
+    return lambda value: backup._carried({name: value}).get(name)
+
+
+def _page_keeps(value: Any) -> Optional[Dict[str, str]]:
+    """What the page had kept (language, look, teleprompter): only names and values the page may keep."""
+    if not isinstance(value, dict):
+        return None
+    kept: Dict[str, str] = {}
+    for name in list(value)[:64]:
+        fits = store_module.kept_value(name, value[name])
+        if fits is not None:
+            kept[name] = fits
+    return kept or None
+
+
+# The settings a copy from another folder carries, besides the AI connection and what is kept about updates
+# (those two have rules of their own, in _settings_to_carry): each name config.json holds, with what turns a
+# value from outside into one the app would have stored itself, or into None, which leaves it out. A name
+# that is not here is not carried. One more name with its cleaner is one more line.
+CARRIED_SETTINGS: Tuple[Tuple[str, Callable[[Any], Any]], ...] = (
+    ("trend_weight", _as_a_backup_carries("trend_weight")),
+    (wordlist.KEY, _as_a_backup_carries(wordlist.KEY)),
+    ("page", _page_keeps),
+)
+
+
+def _key_fits(value: Any) -> bool:
+    """Whether ``value`` can be an API key: text of a sensible length that can stand in a request header."""
+    return isinstance(value, str) and 0 < len(value) <= MAX_KEY_CHARS and all(33 <= ord(ch) <= 126 for ch in value)
+
+
+def _settings_at(path: Path) -> Optional[Dict[str, Any]]:
+    """What the ``config.json`` at ``path`` holds, or None when there is none that can be read.
+
+    Read as the app reads its own (``store.loads_stored``). None also for a link, for a file larger than
+    MAX_SETTINGS_BYTES and for one that does not hold an object: the app itself goes on with no settings then.
+    """
+    if not backup._is_plain_file(path):
+        return None
+    try:
+        with open(str(path), "rb") as handle:
+            raw = handle.read(MAX_SETTINGS_BYTES + 1)
+        if len(raw) > MAX_SETTINGS_BYTES:
+            return None
+        loaded = store_module.loads_stored(raw.decode("utf-8"))
+    except (OSError, ValueError, RecursionError):
+        return None
+    return loaded if isinstance(loaded, dict) else None
+
+
+def _has_connection(config: Dict[str, Any]) -> bool:
+    """Whether settings name an AI connection: a service, the address of a model server, or a key."""
+    if config.get("provider") or config.get("local_base_url"):
+        return True
+    return any(isinstance(config.get(name), dict) and any(config[name].values()) for name in ("keys", "keys_sealed"))
+
+
+def _connection_named(config: Dict[str, Any]) -> Tuple[Dict[str, Any], Dict[str, Any]]:
+    """The AI connection that settings from another folder name, checked the way the Settings routes check one.
+
+    Returns ``(kept, told)``.
+
+    ``kept`` holds, under the names of ``config.json``, only what the app would have stored itself:
+
+    - a service it knows (``store.PROVIDERS``, or copy-and-paste);
+    - a model name that service takes (``llm.validate_model_name``);
+    - the address of a model server on this computer (``llm.normalize_local_base``): an address anywhere else
+      is left out. (It would be refused at every use anyway, by the same check; left in, Settings would show
+      a connection that cannot work.)
+    - for each cloud service a key that can be one (``_key_fits``): in plain text, as versions before 0.2.0
+      kept it, or sealed, when the seal opens on this computer and account.
+
+    Whether a key works, and whose it is, is not known: Settings keeps a key once the service has accepted
+    it, and a copy asks nobody anything. A folder that somebody else put beside the app can therefore bring a
+    service and a key of its own, and drafts would then go to that service under that key. That is why the
+    page names the service and the model before the copy and again after it (``told``), and why a connection
+    this folder already has is never replaced (``_settings_to_carry``).
+
+    ``told`` is for the page and never holds any part of a key: ``{"provider", "model", "address", "key",
+    "other_keys", "not_carried", "keys_not_carried"}``. ``key``: a key for the named service comes along.
+    ``other_keys``: the other services a key comes along for. ``not_carried``: which of ``provider``,
+    ``model``, ``address``, ``key`` the other folder names in a form the app cannot use; those are left out.
+    ``keys_not_carried``: the other services whose key is left out.
+    """
+    not_carried: List[str] = []
+    provider = config.get("provider")
+    if not isinstance(provider, str) or provider not in store_module.PROVIDERS + (store_module.MANUAL_PROVIDER,):
+        if provider not in (None, ""):
+            not_carried.append("provider")
+        provider = ""
+    model = config.get("model")
+    if provider in store_module.PROVIDERS and isinstance(model, str) and model.strip():
+        try:
+            model = llm.validate_model_name(model, provider)
+        except llm.LLMError:
+            not_carried.append("model")
+            model = ""
+    else:
+        if provider in store_module.PROVIDERS and model not in (None, ""):
+            not_carried.append("model")
+        model = ""
+    address = config.get("local_base_url")
+    if isinstance(address, str) and address.strip():
+        try:
+            address = llm.normalize_local_base(address)
+        except llm.LLMError:
+            not_carried.append("address")
+            address = ""
+    else:
+        if address not in (None, ""):
+            not_carried.append("address")
+        address = ""
+    plain_there = config.get("keys") if isinstance(config.get("keys"), dict) else {}
+    sealed_there = config.get("keys_sealed") if isinstance(config.get("keys_sealed"), dict) else {}
+    plain: Dict[str, str] = {}
+    sealed: Dict[str, str] = {}
+    left_out: List[str] = []
+    for name in store_module.CLOUD_PROVIDERS:
+        if plain_there.get(name) not in (None, ""):                 # the plain one is the newer one: see Store
+            if _key_fits(plain_there[name]):
+                plain[name] = plain_there[name]
+            else:
+                left_out.append(name)
+        elif sealed_there.get(name) not in (None, ""):
+            token = sealed_there[name]
+            opened = keystore.unseal(token) if isinstance(token, str) and len(token) <= MAX_SEALED_CHARS else None
+            if _key_fits(opened):
+                sealed[name] = token
+            else:
+                left_out.append(name)
+    kept: Dict[str, Any] = {"provider": provider, "model": model, "local_base_url": address, "keys": plain}
+    if sealed:
+        kept["keys_sealed"] = sealed
+    carried = [name for name in store_module.CLOUD_PROVIDERS if name in plain or name in sealed]
+    told = {
+        "provider": provider,
+        "model": model,
+        "address": address if provider == "local" else "",
+        "key": provider in carried,
+        "other_keys": [name for name in carried if name != provider],
+        "not_carried": not_carried + (["key"] if provider in left_out else []),
+        "keys_not_carried": [name for name in left_out if name != provider],
+    }
+    return kept, told
+
+
+def _settings_to_carry(theirs: Optional[Dict[str, Any]], ours: Dict[str, Any]) -> Tuple[Dict[str, Any], Dict[str, Any]]:
+    """The settings a folder has after a copy from another one, and what the page is told about the AI connection.
+
+    ``theirs`` is what the other folder's ``config.json`` holds, or None when it has none that can be read;
+    ``ours`` is what the settings of the folder being filled hold now. Returns ``(settings, told)``.
+
+    Nothing of ``theirs`` is taken as it stands. A file from another folder is a file from outside: a backup
+    refuses to carry an AI connection at all for that reason. A copy carries one, because bringing the
+    creator's settings and keys to a new version is what it is for, and holds each part to what the app would
+    have stored itself:
+
+    - CARRIED_SETTINGS, each through its cleaner. What the page keeps is added to what it keeps here already.
+    - The AI connection (``_connection_named``), and only when this folder has none of its own: a connection
+      entered here before the copy stays as it is, whatever the other folder names.
+    - Of what is kept about updates: the two switches and the version that was skipped. What was last found,
+      and when, stays this folder's own.
+    - Any other name the other folder's settings hold is left out. What ``ours`` holds stays.
+
+    ``told`` is ``_connection_named``'s, with ``kept_own`` (this folder has a connection and keeps it; the
+    other folder's, if it names one, is not carried) and ``unreadable`` (there were no settings to read).
+    """
+    out = dict(ours)
+    told: Dict[str, Any] = {
+        "kept_own": False, "unreadable": theirs is None, "provider": "", "model": "", "address": "", "key": False,
+        "other_keys": [], "not_carried": [], "keys_not_carried": [],
+    }
+    theirs = theirs or {}
+    for name, clean in CARRIED_SETTINGS:
+        value = clean(theirs[name]) if name in theirs else None
+        if value is None:
+            continue
+        if name == "page" and isinstance(out.get(name), dict):
+            value = dict(out[name], **value)
+        out[name] = value
+    if _has_connection(ours):
+        told["kept_own"] = _has_connection(theirs)
+    else:
+        kept, named = _connection_named(theirs)
+        for name in _CONNECTION_NAMES:
+            out.pop(name, None)
+        out.update(kept)
+        told.update(named)
+    old_updates = theirs.get("updates") if isinstance(theirs.get("updates"), dict) else {}
+    cur_updates = ours.get("updates") if isinstance(ours.get("updates"), dict) else {}
     merged_updates: Dict[str, Any] = {}
     for key in ("auto_check", "include_prereleases"):
         if isinstance(old_updates.get(key), bool):
@@ -1333,7 +1542,7 @@ def _clean_migrated_config(src_cfg: Dict[str, Any], target_existing_cfg: Dict[st
         out["updates"] = merged_updates
     else:
         out.pop("updates", None)
-    return out
+    return out, told
 
 
 def _read_checked_json_dict(path: Path, label: str) -> Dict[str, Any]:
@@ -1353,21 +1562,34 @@ def _read_checked_json_dict(path: Path, label: str) -> Dict[str, Any]:
     return parsed
 
 
-def _stage_folder_migration(src_data: Path, work: Path, target_existing_cfg: Dict[str, Any]) -> Tuple[Store, List[str], Optional[bytes]]:
-    """Validate and stage ``src_data`` into ``work / 'new'`` using ``backup._rebuild`` and ``backup._try_out``."""
+def _stage_folder_migration(src_data: Path, work: Path, target_existing_cfg: Dict[str, Any]
+                            ) -> Tuple[Store, List[str], Optional[bytes], Dict[str, Any]]:
+    """Check ``src_data`` and lay out in ``work / 'new'`` what a copy of it puts in place.
+
+    Returns ``(the store on that folder, the names that are copied, the settings as the bytes of config.json
+    or None when the other folder has none that can be read, what the page is told about the AI connection)``.
+    """
     arrived = work / "in"
     new_dir = work / "new"
     arrived.mkdir(mode=0o700, parents=True)
     new_dir.mkdir(mode=0o700)
     copied: List[str] = []
 
-    # 1. Check and stage config.json (preserving sealed API keys & UI preferences).
+    # 1. The settings: what the other folder's config.json holds, each part held to what the app would have
+    # stored itself (_settings_to_carry). A link in its place is refused, like a link anywhere else in the
+    # folder. Settings that cannot be read are not carried, and the copy goes on with the data: the app itself
+    # starts with no settings when its own cannot be read.
     cfg_bytes: Optional[bytes] = None
     src_cfg = src_data / "config.json"
+    theirs: Optional[Dict[str, Any]] = None
     if os.path.lexists(str(src_cfg)):
-        parsed_cfg = _read_checked_json_dict(src_cfg, "config.json")
-        cleaned_cfg = _clean_migrated_config(parsed_cfg, target_existing_cfg)
-        cfg_bytes = Store._encode(cleaned_cfg)
+        if not backup._is_plain_file(src_cfg):
+            raise _bad_source_data_error("config.json is not a plain file", "config.json 不是普通文件")
+        theirs = _settings_at(src_cfg)
+    carried_settings, ai_told = _settings_to_carry(theirs, target_existing_cfg)
+    ai_told["unreadable"] = theirs is None and os.path.lexists(str(src_cfg))
+    if theirs is not None:
+        cfg_bytes = Store._encode(carried_settings)
         Store._write_bytes(new_dir / "config.json", cfg_bytes, mode=0o600)
         copied.append("config.json")
 
@@ -1448,7 +1670,7 @@ def _stage_folder_migration(src_data: Path, work: Path, target_existing_cfg: Dic
     if (new_dir / "config.json").is_file():
         cfg_bytes = (new_dir / "config.json").read_bytes()
 
-    return staged, copied, cfg_bytes
+    return staged, copied, cfg_bytes, ai_told
 
 
 MOVE_STEPS = (backup.DATABASE,) + tuple(backup.PLAIN_FILES) + (backup.HISTORY_FOLDER, "config.json")
@@ -1608,7 +1830,7 @@ def migrate_from_previous_folder(target_store: Store, source_app_dir: Path, *,
                 # Named so that ``Backups.recover`` knows the folder as one of its work folders (backup._WORK).
                 work = Path(tempfile.mkdtemp(dir=str(work_parent), prefix="work-migrate_"))
                 existing_cfg = target_store._read_raw_config_dict()
-                _staged, copied_files, cfg_bytes = _stage_folder_migration(src_data, work, existing_cfg)
+                _staged, copied_files, cfg_bytes, ai_told = _stage_folder_migration(src_data, work, existing_cfg)
                 old = work / "old"
                 had_settings = False
                 if backups is not None:
@@ -1696,6 +1918,8 @@ def migrate_from_previous_folder(target_store: Store, source_app_dir: Path, *,
             "scripts": script_count,
             "samples": sample_count,
             "settings": settings,
+            # What became of the AI connection, for the page to say: see _settings_to_carry.
+            "ai": ai_told,
         }
 
     if backups is None:

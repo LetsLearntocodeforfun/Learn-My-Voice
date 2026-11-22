@@ -30,6 +30,7 @@ import contextlib
 import errno
 import hashlib
 import http.client
+import http.server
 import importlib.util
 import io
 import itertools
@@ -52,7 +53,7 @@ import zipfile
 from pathlib import Path
 from unittest import mock
 
-from studio import backup, buildinfo, creator, mcp_server, outside, planner, server, updater
+from studio import backup, buildinfo, mcp_server, outside, pipeline, planner, server, updater
 from studio.store import ROOT, Store
 from tests import browser
 
@@ -303,7 +304,7 @@ class Case(unittest.TestCase):
         sib = self.tmp / ("learn-my-voice-%s" % version)
         sib_store = Store(sib / "data")
         sib_store.update_config(lambda c: (
-            c.update(provider="anthropic", model="claude-sonnet-4-5", trend_weight="heat"),
+            c.update(provider="anthropic", model="claude-sonnet-4-5", trend_weight="mine"),
             c["keys"].update(anthropic="sk-ant-migrated-secret"),
         ))
         sib_store.keep_for_page({"lang": "en", "theme": "dark", "accent": "green"})
@@ -996,16 +997,18 @@ class SiblingScanAndMigrationTest(ServerCase):
         self.store.create_script(title="已有脚本")
         self.app.update_checks = True
         self.app.update_transport = lambda m, u, h: b"[]"
-        with mock.patch.object(updater, "_safe_count_tables", wraps=updater._safe_count_tables) as spy:
+        with mock.patch.object(updater, "_safe_count_tables", wraps=updater._safe_count_tables) as spy, \
+                mock.patch.object(updater, "_settings_at", wraps=updater._settings_at) as settings_read:
             for path in ("/api/update", "/api/update?check=1", "/api/update?check=1&force=1"):
                 st, ans = self.send("GET", path)
                 self.assertEqual((st, ans["data_empty"], ans["previous_scanned"], ans["previous_versions"]), (200, False, False, []), path)
-            self.assertEqual(spy.call_count, 0)
+            # Neither a neighbour's database nor its settings were opened.
+            self.assertEqual((spy.call_count, settings_read.call_count), (0, 0))
             # Explicit ?scan=1 scans on demand and still reports data_empty=False.
             st_scan, ans_scan = self.send("GET", "/api/update?scan=1")
             self.assertEqual((st_scan, ans_scan["data_empty"], ans_scan["previous_scanned"]), (200, False, True))
             self.assertEqual(len(ans_scan["previous_versions"]), 1)
-            self.assertEqual(spy.call_count, 1)
+            self.assertEqual((spy.call_count, settings_read.call_count), (1, 1))
 
     def test_migrating_into_empty_folder_carries_data_keys_older_schema_and_never_copies_whisper(self):
         self.packaged("0.2.0")
@@ -1021,7 +1024,7 @@ class SiblingScanAndMigrationTest(ServerCase):
 
         cfg = self.store.load_config()
         self.assertEqual((cfg["provider"], cfg["model"], cfg["keys"]["anthropic"], cfg["trend_weight"]),
-                         ("anthropic", "claude-sonnet-4-5", "sk-ant-migrated-secret", "heat"))
+                         ("anthropic", "claude-sonnet-4-5", "sk-ant-migrated-secret", "mine"))
         self.assertEqual(self.store.load_page_keeps(), {"lang": "en", "theme": "dark", "accent": "green"})
         self.assertEqual(self.store.load_creator()["name"], "小林")
         dna, is_ex = self.store.load_dna()
@@ -1209,7 +1212,7 @@ class AllOrNothingTest(ServerCase):
         return [entry.name for entry in folder.iterdir() if entry.name.startswith("work-")] if folder.is_dir() else []
 
     def test_a_copy_that_fails_at_any_step_leaves_the_folder_as_it_was_and_can_be_tried_again(self):
-        self.store.update_config(lambda config: config.update(trend_weight="heat"))     # settings of its own, and no work
+        self.store.update_config(lambda config: config.update(trend_weight="mine"))     # settings of its own, and no work
         before = holds(self.store)
         self.assertEqual(updater.MOVE_STEPS[0], backup.DATABASE)
         for step in updater.MOVE_STEPS:
@@ -1316,6 +1319,191 @@ class AllOrNothingTest(ServerCase):
             with self.assertRaises(updater.UpdateError) as refused:
                 updater.migrate_from_previous_folder(target, self.sib)
         self.assertEqual((refused.exception.code, refused.exception.status), ("move_failed", 507))
+
+
+# ---------------------------------------------------------------------------------------------- 5c. the other folder's settings are a file from outside
+NOTHING_NAMED = {"kept_own": False, "unreadable": False, "provider": "", "model": "", "address": "", "key": False,
+                 "other_keys": [], "not_carried": [], "keys_not_carried": []}
+
+
+class SettingsFromOutsideTest(ServerCase):
+    """What a copy carries of another folder's ``config.json``, and what the page is told about it first.
+
+    A folder beside the app is the creator's own earlier one, or one somebody else put there. A copy carries
+    the settings and keys either way: that is what it is for. So each part is held to what the app would have
+    stored itself, the AI service and model are named before and after, and no part of a key is ever sent to
+    the page.
+    """
+
+    def setUp(self):
+        super().setUp()
+        self.packaged("0.2.0")
+
+    def beside(self, version, settings, script="旧版脚本"):
+        """A folder of an earlier version beside the app's, with one script and ``settings`` as its config.json."""
+        folder = self.tmp / ("learn-my-voice-%s" % version)
+        Store(folder / "data").create_script(title=script)
+        held = settings if isinstance(settings, bytes) else json.dumps(settings, ensure_ascii=False).encode("utf-8")
+        (folder / "data" / "config.json").write_bytes(held)
+        return folder
+
+    def listed(self):
+        status, answer = self.send("GET", "/api/update")
+        self.assertEqual((status, answer["previous_scanned"]), (200, True))
+        return answer
+
+    def copy(self, folder):
+        status, answer = self.send("POST", "/api/update/migrate", {"source_path": str(folder)})
+        self.assertEqual(status, 200, answer)
+        return answer
+
+    def stored(self):
+        return json.loads(self.store.config_path.read_text(encoding="utf-8"))
+
+    def test_a_service_and_key_another_folder_brings_are_named_before_the_copy_and_after_and_no_key_is_shown(self):
+        folder = self.beside("0.1.0", {"provider": "openai", "model": "gpt-planted", "keys": {"openai": "sk-planted-key-123"}})
+        named = dict(NOTHING_NAMED, provider="openai", model="gpt-planted", key=True)
+        before = self.listed()
+        self.assertEqual([entry["ai"] for entry in before["previous_versions"]], [named])
+        self.assertNotIn("sk-planted", json.dumps(before))
+        after = self.copy(folder)
+        self.assertEqual(after["ai"], named)
+        self.assertNotIn("sk-planted", json.dumps(after))
+        # It is carried, as the creator's own would be: the key sealed, as every key in this folder is.
+        config = self.store.load_config()
+        self.assertEqual((config["provider"], config["model"], config["keys"]), ("openai", "gpt-planted", {"openai": "sk-planted-key-123"}))
+        self.assertNotIn("sk-planted", self.store.config_path.read_text(encoding="utf-8"))
+        # And where a draft would go is then the service the page named, under that key (a stand-in takes it).
+        sent = []
+        pipeline.complete(self.store, "system", "user", transport=lambda method, url, headers, body: (
+            sent.append((url, headers)), {"choices": [{"message": {"content": "{}"}}]})[1])
+        self.assertEqual(sent, [("https://api.openai.com/v1/chat/completions", {"Authorization": "Bearer sk-planted-key-123"})])
+
+    def test_what_the_app_would_not_have_stored_itself_is_left_out_and_said(self):
+        hostile = {
+            "provider": "evil-service", "model": "x\ny", "local_base_url": "https://collect.example/v1",
+            "keys": {"openai": "sk with a space", "gemini": "g" * 600, "anthropic": "ok-key", "evil": "k"},
+            "keys_sealed": {"openai": "v1:not-sealed-here", "evil": "v1:x"},
+            "trend_weight": "heat", "wordlist": {"off": ["x" * 500, 7], "phrases": ["\u4e00" * 500]},
+            "page": {"lang": "en", "theme": "<script>", "evil": "1", "tp-pace": "12"},
+            "updates": {"auto_check": False, "dismissed_version": "<b>", "cached": {"version": "99.0.0"}, "last_checked_at": 1},
+            "another_setting": {"url": "https://collect.example"}, "autopilot": {"on": True},
+        }
+        folder = self.beside("0.1.0", hostile)
+        named = dict(NOTHING_NAMED, other_keys=["anthropic"], not_carried=["provider", "address"], keys_not_carried=["gemini", "openai"])
+        self.assertEqual(self.listed()["previous_versions"][0]["ai"], named)
+        self.assertEqual(self.copy(folder)["ai"], named)
+        written = self.store.config_path.read_text(encoding="utf-8")
+        for planted in ("collect.example", "another_setting", "autopilot", "evil", "sk with", "ggggg", "not-sealed-here", "heat",
+                        "script", "99.0.0", "xxxxx"):
+            self.assertNotIn(planted, written, planted)
+        config = self.store.load_config()
+        self.assertEqual((config["provider"], config["model"], config["local_base_url"], config["keys"], config["trend_weight"]),
+                         ("", "", "", {"anthropic": "ok-key"}, "balanced"))
+        self.assertNotIn("wordlist", config)
+        self.assertEqual(self.store.load_page_keeps(), {"lang": "en", "tp-pace": "12"})
+        self.assertEqual(updater._stored_settings(self.store)["auto_check"], False)       # a switch of the creator's: carried
+        self.assertEqual(updater._stored_settings(self.store)["dismissed_version"], "")
+        self.assertEqual(sorted(name for name in self.stored() if name not in ("provider", "model", "local_base_url", "keys",
+                                                                              "keys_sealed", "trend_weight", "page", "updates")), [])
+
+    def test_each_part_of_a_connection_is_held_to_the_check_settings_makes(self):
+        ours = {}
+        for theirs, expected in (
+            ({"provider": "gemini", "model": "a/b?c", "keys": {"gemini": "k1"}},
+             dict(NOTHING_NAMED, provider="gemini", key=True, not_carried=["model"])),
+            ({"provider": "openai", "model": "gpt-x", "keys_sealed": {"openai": "v1:sealed-on-another-computer"}},
+             dict(NOTHING_NAMED, provider="openai", model="gpt-x", not_carried=["key"])),
+            ({"provider": "local", "model": "Llama 3 8B", "local_base_url": "http://127.0.0.1:11434/v1/"},
+             dict(NOTHING_NAMED, provider="local", model="Llama 3 8B", address="http://127.0.0.1:11434/v1")),
+            ({"provider": "local", "model": "m", "local_base_url": "http://192.168.1.20:11434/v1"},
+             dict(NOTHING_NAMED, provider="local", model="m", not_carried=["address"])),
+            ({"provider": "local", "model": "m", "local_base_url": "http://localhost.collect.example/v1"},
+             dict(NOTHING_NAMED, provider="local", model="m", not_carried=["address"])),
+            ({"provider": "manual", "model": "ignored"}, dict(NOTHING_NAMED, provider="manual")),
+            ({"provider": ["openai"], "model": 7, "local_base_url": {"a": 1}, "keys": "all of them", "keys_sealed": [1]},
+             dict(NOTHING_NAMED, not_carried=["provider", "address"])),
+            ({"provider": "anthropic", "model": "claude-x", "keys": {"anthropic": "k-a", "openai": "k-o", "gemini": ""}},
+             dict(NOTHING_NAMED, provider="anthropic", model="claude-x", key=True, other_keys=["openai"])),
+            ({}, NOTHING_NAMED),
+        ):
+            settings, told = updater._settings_to_carry(theirs, ours)
+            self.assertEqual(told, expected, theirs)
+            if "address" in expected["not_carried"]:
+                self.assertEqual(settings["local_base_url"], "", theirs)
+            if "model" in expected["not_carried"]:
+                self.assertEqual(settings["model"], "", theirs)
+        # A key sealed in this folder's own way, on this computer, opens here and is carried as it is.
+        mine = Store(self.tmp / "learn-my-voice-0.1.5" / "data")
+        mine.update_config(lambda config: (config.update(provider="gemini", model="gemini-x"), config["keys"].update(gemini="sealed-here")))
+        theirs = json.loads(mine.config_path.read_text(encoding="utf-8"))
+        self.assertEqual((theirs["keys"], sorted(theirs["keys_sealed"])), ({}, ["gemini"]))
+        settings, told = updater._settings_to_carry(theirs, ours)
+        self.assertEqual((told, settings["keys_sealed"]), (dict(NOTHING_NAMED, provider="gemini", model="gemini-x", key=True), theirs["keys_sealed"]))
+
+    def test_an_ai_connection_entered_here_first_is_kept(self):
+        self.store.update_config(lambda config: (config.update(provider="gemini", model="gemini-mine"),
+                                                 config["keys"].update(gemini="my-own-key")))
+        own = dict(self.store.load_config())
+        folder = self.beside("0.1.0", {"provider": "openai", "model": "gpt-planted", "keys": {"openai": "sk-planted-key-123"},
+                                       "trend_weight": "mine", "local_base_url": "http://127.0.0.1:9/v1"})
+        kept = dict(NOTHING_NAMED, kept_own=True)
+        before = self.listed()
+        self.assertTrue(before["data_empty"])                               # settings are not work: the copy is still offered
+        self.assertEqual(before["previous_versions"][0]["ai"], kept)
+        self.assertNotIn("gpt-planted", json.dumps(before))
+        after = self.copy(folder)
+        self.assertEqual(after["ai"], kept)
+        config = self.store.load_config()
+        for name in ("provider", "model", "keys", "local_base_url"):
+            self.assertEqual(config[name], own[name], name)
+        self.assertEqual(config["trend_weight"], "mine")                    # the rest of the settings came along
+        self.assertEqual([script["title"] for script in self.store.list_scripts()], ["旧版脚本"])
+        written = self.store.config_path.read_text(encoding="utf-8")
+        self.assertNotIn("planted", written)
+        # A key alone, or the address of a model server alone, is a connection too.
+        for ours in ({"keys": {"openai": "k"}}, {"keys_sealed": {"gemini": "v1:x"}}, {"local_base_url": "http://127.0.0.1:1/v1"},
+                     {"provider": "manual"}):
+            settings, told = updater._settings_to_carry({"provider": "openai", "model": "gpt-planted", "keys": {"openai": "theirs"}}, ours)
+            self.assertEqual((told, {name: settings.get(name) for name in ours}), (kept, ours), ours)
+            self.assertNotIn("theirs", json.dumps(settings))
+        # And where the other folder names none, there is nothing to say.
+        self.assertEqual(updater._settings_to_carry({"trend_weight": "trend"}, {"provider": "manual"})[1], NOTHING_NAMED)
+
+    def test_settings_that_cannot_be_read_are_not_carried_and_the_data_is(self):
+        self.store.update_config(lambda config: config.update(trend_weight="trend"))
+        own = self.store.config_path.read_bytes()
+        unread = dict(NOTHING_NAMED, unreadable=True)
+        with mock.patch.object(updater, "MAX_SETTINGS_BYTES", 2000):
+            for number, held in enumerate((b"{cut short", b"\xff\xfe not text", b"[1, 2, 3]", b'"words"', b"", b"[" * 5000,
+                                           json.dumps({"provider": "openai", "pad": "x" * 3000}).encode("utf-8"))):
+                target = Store(self.tmp / ("into-%d" % number) / "learn-my-voice-0.2.0" / "data")
+                target.config_path.write_bytes(own)
+                folder = self.tmp / ("into-%d" % number) / "learn-my-voice-0.1.0"
+                Store(folder / "data").create_script(title="旧版脚本")
+                (folder / "data" / "config.json").write_bytes(held)
+                self.assertEqual(updater.discover_previous_installations(target, explicit=True)[0]["ai"], unread, held[:20])
+                answer = updater.migrate_from_previous_folder(target, folder, backups=backup.Backups(target))
+                self.assertEqual((answer["ai"], answer["scripts"], "config.json" in answer["copied"]), (unread, 1, False), held[:20])
+                self.assertEqual(target.config_path.read_bytes(), own, held[:20])
+        # A number no JSON has, which a version before 0.2.0 could store, is read as the app reads it.
+        folder = self.beside("0.1.0", b'{"provider": "manual", "trend_weight": "mine", "score": NaN}')
+        self.assertEqual(self.copy(folder)["ai"], dict(NOTHING_NAMED, provider="manual"))
+        self.assertEqual((self.store.load_config()["provider"], self.store.load_config()["trend_weight"]), ("manual", "mine"))
+        # A folder with no settings at all has nothing unreadable about it.
+        bare = self.tmp / "bare" / "learn-my-voice-0.1.0"
+        Store(bare / "data").create_script(title="x")
+        into = Store(self.tmp / "bare" / "learn-my-voice-0.2.0" / "data")
+        self.assertIsNone(updater.discover_previous_installations(into, explicit=True)[0]["ai"])
+        self.assertEqual(updater.migrate_from_previous_folder(into, bare)["ai"], NOTHING_NAMED)
+
+    def test_one_more_name_with_its_cleaner_is_one_more_line(self):
+        self.assertEqual([name for name, _ in updater.CARRIED_SETTINGS], ["trend_weight", "wordlist", "page"])
+        more = updater.CARRIED_SETTINGS + (("autopilot", lambda value: {"on": True} if isinstance(value, dict) and value.get("on") is True else None),)
+        with mock.patch.object(updater, "CARRIED_SETTINGS", more):
+            self.assertEqual(updater._settings_to_carry({"autopilot": {"on": True, "url": "https://collect.example"}}, {})[0]["autopilot"], {"on": True})
+            self.assertNotIn("autopilot", updater._settings_to_carry({"autopilot": "yes"}, {})[0])
+        self.assertNotIn("autopilot", updater._settings_to_carry({"autopilot": {"on": True}}, {})[0])
 
 
 # ---------------------------------------------------------------------------------------------- 6. U3 & U5: bounded apply-zip, never into an existing folder
@@ -1558,7 +1746,7 @@ class PlainFailuresTest(ServerCase):
         super().setUp()
         self.packaged("0.2.0-beta")
         self.store.create_script(title="Mine")
-        self.store.update_config(lambda config: config.update(trend_weight="heat"))
+        self.store.update_config(lambda config: config.update(trend_weight="mine"))
         self.before = holds(self.store)
 
     def unpack(self, version, entries=None):
@@ -1793,6 +1981,83 @@ class PageOffTest(Case):
                         self.assertFalse(page.eval_js("Boolean(document.getElementById(%s))" % json.dumps(gone)), (lang, gone))
                     self.assertEqual(page.problems, [], lang)
         self.assertEqual(self.asked, [])
+
+
+@unittest.skipUnless(browser.AVAILABLE, browser.WHY_NOT)
+class PageNamesTheConnectionTest(Case):
+    """Before a copy from another folder and after it, the page says which AI service and model come with it."""
+
+    PLANTED = {"provider": "openai", "model": "<b>gpt</b>", "local_base_url": "https://collect.example/v1",
+               "keys": {"openai": "sk-planted-key-123", "gemini": "g-planted-456"}}
+
+    def two_folders(self, name, settings):
+        """An empty folder the app runs in, and beside it an earlier one with a script and ``settings``."""
+        store = Store(self.tmp / name / "learn-my-voice-0.2.0" / "data")
+        folder = self.tmp / name / "learn-my-voice-0.1.0"
+        Store(folder / "data").create_script(title="旧版脚本")
+        (folder / "data" / "config.json").write_text(json.dumps(settings), encoding="utf-8")
+        return store
+
+    def test_the_service_and_model_are_named_before_the_copy_and_after_it_and_never_a_key(self):
+        self.packaged("0.2.0")
+        said_before = {"en": ("Its AI connection comes along", "OpenAI (model: <b>gpt</b>), with its key",
+                              "Keys for Google Gemini come along as well", "the address of a model server"),
+                       "zh": ("AI 连接会一起带过来", "OpenAI（模型：<b>gpt</b>），带着密钥", "Google Gemini 的密钥也会一起带过来",
+                              "模型服务器的地址")}
+        said_after = {"en": ("came from that folder", "OpenAI (model: <b>gpt</b>), with its key", "change it in Settings",
+                             "Keys for Google Gemini came along as well"),
+                      "zh": ("来自那个文件夹", "OpenAI（模型：<b>gpt</b>），带着密钥", "请到「设置」里改掉", "Google Gemini 的密钥也一起带过来了")}
+        with mock.patch.object(updater, "_default_transport", self.never), loopback_only() as blocked:
+            for lang, theme in (("en", "light"), ("zh", "dark")):
+                store = self.two_folders(lang, self.PLANTED)
+                with browser.open_app(store, lang=lang, theme=theme) as page:
+                    page.go("#/", "Boolean(document.getElementById('up-prev-ai'))")
+                    before = page.eval_js("document.getElementById('up-prev-ai').textContent")
+                    for words in said_before[lang]:
+                        self.assertIn(words, before, lang)
+                    # What the other folder names is text on the page, never markup of it.
+                    self.assertEqual(page.eval_js("document.querySelectorAll('#up-prev-banner b').length"), 0, lang)
+                    self.assertNotIn("planted", page.eval_js("document.documentElement.outerHTML"), lang)
+                    # The same is said in Settings, under the folder the copy is offered from.
+                    page.go("#/settings", "Boolean(document.querySelector('#up-prev-section [data-up-ai]'))")
+                    self.assertEqual(page.eval_js("document.querySelector('#up-prev-section [data-up-ai]').textContent"), before, lang)
+                    page.eval_js("document.querySelector('#up-prev-section [data-up-migrate]').click()")
+                    page.wait_for("Boolean(document.getElementById('up-moved-ai'))")
+                    after = page.eval_js("document.getElementById('up-moved-banner').textContent")
+                    for words in said_after[lang] + ("learn-my-voice-0.1.0",):
+                        self.assertIn(words, after, lang)
+                    self.assertEqual(page.eval_js("document.querySelectorAll('#up-moved-banner b').length"), 0, lang)
+                    self.assertNotIn("planted", page.eval_js("document.documentElement.outerHTML"), lang)
+                    self.assertEqual(store.load_config()["provider"], "openai")
+                    # The notice stays on other pages until it is closed.
+                    page.go("#/trends", "Boolean(document.getElementById('up-moved-banner'))")
+                    page.eval_js("document.getElementById('up-moved-ok').click()")
+                    page.wait_for("!document.getElementById('up-moved-banner')")
+                    self.assertEqual(page.problems, [], lang)
+        self.assertEqual((blocked, self.asked), ([], []))
+
+    def test_a_connection_entered_here_first_is_said_to_stay_and_stays(self):
+        self.packaged("0.2.0")
+        store = self.two_folders("own", self.PLANTED)
+        store.update_config(lambda config: (config.update(provider="gemini", model="gemini-mine"),
+                                            config["keys"].update(gemini="my-own-key")))
+        with mock.patch.object(updater, "_default_transport", self.never), loopback_only() as blocked:
+            with browser.open_app(store, lang="en") as page:
+                page.go("#/", "Boolean(document.getElementById('up-prev-ai'))")
+                before = page.eval_js("document.getElementById('up-prev-ai').textContent")
+                self.assertEqual(before, "This folder already has an AI connection of its own. It stays as it is; "
+                                         "the other folder's is not copied.")
+                page.eval_js("document.querySelector('#up-prev-banner [data-up-migrate]').click()")
+                page.wait_for("Boolean(document.getElementById('up-moved-ai'))")
+                self.assertEqual(page.eval_js("document.getElementById('up-moved-ai').textContent"),
+                                 "The AI connection this folder already had was kept. The other folder's was not copied.")
+                html = page.eval_js("document.documentElement.outerHTML")
+                for hidden in ("planted", "my-own-key", "<b>gpt</b>", "&lt;b&gt;gpt"):
+                    self.assertNotIn(hidden, html, hidden)
+                self.assertEqual(page.problems, [])
+        config = store.load_config()
+        self.assertEqual((config["provider"], config["model"], config["keys"]), ("gemini", "gemini-mine", {"gemini": "my-own-key"}))
+        self.assertEqual((blocked, self.asked), ([], []))
 
 
 @unittest.skipUnless(browser.AVAILABLE, browser.WHY_NOT)
