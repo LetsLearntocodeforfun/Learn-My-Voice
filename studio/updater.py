@@ -507,13 +507,6 @@ def _read_bounded_bytes(method: str, url: str, headers: Dict[str, str], *,
         return b"".join(chunks)
 
 
-def _default_transport(method: str, url: str, headers: Dict[str, str]) -> bytes:
-    """Default small-response reader; kept as the single module-level network hook tests may patch."""
-    is_api = _validate_request_url(url)
-    limit = MAX_RELEASES_JSON_BYTES if is_api else MAX_ASSET_BYTES
-    return _read_bounded_bytes(method, url, headers, max_bytes=limit, transport=None)
-
-
 # ---- sanitizing release metadata from GitHub or disk ------------------------
 
 def _clean_notes(raw: Any) -> str:
@@ -732,11 +725,7 @@ def check_for_updates(store: Store, *, checks_on: bool = False, force: bool = Fa
             "X-GitHub-Api-Version": "2022-11-28",
         }
         try:
-            if transport is None:
-                raw_bytes = _default_transport("GET", url, headers)
-            else:
-                raw_bytes = _read_bounded_bytes("GET", url, headers,
-                                                max_bytes=MAX_RELEASES_JSON_BYTES, transport=transport)
+            raw_bytes = _read_bounded_bytes("GET", url, headers, max_bytes=MAX_RELEASES_JSON_BYTES, transport=transport)
             parsed_json = llm.loads_strict(raw_bytes.decode("utf-8"))
             latest = _pick_best_release(
                 parsed_json,
@@ -979,28 +968,18 @@ def _stream_to_destination(url: str, headers: Dict[str, str], asset_name: str, e
         try:
             with os.fdopen(fd, "wb") as handle:
                 fd = None
-                if transport is None and _default_transport is not _ORIG_DEFAULT_TRANSPORT:
-                    # A test patched updater._default_transport directly (e.g. to assert nothing is called).
-                    data = _default_transport("GET", url, headers)
-                    if len(data) > MAX_ASSET_BYTES:
-                        raise UpdateError("too_large", "Update response exceeded the size limit.",
-                                          "下载的数据超过了大小上限。", 502)
-                    hasher.update(data)
-                    handle.write(data)
-                    total = len(data)
-                else:
-                    with _open_stream("GET", url, headers, max_bytes=MAX_ASSET_BYTES, transport=transport) as chunks:
-                        for chunk in chunks:
-                            if not chunk:
-                                continue
-                            total += len(chunk)
-                            if total > MAX_ASSET_BYTES:
-                                raise UpdateError("too_large", "Downloaded file exceeded the %d MB size limit."
-                                                  % (MAX_ASSET_BYTES // (1024 * 1024)),
-                                                  "下载的安装包超过了 %d MB 的大小上限。"
-                                                  % (MAX_ASSET_BYTES // (1024 * 1024)), 502)
-                            hasher.update(chunk)
-                            handle.write(chunk)
+                with _open_stream("GET", url, headers, max_bytes=MAX_ASSET_BYTES, transport=transport) as chunks:
+                    for chunk in chunks:
+                        if not chunk:
+                            continue
+                        total += len(chunk)
+                        if total > MAX_ASSET_BYTES:
+                            raise UpdateError("too_large", "Downloaded file exceeded the %d MB size limit."
+                                              % (MAX_ASSET_BYTES // (1024 * 1024)),
+                                              "下载的安装包超过了 %d MB 的大小上限。"
+                                              % (MAX_ASSET_BYTES // (1024 * 1024)), 502)
+                        hasher.update(chunk)
+                        handle.write(chunk)
                 handle.flush()
                 os.fsync(handle.fileno())
         except OSError as exc:
@@ -1040,9 +1019,6 @@ def _stream_to_destination(url: str, headers: Dict[str, str], asset_name: str, e
                 pass
         if part_path is not None and os.path.lexists(str(part_path)):
             backup._remove(part_path)
-
-
-_ORIG_DEFAULT_TRANSPORT = _default_transport
 
 
 @_refusing("save_failed", "The download could not be saved: %s.", "下载的文件没能保存：%s。")
@@ -1110,11 +1086,7 @@ def download_release_asset(store: Store, outside_mod: Any, *, checks_on: bool = 
     headers = {"User-Agent": "learn-my-voice-updater", "Accept": "application/octet-stream"}
     if on_progress:
         on_progress("verifying_checksum")
-    if transport is None and _default_transport is not _ORIG_DEFAULT_TRANSPORT:
-        raw_sum = _default_transport("GET", checksum_asset["url"], headers)
-    else:
-        raw_sum = _read_bounded_bytes("GET", checksum_asset["url"], headers,
-                                      max_bytes=MAX_CHECKSUM_BYTES, transport=transport)
+    raw_sum = _read_bounded_bytes("GET", checksum_asset["url"], headers, max_bytes=MAX_CHECKSUM_BYTES, transport=transport)
     expected_sha256 = _parse_sha256_sidecar(raw_sum, wanted_name)
     if expected_sha256 is None:
         raise UpdateError(

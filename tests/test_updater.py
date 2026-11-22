@@ -817,7 +817,7 @@ class VersionAndHardeningTest(ServerCase):
         with loopback_only() as blocked:
             for bad_url in ("http://api.github.com/repos/x/y/releases", "https://evil.example/a.zip"):
                 with self.assertRaises(updater.UpdateError) as ctx:
-                    updater._default_transport("GET", bad_url, {})
+                    updater._read_bounded_bytes("GET", bad_url, {}, max_bytes=1024)
                 self.assertEqual(ctx.exception.code, "bad_url")
             self.assertEqual(blocked, [])
 
@@ -830,7 +830,7 @@ class VersionAndHardeningTest(ServerCase):
             proxy_url = "http://127.0.0.1:%d" % proxy_srv.server_address[1]
             with mock.patch.dict(os.environ, {"HTTPS_PROXY": proxy_url, "HTTP_PROXY": proxy_url}):
                 with self.assertRaises(updater.UpdateError) as net_err:
-                    updater._default_transport("GET", "https://api.github.com/repos/%s/releases" % REPO, {})
+                    updater._read_bounded_bytes("GET", "https://api.github.com/repos/%s/releases" % REPO, {}, max_bytes=1024)
                 self.assertEqual(net_err.exception.code, "update_network_error")
             self.assertEqual(proxy_hits, [])
             self.assertEqual(blocked, [("lookup", "api.github.com")])
@@ -2105,7 +2105,7 @@ class PageNamesTheConnectionTest(Case):
         said_after = {"en": ("came from that folder", "OpenAI (model: <b>gpt</b>), with its key", "change it in Settings",
                              "Keys for Google Gemini came along as well"),
                       "zh": ("来自那个文件夹", "OpenAI（模型：<b>gpt</b>），带着密钥", "请到「设置」里改掉", "Google Gemini 的密钥也一起带过来了")}
-        with mock.patch.object(updater, "_default_transport", self.never), loopback_only() as blocked:
+        with loopback_only() as blocked:
             for lang, theme in (("en", "light"), ("zh", "dark")):
                 store = self.two_folders(lang, self.PLANTED)
                 with browser.open_app(store, lang=lang, theme=theme) as page:
@@ -2132,14 +2132,14 @@ class PageNamesTheConnectionTest(Case):
                     page.eval_js("document.getElementById('up-moved-ok').click()")
                     page.wait_for("!document.getElementById('up-moved-banner')")
                     self.assertEqual(page.problems, [], lang)
-        self.assertEqual((blocked, self.asked), ([], []))
+        self.assertEqual(blocked, [])
 
     def test_a_connection_entered_here_first_is_said_to_stay_and_stays(self):
         self.packaged("0.2.0")
         store = self.two_folders("own", self.PLANTED)
         store.update_config(lambda config: (config.update(provider="gemini", model="gemini-mine"),
                                             config["keys"].update(gemini="my-own-key")))
-        with mock.patch.object(updater, "_default_transport", self.never), loopback_only() as blocked:
+        with loopback_only() as blocked:
             with browser.open_app(store, lang="en") as page:
                 page.go("#/", "Boolean(document.getElementById('up-prev-ai'))")
                 before = page.eval_js("document.getElementById('up-prev-ai').textContent")
@@ -2155,7 +2155,7 @@ class PageNamesTheConnectionTest(Case):
                 self.assertEqual(page.problems, [])
         config = store.load_config()
         self.assertEqual((config["provider"], config["model"], config["keys"]), ("gemini", "gemini-mine", {"gemini": "my-own-key"}))
-        self.assertEqual((blocked, self.asked), ([], []))
+        self.assertEqual(blocked, [])
 
 
 @unittest.skipUnless(browser.AVAILABLE, browser.WHY_NOT)
