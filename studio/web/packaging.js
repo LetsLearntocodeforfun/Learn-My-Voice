@@ -458,7 +458,10 @@ function pkPaintLab() {
   const configured = appState && appState.settings && appState.settings.configured;
   const isManual = appState && appState.settings && appState.settings.manual;
 
-  const titlesHtml = post.title_options.map((opt, i) => {
+  const shownTitles = post.title_options.length
+    ? post.title_options
+    : [{ title_zh: '', title_en: '', angle: '', hook_logic: '' }];
+  const titlesHtml = shownTitles.map((opt, i) => {
     const tc = titleChecks[i] || null;
     const wInfo = pkTitleBadgeInfo(opt.title_zh);
     const flagCount = tc ? (tc.error_count + tc.review_count) : 0;
@@ -468,7 +471,7 @@ function pkPaintLab() {
     return `<div class="pk-title-row ${selected ? 'selected' : ''}" data-pk-title-row="${i}">
       <button type="button" class="pk-star ${selected ? 'on' : ''}" data-pk-star="${i}" aria-label="${esc(t('pk_star_aria'))}" aria-pressed="${selected ? 'true' : 'false'}">${selected ? '★' : '☆'}</button>
       <div class="pk-title-main">
-        <input type="text" data-pk-title-input="${i}" value="${esc(opt.title_zh)}" placeholder="${esc(t('pk_title_ph'))}">
+        <input type="text" data-pk-title-input="${i}" data-post-kind="title" data-post-idx="${i}" value="${esc(opt.title_zh)}" placeholder="${esc(t('pk_title_ph'))}">
         <div class="pk-title-meta">
           <span class="tag ${wInfo.cls}" data-pk-title-units="${i}">${esc(tf('pk_units_lbl', { u: wInfo.units }) + ' · ' + wInfo.label)}</span>
           ${angleTxt ? `<span class="tag">${esc(angleTxt)}</span>` : ''}
@@ -579,7 +582,7 @@ function pkPaintLab() {
           <div class="pk-cover-inputs">
             <div>
               <label class="hint" for="pk-cover-text">${esc(t('pk_cover_main_lbl'))}</label>
-              <input type="text" id="pk-cover-text" value="${esc(post.cover_text_zh)}" placeholder="${esc(t('pk_cover_main_ph'))}">
+              <input type="text" id="pk-cover-text" data-post-kind="cover" data-post-idx="0" value="${esc(post.cover_text_zh)}" placeholder="${esc(t('pk_cover_main_ph'))}">
             </div>
             <div>
               <label class="hint" for="pk-cover-sub">${esc(t('pk_cover_sub_lbl'))}</label>
@@ -594,7 +597,7 @@ function pkPaintLab() {
             <span class="spacer"></span>
             <button type="button" class="btn ghost" data-pk-copy-id="pk-body">${esc(t('post_copy'))}</button>
           </div>
-          <textarea id="pk-body" rows="3" placeholder="${esc(t('pk_body_ph'))}">${esc(post.body_zh)}</textarea>
+          <textarea id="pk-body" data-post-kind="body" data-post-idx="0" rows="3" placeholder="${esc(t('pk_body_ph'))}">${esc(post.body_zh)}</textarea>
         </div>
 
         <div class="pk-sec">
@@ -603,7 +606,7 @@ function pkPaintLab() {
             <span class="spacer"></span>
             <button type="button" class="btn ghost" data-pk-copy-id="pk-hashtags">${esc(t('post_copy'))}</button>
           </div>
-          <input type="text" id="pk-hashtags" value="${esc(post.hashtags.join(' '))}" placeholder="${esc(t('pk_tags_ph'))}">
+          <input type="text" id="pk-hashtags" data-post-kind="hashtags" data-post-idx="0" value="${esc(post.hashtags.join(' '))}" placeholder="${esc(t('pk_tags_ph'))}">
         </div>
 
         <div class="pk-sec">
@@ -681,14 +684,15 @@ function pkPaintLab() {
 
     if (target.dataset.pkTitleInput !== undefined) {
       const idx = Number(target.dataset.pkTitleInput);
-      if (local.title_options[idx]) {
-        local.title_options[idx].title_zh = target.value;
-        const badgeEl = el.querySelector(`[data-pk-title-units="${idx}"]`);
-        if (badgeEl) {
-          const info = pkTitleBadgeInfo(target.value);
-          badgeEl.className = 'tag ' + info.cls;
-          badgeEl.textContent = tf('pk_units_lbl', { u: info.units }) + ' · ' + info.label;
-        }
+      while (local.title_options.length <= idx) {
+        local.title_options.push({ title_zh: '', title_en: '', angle: '', hook_logic: '' });
+      }
+      local.title_options[idx].title_zh = target.value;
+      const badgeEl = el.querySelector(`[data-pk-title-units="${idx}"]`);
+      if (badgeEl) {
+        const info = pkTitleBadgeInfo(target.value);
+        badgeEl.className = 'tag ' + info.cls;
+        badgeEl.textContent = tf('pk_units_lbl', { u: info.units }) + ' · ' + info.label;
       }
     } else if (target.id === 'pk-cover-text') {
       local.cover_text_zh = target.value;
@@ -709,15 +713,7 @@ function pkPaintLab() {
       hashtags_zh: local.hashtags,
     });
     pkUpdateLiveSimulator();
-    pkSchedulePatch(() => ({
-      title_options: local.title_options,
-      selected_title_idx: local.selected_title_idx,
-      cover_text_zh: local.cover_text_zh,
-      cover_sub_zh: local.cover_sub_zh,
-      body_zh: local.body_zh,
-      hashtags: local.hashtags,
-      pinned_comment_zh: local.pinned_comment_zh,
-    }));
+    scheduleSave();
   };
 
   el.onclick = async (e) => {
@@ -769,7 +765,8 @@ async function pkLoadForScript(scriptId) {
     if (seq !== pkUi.seq || !cur || cur.script.id !== scriptId) return;
     pkUi.data = data;
     pkPaintReadiness();
-    pkPaintLab();
+    const el = document.getElementById('post-box');
+    if (!el || !el.contains(document.activeElement)) pkPaintLab();
   } catch (err) {
     /* Optional panel refresh; ignore transient navigation cancels */
   }
