@@ -1659,10 +1659,14 @@ def unpack_and_migrate_zip(current_store: Store, zip_path: Path, *,
             for _ in range(32):
                 candidate = parent / (".%s.unpacking-%s" % (top_folder, uuid.uuid4().hex[:8]))
                 try:
+                    # Owner-only while it is being filled, as tempfile.mkdtemp made it. On Windows no mode is
+                    # passed: from Python 3.12.4 a 0o700 mkdir sets an owner-only ACL there. Whether that ACL or
+                    # a database handle not yet closed refused the rename on the 3.14/3.15 runners was not
+                    # isolated; both were changed together.
                     if os.name == "nt":
                         os.mkdir(str(candidate))
                     else:
-                        os.mkdir(str(candidate), 0o755)
+                        os.mkdir(str(candidate), 0o700)
                     staging_dir = candidate
                     break
                 except FileExistsError:

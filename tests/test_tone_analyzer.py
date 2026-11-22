@@ -585,7 +585,9 @@ class BrowserToneTest(Folder):
 
             # Switch language to English and verify open state survives redraw and renders English text cleanly.
             page.eval_js("document.getElementById('lang-btn').click()")
-            page.wait_for("document.documentElement.lang === 'en' && Boolean(document.getElementById('tone-cmp-card'))")
+            # The language is set before the editor is drawn again: wait for the card as redrawn, not the one left over.
+            page.wait_for("document.documentElement.lang === 'en' && Boolean(document.getElementById('tone-cmp-card'))"
+                          " && document.getElementById('tone-cmp-card').innerText.includes('Tone & wording counts')")
             self.assertTrue(page.eval_js("document.getElementById('tone-cmp-details').open"))
             cmp_text_en = page.eval_js("document.getElementById('tone-cmp-card').innerText")
             self.assertIn("Tone & wording counts", cmp_text_en)
