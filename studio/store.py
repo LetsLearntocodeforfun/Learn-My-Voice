@@ -360,6 +360,21 @@ CREATE TABLE IF NOT EXISTS sponsor_briefs (
     created_at REAL NOT NULL,
     updated_at REAL NOT NULL
 );
+CREATE TABLE IF NOT EXISTS autopilot_runs (
+    id TEXT PRIMARY KEY,
+    task TEXT NOT NULL,
+    status TEXT NOT NULL DEFAULT 'running',
+    forced INTEGER NOT NULL DEFAULT 0,
+    level TEXT NOT NULL DEFAULT 'suggest',
+    started_at REAL NOT NULL,
+    finished_at REAL,
+    model_calls INTEGER NOT NULL DEFAULT 0,
+    calls_refused INTEGER NOT NULL DEFAULT 0,
+    summary_json TEXT NOT NULL DEFAULT '{}',
+    detail TEXT NOT NULL DEFAULT '',
+    undo_json TEXT NOT NULL DEFAULT '[]',
+    undone_at REAL
+);
 """
 
 # Columns added after a table first shipped: (table, column, definition). A database created by an
