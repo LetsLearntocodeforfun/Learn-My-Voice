@@ -661,11 +661,7 @@ class RoundTripTest(Case):
         layout = backup.reference_layout()
         self.assertEqual(sorted(layout["tables"]), ["ai_suggestions", "autopilot_runs", "briefs", "idea_sets", "lessons",
                                                     "metric_snapshots", "plan_suggestions", "sample_beats", "sample_comments",
-<<<<<<< HEAD
-                                                    "sample_sentiments", "samples", "script_pins", "script_takes", "scripts",
-=======
-                                                    "sample_sentiments", "samples", "script_pins", "script_revisions", "scripts",
->>>>>>> keep/v2
+                                                    "sample_sentiments", "samples", "script_pins", "script_revisions", "script_takes", "scripts",
                                                     "sponsor_briefs", "trend_observations", "trends", "video_plans",
                                                     "watched_files"])
         self.assertEqual(sorted(layout["indexes"]), ["ai_suggestions_by_script", "metric_snapshots_by_sample",

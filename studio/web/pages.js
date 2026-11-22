@@ -894,6 +894,7 @@ async function copyPlain(text) {
 /* `post` is the model's rednote_post_package, saved as it came, and editable in place. */
 function paintPost(el, post) {
   if (!el) return;
+  if (typeof pkPaintLab === 'function' && el.id === 'post-box') { pkPaintLab(); return; }
   const p = post && typeof post === 'object' ? post : {};
   const str = (v) => (typeof v === 'string' ? v.trim() : '');
   const list = (v) => (Array.isArray(v) ? v : []);

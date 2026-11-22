@@ -335,6 +335,7 @@ PAIRINGS = [
     ("--bad", ["--card", "--bad-soft"], "a finding in a card"),
     ("--on-accent", ["--accent"], "the label of the main button, the chosen chip, the menu item under the pointer"),
     ("--on-accent", ["--danger"], "the label of a button that deletes"),
+    ("--on-accent", ["--card", "--accent"], "the active subtitle badge or star in the RedNote packaging lab"),
 ]
 
 

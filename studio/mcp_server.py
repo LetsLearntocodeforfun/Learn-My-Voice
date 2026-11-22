@@ -20,7 +20,7 @@ import traceback
 from pathlib import Path
 from typing import Any, BinaryIO, Callable, Dict, List, Optional
 
-from . import autopilot, autosuggest, checks, corpus, creator, exports, llm, outside, pipeline, planner, recording, rednote_analytics, revisions, tone_analyzer, trends
+from . import autopilot, autosuggest, checks, corpus, creator, exports, llm, outside, packaging, pipeline, planner, recording, rednote_analytics, revisions, tone_analyzer, trends
 from .store import EXTRA_METRIC_FIELDS, METRIC_FIELDS, StaleScript, Store, TextTooLong, _owner_only
 
 PROTOCOL_VERSIONS = ("2025-06-18", "2025-03-26", "2024-11-05")
@@ -88,7 +88,10 @@ INSTRUCTIONS = (
     "suggestions on the creator's behalf. "
     "get_script_timing_and_takes is also read-only: it reports estimated cue timing alongside any recorded voiceover "
     "or subtitle alignment takes, stating whether timing is whisper_aligned, subtitle_aligned, pause_aligned (which "
-    "distributes clauses across speech/pause islands without speech recognition), or rate_estimated."
+    "distributes clauses across speech/pause islands without speech recognition), or rate_estimated. "
+    "To craft RedNote cover callouts, title angles, note copy and pinned comment starters for a saved script: "
+    "call get_packaging_brief first, then call save_script_packaging. Packaging checks report deterministic "
+    "display-unit truncation, word-list / never-say hits and past-note comparisons, never predictions of reach."
 )
 
 
@@ -785,6 +788,78 @@ def t_get_script_timing_and_takes(store: Store, args: Dict[str, Any]) -> Dict[st
 
 
 
+def t_get_packaging_brief(store: Store, args: Dict[str, Any]) -> Dict[str, Any]:
+    script = _script(store, args)
+    built = packaging.build_packaging_prompt(store, script["id"])
+    current = packaging.packaging_payload(store, script)
+    dna, is_example = store.load_dna()
+    return {
+        "script_id": script["id"],
+        "title": script["title"],
+        "mode": script["mode"],
+        "video_format": script["video_format"],
+        "target_duration_sec": script["target_sec"],
+        "keywords": script.get("keywords") or [],
+        "script_lines": script["lines"],
+        "creator": creator.prompt_block(store.load_creator()),
+        "voice_dna_summary": {
+            "is_example": is_example,
+            "persona_summary": dna.get("persona_summary") if isinstance(dna, dict) else {},
+            "cadence_and_syntax": dna.get("cadence_and_syntax") if isinstance(dna, dict) else {},
+            "anti_voice_blacklist": dna.get("anti_voice_blacklist") if isinstance(dna, dict) else {},
+        },
+        "current_packaging": current["post"],
+        "report": current["report"],
+        "readiness": current["readiness"],
+        "brief_id": built["brief_id"],
+        "stage_11_instructions": {
+            "system": built["system"].strip(),
+            "user": built["user"].strip(),
+        },
+        "next_step": (
+            "Follow stage_11_instructions to produce title_options, cover_options, body_zh, hashtags and "
+            "pinned_options in the creator's voice, then call save_script_packaging with script_id=\"%s\"."
+            % script["id"]
+        ),
+    }
+
+
+def t_save_script_packaging(store: Store, args: Dict[str, Any]) -> Dict[str, Any]:
+    script = _script(store, args)
+    overwrite_raw = args.get("overwrite", False)
+    if not isinstance(overwrite_raw, bool):
+        raise ToolError("'overwrite' must be a boolean")
+    payload: Dict[str, Any] = {}
+    if args.get("packaging") is not None:
+        payload.update(_obj(args, "packaging"))
+    for key in (
+        "title_options", "selected_title_idx", "cover_text_zh", "cover_sub_zh", "cover_options",
+        "body_zh", "body_en", "hashtags", "pinned_comment_zh", "pinned_options", "opening_hook_tweaks",
+    ):
+        if key in args and args[key] is not None:
+            payload[key] = args[key]
+    if "selected_title_idx" in payload:
+        idx = payload["selected_title_idx"]
+        if isinstance(idx, bool) or not isinstance(idx, int) or idx < 0:
+            raise ToolError("'selected_title_idx' must be a non-negative integer")
+    saved = packaging.apply_packaging_reply(store, script["id"], payload, overwrite=overwrite_raw)
+    preserved = list(saved.get("preserved_fields") or [])
+    if "selected_title_idx" in args and isinstance(args["selected_title_idx"], int) and not isinstance(args["selected_title_idx"], bool):
+        saved = packaging.update_packaging(store, script["id"], {"selected_title_idx": args["selected_title_idx"]})
+        saved["preserved_fields"] = preserved
+    return {
+        "script_id": script["id"],
+        "post": saved["post"],
+        "report": saved["report"],
+        "readiness": saved["readiness"],
+        "preserved_fields": saved.get("preserved_fields") or [],
+        "next_step": (
+            "Review report.active_findings and readiness.items. Deterministic display-width and word-list checks "
+            "do not predict platform reach or legal compliance."
+        ),
+    }
+
+
 _KEYWORDS_PROP = {"type": "array", "items": {"type": "string"},
                   "description": "Optional trend or search keywords to work in where they fit the creator's voice, "
                                  "usually chosen from list_trends. At most 8."}
@@ -969,6 +1044,40 @@ TOOLS: Dict[str, Dict[str, Any]] = {t["public"]["name"]: t for t in [
           "speech recognition, and no MCP tool activates takes or overwrites script lines with ad-libs.",
           {"script_id": _ID_PROP},
           ["script_id"], read_only=True),
+    _tool("get_packaging_brief", t_get_packaging_brief,
+          "Use this before writing or refreshing RedNote cover callouts, title options, caption copy or pinned "
+          "comment starters for a saved script. Returns the script context, creator profile, Voice DNA summary, "
+          "current deterministic packaging report, pre-filming readiness gate and Stage 11 blueprint instructions. "
+          "Limits: read-only; checks report deterministic layout and word-list rules, not reach predictions.",
+          {"script_id": _ID_PROP},
+          ["script_id"], read_only=True),
+    _tool("save_script_packaging", t_save_script_packaging,
+          "Use this right after generating RedNote packaging from get_packaging_brief. Validates and saves "
+          "title_options, cover_options, cover_text_zh, cover_sub_zh, body_zh, hashtags and pinned_options into "
+          "the script's post package, preserving existing non-empty creator-edited body_zh, cover_text_zh and "
+          "pinned_comment_zh unless overwrite=true is explicitly passed, and returns deterministic width, "
+          "word-list / never-say and readiness checks.",
+          {"script_id": _ID_PROP,
+           "packaging": {"type": "object", "description": "Optional full Stage 11 JSON object."},
+           "title_options": {"type": "array", "items": {"type": ["object", "string"]},
+                             "description": "4-5 distinct RedNote title options (<= 20 display units ideal)."},
+           "selected_title_idx": {"type": "integer", "minimum": 0,
+                                  "description": "Optional 0-based index of the active title option."},
+           "cover_text_zh": {"type": "string", "description": "Active 3:4 cover headline in Chinese (<= 10 units ideal)."},
+           "cover_sub_zh": {"type": "string", "description": "Optional 3:4 cover subtitle in Chinese (<= 12 units ideal)."},
+           "cover_options": {"type": "array", "items": {"type": ["object", "string"]},
+                             "description": "Up to 3 3:4 cover callout options ({cover_text_zh, cover_sub_zh})."},
+           "body_zh": {"type": "string", "description": "Short natural note caption in Chinese."},
+           "body_en": {"type": "string", "description": "Optional plain English translation of the caption."},
+           "hashtags": {"type": "array", "items": {"type": "string"}, "description": "4-6 relevant #hashtags."},
+           "pinned_comment_zh": {"type": "string", "description": "Active pinned comment starter in Chinese."},
+           "pinned_options": {"type": "array", "items": {"type": ["object", "string"]},
+                              "description": "2-3 natural pinned comment conversation starters."},
+           "opening_hook_tweaks": {"type": "array", "items": {"type": ["object", "string"]},
+                                   "description": "Optional 1-2 sharper line-1 alternatives."},
+           "overwrite": {"type": "boolean", "default": False,
+                         "description": "Set true only when the creator explicitly asked to replace existing non-empty caption or cover text."}},
+          ["script_id"], read_only=False),
 ]}
 
 
@@ -987,7 +1096,7 @@ def call_tool(store: Store, name: str, arguments: Dict[str, Any]) -> Dict[str, A
         output = TOOLS[name]["fn"](store, arguments)
         text = output if isinstance(output, str) else json.dumps(output, ensure_ascii=False, indent=1)
         return {"content": [{"type": "text", "text": text}], "isError": False}
-    except (ToolError, llm.LLMError, pipeline.PromptError, planner.PlannerError, rednote_analytics.AnalyticsError, revisions.RevisionError) as exc:
+    except (ToolError, llm.LLMError, packaging.PackagingError, pipeline.PromptError, planner.PlannerError, rednote_analytics.AnalyticsError, revisions.RevisionError) as exc:
         return {"content": [{"type": "text", "text": "Error: %s" % exc}], "isError": True}
     except TextTooLong as exc:
         # The length limit on library text is enforced in Store for every route. No tool adds or edits library text

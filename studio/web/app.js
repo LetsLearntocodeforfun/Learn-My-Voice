@@ -629,6 +629,7 @@ async function saveNowInner(opts) {
     spAfterSave(s);     // sponsored.js: re-check required mentions, forbidden wording and tags on the saved script
     if (typeof rcAfterSave === 'function') rcAfterSave(s);
     if (typeof rvAfterSave === 'function') rvAfterSave(s);
+    pkAfterSave(s);     // packaging.js: refresh pre-filming readiness gate and packaging checks
     if (!dirty) setSaved('saved');
   } catch (e) {
     if (hadBeforeCritic && cur) cur.beforeCritic = true;
@@ -783,6 +784,7 @@ function paintScript() {
     <div class="chips" style="margin:10px 0 4px">${secs.map((v) =>
       `<button type="button" class="chip ${v === s.target_sec ? 'on' : ''}" data-sec="${v}">${v}${esc(t('sec'))}</button>`).join('')}</div>
     <div id="kw-box"></div>
+    <div id="pk-ready-box"></div>
     <div class="summary" id="summary"></div>
     <div id="wl-note"></div>
     <div id="vm-box"></div>
@@ -890,6 +892,7 @@ function paintScript() {
   rfAttach();       // refs.js: the creator's own material beside the lines, put back as it was before this redraw
   spAttach();       // sponsored.js: the brand-brief checklist beside a sponsored script
   if (typeof rcAttach === 'function') rcAttach();
+  pkAttach();       // packaging.js: pre-filming readiness strip + RedNote 3:4 packaging lab
 }
 
 async function renderScript(id) {

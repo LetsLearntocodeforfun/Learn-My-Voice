@@ -56,7 +56,7 @@ from typing import Any, Dict, List, Optional, Tuple
 
 from . import checks, corpus, creator, exports, keyword_import, llm, pipeline, textstats, timing, transcribe, trends
 from . import buildinfo, hooks, outside, posted, refs, revisions, suggest, video_ingest, wordlist
-from . import planner, recording, rednote_analytics, soundstats, sponsored, tone_analyzer, updater
+from . import packaging, planner, recording, rednote_analytics, soundstats, sponsored, tone_analyzer, updater
 from . import autosuggest     # registers autopilot's tasks plans.suggest and ideas.refresh: on a list, nothing is started
 from . import setup as setup_status
 from . import autopilot, autovoice, backup, trend_sources
@@ -93,7 +93,7 @@ UNTITLED = {"zh": "未命名脚本", "en": "Untitled script"}
 MANUAL_TASKS = ("draft", "voice", "ideas", "trends", "suggest", "video_ingest", "sentiment", "comment_ocr")
 # "sponsor": a brand's brief read into plain words, requirements and ways in; "sponsor_draft": a draft from what the
 # creator chose of that (studio/sponsored.py).
-MANUAL_TASKS += ("sponsor", "sponsor_draft")
+MANUAL_TASKS += ("sponsor", "sponsor_draft", "packaging")
 IDLE_TIMEOUT_SEC = 30                   # a connection that sends nothing for this long while it is being read is closed
 
 # Sent with every answer. The pages load their scripts and their style sheet from this server, style some
@@ -1030,6 +1030,9 @@ class Handler(BaseHTTPRequestHandler):
             except rednote_analytics.AnalyticsError as exc:
                 raise ApiError(exc.status, exc.code, exc.message, exc.message_zh)
             return {"prompt": pipeline.single_prompt(system, user), "brief_id": brief_id}
+        elif task == "packaging":
+            built_pkg = _packaging_call(lambda: packaging.build_packaging_prompt(store, body.get("script_id")))
+            return {"prompt": built_pkg["prompt"], "brief_id": built_pkg["brief_id"]}
         elif task == "comment_ocr":
             system, user = rednote_analytics.build_comment_screenshot_prompt()
             return {"prompt": pipeline.single_prompt(system, user)}
@@ -1104,6 +1107,9 @@ class Handler(BaseHTTPRequestHandler):
             except TextTooLong as exc:
                 raise ApiError(413, exc.code, exc.message, exc.message_zh, extra={"limit": exc.limit})
             return self._json({"sample": store.attach_beats_one(posted.shown(store, sample))}, 201)
+        if task == "packaging":
+            return self._json(_packaging_call(lambda: packaging.apply_packaging_reply(
+                store, body.get("script_id"), result, overwrite=bool(body.get("overwrite")))))
         if task == "sentiment":
             try:
                 saved = rednote_analytics.apply_sentiment_reply(store, str(body.get("sample_id") or ""), result, source="manual")
@@ -2230,6 +2236,31 @@ class Handler(BaseHTTPRequestHandler):
             except planner.PlannerError as exc:
                 raise ApiError(exc.status, exc.code, exc.message, exc.message_zh)
 
+        # ---- RedNote packaging lab & pre-filming readiness gate --------------
+        m = re.fullmatch(r"/api/scripts/([0-9a-f]{12})/packaging(?:/(generate|apply-reply))?", path)
+        if m:
+            script_id, sub = m.group(1), m.group(2)
+            if sub is None and method == "GET":
+                return self._json(_packaging_call(lambda: packaging.packaging_payload(store, script_id)))
+            if sub is None and method == "POST":
+                body = self._read_json()
+                return self._json(_packaging_call(lambda: packaging.update_packaging(
+                    store, script_id, body, base_updated_at=body.get("base_updated_at"))))
+            if sub == "generate" and method == "POST":
+                body = self._read_json()
+                if body.get("action") == "prompt":
+                    built_pkg = _packaging_call(lambda: packaging.build_packaging_prompt(store, script_id))
+                    return self._json({"prompt": built_pkg["prompt"], "brief_id": built_pkg["brief_id"]})
+                if store.get_script(script_id) is None:
+                    raise ApiError(404, "not_found")
+                self._require_ai()
+                return self._json(_packaging_call(lambda: packaging.generate_packaging(
+                    store, script_id, transport=self.app.transport, overwrite=bool(body.get("overwrite")))))
+            if sub == "apply-reply" and method == "POST":
+                body = self._read_json()
+                return self._json(_packaging_call(lambda: packaging.apply_packaging_reply(
+                    store, script_id, body.get("reply"), overwrite=bool(body.get("overwrite")))))
+
         # ---- full-service voice & tone analyzer -----------------------------
         if route == ("GET", "/api/tone"):
             return self._json(tone_analyzer.corpus_tone_profile(store))
@@ -2252,6 +2283,22 @@ def _stale_script(exc: StaleScript) -> ApiError:
                     "这份脚本在你打开之后，已经在别处被改过了：另一个标签页或窗口，或者连接到工作台的 AI 应用。"
                     "这次没有保存。请重新加载，查看较新的版本。",
                     extra={"updated_at": exc.updated_at})
+
+
+def _packaging_call(work: Any) -> Any:
+    try:
+        return work()
+    except packaging.PackagingError as exc:
+        raise ApiError(exc.status, exc.code, exc.message, exc.message_zh)
+    except StaleScript as exc:
+        raise _stale_script(exc)
+    except ValueError as exc:
+        if str(exc) == "bad_base_updated_at":
+            raise ApiError(400, "bad_base_updated_at", "base_updated_at has to be the updated_at of a script",
+                           "base_updated_at 必须是脚本的 updated_at")
+        raise
+    except TextTooLong as exc:
+        raise ApiError(413, exc.code, exc.message, exc.message_zh, extra={"limit": exc.limit})
 
 
 def _posting(work: Any) -> Any:

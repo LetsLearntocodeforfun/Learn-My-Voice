@@ -22,7 +22,7 @@ from typing import Any, Dict, List, Optional, Tuple
 
 import xml.etree.ElementTree as ET
 
-from . import creator, recording, textstats
+from . import creator, packaging, recording, textstats
 
 Cue = Tuple[float, float, str]
 
@@ -37,15 +37,75 @@ SOURCE_MINE, SOURCE_DEFAULT, SOURCE_EXAMPLE = "mine", "default", "example"
 _NAMES = {
     "zh": {"voiceover": "口播文稿.txt", "shots": "拍摄清单.txt", "flower": "花字清单.txt", "srt": "字幕.srt",
            "flower_srt": "花字.srt", "howto": "使用说明.txt", "jianying": "剪映素材包.zip", "fcpxml": "时间线.fcpxml",
-           "prompter": "提词器.html"},
+           "prompter": "提词器.html", "post_and_cover": "发布文案与封面.txt"},
     "en": {"voiceover": "voiceover.txt", "shots": "shot_list.txt", "flower": "onscreen_text.txt", "srt": "subtitles.srt",
            "flower_srt": "onscreen_text.srt", "howto": "HOW_TO_USE.txt", "jianying": "capcut-kit.zip",
-           "fcpxml": "timeline.fcpxml", "prompter": "teleprompter.html"},
+           "fcpxml": "timeline.fcpxml", "prompter": "teleprompter.html", "post_and_cover": "post_and_cover.txt"},
 }
 
 
 def _is_live(line: Dict[str, Any]) -> bool:
     return str(line.get("audio_mode", "")).strip().upper() == "LIVE_CLIP"
+
+
+def post_and_cover_text(script: Dict[str, Any], lang: str = "zh") -> str:
+    """Format RedNote titles, 3:4 cover callouts, caption, hashtags, and pinned CTA; empty when post has none."""
+    raw_post = script.get("post")
+    if not packaging.has_packaging_content(raw_post):
+        return ""
+    norm = packaging.normalize_post(raw_post)
+    is_en = lang == "en"
+    sections: List[str] = []
+
+    active_title = packaging.active_title_of(norm)
+    if active_title:
+        sections.append(("%s\n%s" % ("Selected title" if is_en else "【选定标题】", active_title)))
+
+    if norm["title_options"]:
+        header = "Title options" if is_en else "【备选标题】"
+        lines = []
+        for idx, opt in enumerate(norm["title_options"]):
+            star = "★ " if idx == norm["selected_title_idx"] else "  "
+            en_part = (" (%s)" % opt["title_en"]) if is_en and opt.get("title_en") else ""
+            lines.append("%s%d. %s%s" % (star, idx + 1, opt["title_zh"], en_part))
+        sections.append(header + "\n" + "\n".join(lines))
+
+    if norm["cover_text_zh"] or norm["cover_sub_zh"] or norm["cover_options"]:
+        header = "3:4 Cover text" if is_en else "【3:4 封面文字】"
+        c_lines: List[str] = []
+        if norm["cover_text_zh"]:
+            c_lines.append(("%s: %s" % ("Headline" if is_en else "主标题", norm["cover_text_zh"])))
+        if norm["cover_sub_zh"]:
+            c_lines.append(("%s: %s" % ("Subtitle" if is_en else "副标题", norm["cover_sub_zh"])))
+        if len(norm["cover_options"]) > 1:
+            c_lines.append("Options:" if is_en else "备选封面：")
+            for idx, copt in enumerate(norm["cover_options"], start=1):
+                pair = " / ".join(p for p in (copt["cover_text_zh"], copt["cover_sub_zh"]) if p)
+                if pair:
+                    c_lines.append("  %d. %s" % (idx, pair))
+        sections.append(header + "\n" + "\n".join(c_lines))
+
+    if norm["body_zh"]:
+        header = "Note caption" if is_en else "【笔记正文】"
+        sections.append(header + "\n" + norm["body_zh"])
+
+    if norm["hashtags"]:
+        header = "Hashtags" if is_en else "【话题标签】"
+        sections.append(header + "\n" + " ".join(norm["hashtags"]))
+
+    if norm["pinned_comment_zh"] or norm["pinned_options"]:
+        header = "Pinned comment CTA" if is_en else "【置顶评论引导】"
+        p_lines: List[str] = []
+        if norm["pinned_comment_zh"]:
+            p_lines.append(norm["pinned_comment_zh"])
+        if norm["pinned_options"]:
+            for idx, popt in enumerate(norm["pinned_options"], start=1):
+                if popt["text_zh"] and popt["text_zh"] != norm["pinned_comment_zh"]:
+                    p_lines.append(("  %d. %s" % (idx, popt["text_zh"])))
+        if p_lines:
+            sections.append(header + "\n" + "\n".join(p_lines))
+
+    return ("\n\n".join(sections).strip() + "\n") if sections else ""
 
 
 def voiceover_text(script: Dict[str, Any]) -> str:
@@ -609,6 +669,9 @@ def export_file(script: Dict[str, Any], kind: str, dna: Optional[Dict[str, Any]]
         files.append((names["shots"], shots))
     if active_take is not None:
         files.append((names["fcpxml"], to_fcpxml(script, subtitles, flowers, total, lang)))
+    post_copy = post_and_cover_text(script, lang)
+    if post_copy.strip():
+        files.append((names["post_and_cover"], post_copy))
     buffer = io.BytesIO()
     with zipfile.ZipFile(buffer, "w", zipfile.ZIP_DEFLATED) as archive:
         for name, text in files:

@@ -39,7 +39,8 @@ SEARCH_PROVIDERS = ("gemini", "openai")     # the providers whose API can search
 
 # Per-stage temperatures:
 # - Explicit numbers stated in prompts/: prompts/02 (voice: 0.2), prompts/03 (sponsored_brief: 0.3),
-#   prompts/04 (draft: 0.55), prompts/05 (critic: 0.2), and prompts/09 (sentiment: 0.2).
+#   prompts/04 (draft: 0.55), prompts/05 (critic: 0.2), prompts/09 (sentiment: 0.2), and
+#   prompts/11 (packaging: 0.5).
 # - Code defaults where the prompt states no number: ideas (0.3; prompts/06 asks only for "a low temperature"),
 #   hooks/rewrite (0.55) and shorten (0.3) in prompts/08 (which states no temperature numbers), and
 #   comment_ocr (0.1; inline screenshot prompt in studio/rednote_analytics.py).
@@ -54,6 +55,7 @@ STAGE_TEMPERATURES: Dict[str, float] = {
     "shorten": 0.3,
     "sentiment": 0.2,
     "comment_ocr": 0.1,
+    "packaging": 0.5,
 }
 GEMINI_API_REVISION = "2026-05-20"          # the revision of Gemini's Interactions API that ``search_json`` is written for
 DEFAULT_LOCAL_BASE = "http://127.0.0.1:11434/v1"  # Ollama's OpenAI-compatible endpoint
