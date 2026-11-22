@@ -375,6 +375,20 @@ CREATE TABLE IF NOT EXISTS autopilot_runs (
     undo_json TEXT NOT NULL DEFAULT '[]',
     undone_at REAL
 );
+CREATE TABLE IF NOT EXISTS trend_observations (
+    id TEXT PRIMARY KEY,
+    key TEXT NOT NULL,
+    keyword TEXT NOT NULL,
+    source TEXT NOT NULL,
+    origin TEXT NOT NULL DEFAULT '',
+    link TEXT NOT NULL DEFAULT '',
+    seen_on TEXT NOT NULL,
+    seen_at REAL NOT NULL,
+    heat INTEGER,
+    rank INTEGER,
+    created_at REAL NOT NULL
+);
+CREATE INDEX IF NOT EXISTS trend_observations_by_key ON trend_observations (key);
 """
 
 # Columns added after a table first shipped: (table, column, definition). A database created by an

@@ -649,6 +649,7 @@ def _try_out(store: Store) -> None:
             store.list_sponsor_briefs(),
             len(store.list_sample_beats()),
             autopilot.recent_runs(store),
+            trends.sightings(store),
         ]
         json.dumps(answers, ensure_ascii=False)
     except Exception as exc:  # noqa: BLE001 - whatever a reader trips over, the file is not used
