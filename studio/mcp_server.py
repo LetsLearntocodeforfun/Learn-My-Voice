@@ -20,7 +20,7 @@ import traceback
 from pathlib import Path
 from typing import Any, BinaryIO, Callable, Dict, List, Optional
 
-from . import autopilot, autosuggest, checks, corpus, creator, exports, llm, outside, pipeline, planner, rednote_analytics, tone_analyzer, trends
+from . import autopilot, autosuggest, checks, corpus, creator, exports, llm, outside, pipeline, planner, recording, rednote_analytics, tone_analyzer, trends
 from .store import EXTRA_METRIC_FIELDS, METRIC_FIELDS, StaleScript, Store, TextTooLong, _owner_only
 
 PROTOCOL_VERSIONS = ("2025-06-18", "2025-03-26", "2024-11-05")
@@ -85,7 +85,10 @@ INSTRUCTIONS = (
     "plain counts from this project's word lists, not judgements of quality or sentiment truth. "
     "get_autopilot_status is strictly read-only: it reports Autopilot settings, recent runs, open plan keyword "
     "suggestions and automatic idea-refresh state, and no MCP tool can turn Autopilot on, run tasks or accept "
-    "suggestions on the creator's behalf."
+    "suggestions on the creator's behalf. "
+    "get_script_timing_and_takes is also read-only: it reports estimated cue timing alongside any recorded voiceover "
+    "or subtitle alignment takes, stating whether timing is whisper_aligned, subtitle_aligned, pause_aligned (which "
+    "distributes clauses across speech/pause islands without speech recognition), or rate_estimated."
 )
 
 
@@ -321,7 +324,8 @@ def t_export_jianying_kit(store: Store, args: Dict[str, Any]) -> Dict[str, Any]:
     script = _script(store, args)
     dna, _ = store.load_dna()
     lang = "en" if args.get("language") == "en" else "zh"
-    filename, data, _ctype = exports.export_file(script, "jianying", dna, lang)
+    active_take = store.get_active_script_take(script["id"])
+    filename, data, _ctype = exports.export_file(script, "jianying", dna, lang, active_take=active_take)
     folder = store.data_dir / "exports"
     folder.mkdir(exist_ok=True)
     _owner_only(folder, 0o700)
@@ -331,6 +335,20 @@ def t_export_jianying_kit(store: Store, args: Dict[str, Any]) -> Dict[str, Any]:
     except OSError as exc:
         raise ToolError("Could not save export kit: %s" % exc)
     _owner_only(target, 0o600)
+    if active_take is not None:
+        mode = active_take.get("alignment_mode") or "pause_aligned"
+        caveat = (
+            "Subtitle and FCPXML 1.9 timeline timing came from the script's active take (%s). " % mode
+            + ("pause_aligned distributes clauses across speech/pause islands by spoken unit weight without speech recognition."
+               if mode == "pause_aligned"
+               else "Cues were aligned to timestamped transcript or subtitle segments.")
+        )
+        return {
+            "saved_to": str(target),
+            "timing_source": mode,
+            "contains": "Aligned subtitle .srt, on-screen text .srt (if any), FCPXML 1.9 vertical timeline, voiceover text, shot list, instructions.",
+            "caveat": caveat,
+        }
     return {
         "saved_to": str(target),
         "contains": "Subtitle .srt, on-screen text .srt (if any), voiceover text for 文稿匹配, shot list, instructions.",
@@ -658,6 +676,92 @@ def t_get_autopilot_status(store: Store, args: Dict[str, Any]) -> Dict[str, Any]
         ),
     }
 
+def _bound_take_for_mcp(script: Dict[str, Any], take: Dict[str, Any], include_cues: bool = True) -> Dict[str, Any]:
+    enriched = recording.with_flower_cues(script, take) or take
+    out: Dict[str, Any] = {
+        "id": enriched.get("id"),
+        "label": str(enriched.get("label") or "")[:200],
+        "source_kind": enriched.get("source_kind"),
+        "alignment_mode": enriched.get("alignment_mode"),
+        "active": bool(enriched.get("active")),
+        "duration_sec": enriched.get("duration_sec"),
+        "measured_cpm": enriched.get("measured_cpm"),
+        "sound": _bound_tone_output(enriched.get("sound") or {}, depth=2),
+        "cue_count": len(enriched.get("cues") or []),
+        "adlib_count": len(enriched.get("adlibs") or []),
+        "created_at": str(enriched.get("created_at") or "")[:32],
+    }
+    if include_cues:
+        out["cues"] = [
+            {
+                "line_no": c.get("line_no"),
+                "clause_idx": c.get("clause_idx"),
+                "start_sec": c.get("start_sec"),
+                "end_sec": c.get("end_sec"),
+                "text": str(c.get("text") or "")[:300],
+            }
+            for c in (enriched.get("cues") or [])[:250]
+        ]
+        out["flower_cues"] = [
+            {
+                "line_no": f.get("line_no"),
+                "start_sec": f.get("start_sec"),
+                "end_sec": f.get("end_sec"),
+                "text": str(f.get("text") or "")[:200],
+            }
+            for f in (enriched.get("flower_cues") or [])[:120]
+        ]
+        out["adlibs"] = [
+            {
+                "line_no": a.get("line_no"),
+                "scripted_zh": str(a.get("scripted_zh") or "")[:300],
+                "spoken_zh": str(a.get("spoken_zh") or "")[:300],
+                "similarity": a.get("similarity"),
+            }
+            for a in (enriched.get("adlibs") or [])[:80]
+        ]
+    return out
+
+
+def t_get_script_timing_and_takes(store: Store, args: Dict[str, Any]) -> Dict[str, Any]:
+    """Read-only summary of estimated vs take-aligned subtitle cues, sound measurements, and spoken ad-lib diffs."""
+    script = _script(store, args)
+    dna, is_example = store.load_dna()
+    pace_cpm, pace_source = exports.prompter_pace(dna, is_example)
+    est_subs, est_flowers, est_total = exports.build_cues(script["lines"], exports._profile_rate(dna))
+    all_takes = store.list_script_takes(script["id"])
+    active_raw = store.get_active_script_take(script["id"])
+    timing_source = active_raw["alignment_mode"] if active_raw is not None else "rate_estimated"
+    return {
+        "script_id": script["id"],
+        "title": str(script.get("title") or "")[:200],
+        "timing_source": timing_source,
+        "estimated": {
+            "speaking_rate_cpm": pace_cpm,
+            "rate_source": pace_source,
+            "duration_sec": round(est_total, 3),
+            "subtitle_cues": [
+                {"start_sec": round(s, 3), "end_sec": round(e, 3), "text": t[:300]}
+                for s, e, t in est_subs[:250]
+            ],
+            "flower_cues": [
+                {"start_sec": round(s, 3), "end_sec": round(e, 3), "text": t[:200]}
+                for s, e, t in est_flowers[:120]
+            ],
+        },
+        "active_take": _bound_take_for_mcp(script, active_raw, include_cues=True) if active_raw is not None else None,
+        "takes": [_bound_take_for_mcp(script, t_item, include_cues=False) for t_item in all_takes[:20]],
+        "takes_left_out": max(0, len(all_takes) - 20),
+        "note": (
+            "Read-only view of cue timing and recorded voiceover/subtitle takes for this script. "
+            "rate_estimated lays clauses back to back by speaking rate; whisper_aligned and subtitle_aligned match "
+            "clauses against timestamped transcript or subtitle segments; pause_aligned distributes clauses across "
+            "detected speech/pause islands by spoken unit weight without speech recognition. "
+            "Activating takes or applying spoken ad-lib wording to script lines is the creator's choice in the app."
+        ),
+    }
+
+
 
 _KEYWORDS_PROP = {"type": "array", "items": {"type": "string"},
                   "description": "Optional trend or search keywords to work in where they fit the creator's voice, "
@@ -829,6 +933,13 @@ TOOLS: Dict[str, Dict[str, Any]] = {t["public"]["name"]: t for t in [
           {"run_limit": {"type": "integer", "default": 15, "minimum": 1, "maximum": 50,
                          "description": "At most 50 recent Autopilot run entries are returned."}},
           [], read_only=True),
+    _tool("get_script_timing_and_takes", t_get_script_timing_and_takes,
+          "Use this to inspect a saved script's estimated breath-clause timing alongside any recorded voiceover or "
+          "subtitle alignment takes, aligned cue timestamps, sound measurements and spoken ad-lib differences. "
+          "Limits: strictly read-only; pause_aligned distributes clauses across detected speech/pause islands without "
+          "speech recognition, and no MCP tool activates takes or overwrites script lines with ad-libs.",
+          {"script_id": _ID_PROP},
+          ["script_id"], read_only=True),
 ]}
 
 

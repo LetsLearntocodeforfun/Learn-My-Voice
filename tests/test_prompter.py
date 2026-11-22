@@ -234,7 +234,7 @@ class PageTest(unittest.TestCase):
             self.assertIn(words, seen.text)
 
     def test_the_other_exports_are_as_before(self):
-        self.assertEqual(exports.KINDS, ("jianying", "srt", "flower_srt", "voiceover", "shots", "flower", "prompter"))
+        self.assertEqual(exports.KINDS, ("jianying", "srt", "flower_srt", "voiceover", "shots", "flower", "fcpxml", "prompter"))
         script = script_fixture()
         for kind in exports.KINDS[:-1]:
             self.assertEqual(exports.export_file(script, kind, RATE_300, "en", dna_is_example=True, who=CREATOR),

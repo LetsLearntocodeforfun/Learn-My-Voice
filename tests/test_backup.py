@@ -58,7 +58,7 @@ OWN = [
 MARKUP = "<img src=x onerror=alert(1)>"
 ASSUMES = re.compile(r"\b(she|her|hers|herself|husband|wife|couple)\b", re.I)
 # The layout of the database this version of the data stands for (backup.layout_fingerprint()).
-LAYOUT_OF_DATA_VERSION = {1: "dc489db00a5395ce", 2: "b0612eef1d02873d", 3: "d5c2a68c0ed818d4", 4: "f50b877672cb8876"}
+LAYOUT_OF_DATA_VERSION = {1: "dc489db00a5395ce", 2: "b0612eef1d02873d", 3: "d5c2a68c0ed818d4", 4: "f50b877672cb8876", 5: "c13eb4c833bea14f"}
 
 # The tables as the code at 3fdd3a6 creates them: the commit this feature was built on.
 SCHEMA_AT_3FDD3A6 = """
@@ -205,6 +205,12 @@ def fill(store, tag="甲"):
         post={"title_options": [{"title_zh": "入冬面霜"}], "hashtags_zh": ["#面霜"]})
     store.update_script(drafted["id"], {"lines": [{"spoken_script_zh": "入冬以后脸真的很干嘛"}, {"spoken_script_zh": "结果用得最勤哈"}]})
     store.add_ai_suggestions(drafted["id"], ["换一个开头试试", "再短一点"])
+    store.save_script_take(
+        drafted["id"], label=tag + "第一遍录音", source_kind="srt", alignment_mode="subtitle_aligned",
+        active=True, duration_sec=6.4, measured_cpm=225.0, sound={},
+        cues=[{"line_no": 1, "clause_idx": 0, "start_sec": 0.0, "end_sec": 3.2, "text": "入冬以后脸真的很干嘛"}],
+        adlibs=[], created_at="2026-11-22T10:00:00Z",
+    )
     typed = store.create_script(title=tag + "超市 " + MARKUP, lines=[{"spoken_script_zh": "今天去超市买菜啦 / 人特别多嘛"}])
     first_sample = store.create_sample(title=tag + "素材一", text=OWN[0], metrics={"views": 1200, "likes": 80})
     store.pin_sample(drafted["id"], first_sample["id"], limit=10)
@@ -462,7 +468,7 @@ class ContentsTest(Case):
         self.assertEqual(rows(inside), rows(self.store.db_path))
         self.assertEqual(sorted(rows(inside)), ["ai_suggestions", "autopilot_runs", "briefs", "idea_sets", "lessons",
                                                 "metric_snapshots", "plan_suggestions", "sample_beats", "sample_comments",
-                                                "sample_sentiments", "samples", "script_pins", "scripts",
+                                                "sample_sentiments", "samples", "script_pins", "script_takes", "scripts",
                                                 "sponsor_briefs", "trend_observations", "trends", "video_plans",
                                                 "watched_files"])
         for table, found in rows(inside).items():
@@ -655,7 +661,7 @@ class RoundTripTest(Case):
         layout = backup.reference_layout()
         self.assertEqual(sorted(layout["tables"]), ["ai_suggestions", "autopilot_runs", "briefs", "idea_sets", "lessons",
                                                     "metric_snapshots", "plan_suggestions", "sample_beats", "sample_comments",
-                                                    "sample_sentiments", "samples", "script_pins", "scripts",
+                                                    "sample_sentiments", "samples", "script_pins", "script_takes", "scripts",
                                                     "sponsor_briefs", "trend_observations", "trends", "video_plans",
                                                     "watched_files"])
         self.assertEqual(sorted(layout["indexes"]), ["ai_suggestions_by_script", "metric_snapshots_by_sample",

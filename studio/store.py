@@ -40,6 +40,9 @@ MAX_KEYWORD_CHARS = 40
 MAX_KEYWORDS_PER_SCRIPT = 8
 MAX_TRENDS = 2000           # tracked trend keywords kept in SQLite; oldest unverified entries go first when full
 SAMPLE_KINDS = ("script", "subtitle", "video")   # typed or pasted text; a subtitle file; a video transcribed here
+TAKE_SOURCE_KINDS = ("audio", "mic", "srt", "vtt")
+TAKE_ALIGNMENT_MODES = ("whisper_aligned", "subtitle_aligned", "pause_aligned")
+MAX_TAKES_PER_SCRIPT = 50
 BEAT_TYPES = (
     "HOOK", "VLOG_STORY", "COUPLE_BANTER", "TRANSITION_BRIDGE",
     "PRODUCT_EXPERIENCE", "REALISTIC_CAVEAT", "CLOSING_CTA",
@@ -440,6 +443,20 @@ CREATE TABLE IF NOT EXISTS idea_sets (
     trends_json TEXT NOT NULL DEFAULT '[]',
     created_at REAL NOT NULL,
     decided_at REAL
+);
+CREATE TABLE IF NOT EXISTS script_takes (
+    id INTEGER PRIMARY KEY,
+    script_id TEXT NOT NULL DEFAULT '',
+    label TEXT NOT NULL DEFAULT '',
+    source_kind TEXT NOT NULL DEFAULT '',
+    alignment_mode TEXT NOT NULL DEFAULT '',
+    active INTEGER NOT NULL DEFAULT 0,
+    duration_sec REAL NOT NULL DEFAULT 0.0,
+    measured_cpm REAL NOT NULL DEFAULT 0.0,
+    sound_json TEXT NOT NULL DEFAULT '{}',
+    cues_json TEXT NOT NULL DEFAULT '[]',
+    adlibs_json TEXT NOT NULL DEFAULT '[]',
+    created_at TEXT NOT NULL DEFAULT ''
 );
 """
 
@@ -1912,6 +1929,7 @@ class Store:
         with self._db() as db:
             db.execute("DELETE FROM ai_suggestions WHERE script_id = ?", (script_id,))
             db.execute("DELETE FROM script_pins WHERE script_id = ?", (script_id,))      # its pins are about this script only
+            db.execute("DELETE FROM script_takes WHERE script_id = ?", (script_id,))
             db.execute("UPDATE sponsor_briefs SET script_id = NULL, ticks_json = '{}' WHERE script_id = ?", (script_id,))
             db.execute("UPDATE samples SET script_id = NULL WHERE script_id = ?", (script_id,))
             db.execute("UPDATE video_plans SET script_id = NULL WHERE script_id = ?", (script_id,))
@@ -2837,3 +2855,230 @@ class Store:
             {"id": r["id"], "ai_lines": loads_stored(r["ai_lines_json"]), "lines": loads_stored(r["lines_json"])}
             for r in rows
         ]
+    # ---- voiceover takes & audio-aligned timelines (studio/recording.py) ----
+    @staticmethod
+    def _take_id(take_id: Any) -> Optional[int]:
+        if isinstance(take_id, bool):
+            return None
+        if isinstance(take_id, int):
+            return take_id if 0 < take_id < 2 ** 63 else None
+        if isinstance(take_id, str) and take_id.strip().isascii() and take_id.strip().isdigit():
+            val = int(take_id.strip())
+            return val if 0 < val < 2 ** 63 else None
+        return None
+
+    @staticmethod
+    def _clean_take_cues(raw: Any) -> List[Dict[str, Any]]:
+        if not isinstance(raw, list):
+            return []
+        out: List[Dict[str, Any]] = []
+        for item in raw[:2000]:
+            if not isinstance(item, dict):
+                continue
+            line_no = _metric(item.get("line_no"))
+            clause_idx = _metric(item.get("clause_idx", 0))
+            s_raw, e_raw = item.get("start_sec"), item.get("end_sec")
+            if line_no is None or line_no < 1 or clause_idx is None:
+                continue
+            if isinstance(s_raw, bool) or isinstance(e_raw, bool):
+                continue
+            if not isinstance(s_raw, (int, float)) or not isinstance(e_raw, (int, float)):
+                continue
+            start_sec, end_sec = float(s_raw), float(e_raw)
+            if not (math.isfinite(start_sec) and math.isfinite(end_sec)) or start_sec < 0.0 or end_sec < start_sec:
+                continue
+            text = str(item.get("text") or "").strip()[:MAX_LINE_CHARS]
+            if not text:
+                continue
+            out.append({
+                "line_no": int(line_no),
+                "clause_idx": int(clause_idx),
+                "start_sec": round(start_sec, 3),
+                "end_sec": round(end_sec, 3),
+                "text": text,
+            })
+        return out
+
+    @staticmethod
+    def _clean_take_adlibs(raw: Any) -> List[Dict[str, Any]]:
+        if not isinstance(raw, list):
+            return []
+        out: List[Dict[str, Any]] = []
+        for item in raw[:MAX_SCRIPT_LINES]:
+            if not isinstance(item, dict):
+                continue
+            line_no = _metric(item.get("line_no"))
+            if line_no is None or line_no < 1:
+                continue
+            scripted = str(item.get("scripted_zh") or "").strip()[:MAX_LINE_CHARS]
+            spoken = str(item.get("spoken_zh") or "").strip()[:MAX_LINE_CHARS]
+            if not spoken:
+                continue
+            r_raw = item.get("ratio", item.get("similarity", 0.0))
+            ratio = float(r_raw) if isinstance(r_raw, (int, float)) and not isinstance(r_raw, bool) and math.isfinite(float(r_raw)) else 0.0
+            ratio = round(max(0.0, min(1.0, ratio)), 3)
+            out.append({
+                "line_no": int(line_no),
+                "scripted_zh": scripted,
+                "spoken_zh": spoken,
+                "ratio": ratio,
+                "similarity": ratio,
+            })
+        return out
+
+    @classmethod
+    def _take_row(cls, row: sqlite3.Row) -> Dict[str, Any]:
+        try:
+            raw_cues = loads_stored(row["cues_json"] or "[]")
+        except (TypeError, ValueError):
+            raw_cues = []
+        try:
+            raw_adlibs = loads_stored(row["adlibs_json"] or "[]")
+        except (TypeError, ValueError):
+            raw_adlibs = []
+        dur_raw = row["duration_sec"]
+        dur = float(dur_raw) if isinstance(dur_raw, (int, float)) and not isinstance(dur_raw, bool) and math.isfinite(float(dur_raw)) and dur_raw >= 0 else 0.0
+        cpm_raw = row["measured_cpm"]
+        cpm = float(cpm_raw) if isinstance(cpm_raw, (int, float)) and not isinstance(cpm_raw, bool) and math.isfinite(float(cpm_raw)) and cpm_raw >= 0 else 0.0
+        src = str(row["source_kind"] or "")
+        mode = str(row["alignment_mode"] or "")
+        return {
+            "id": int(row["id"]),
+            "script_id": str(row["script_id"] or ""),
+            "label": str(row["label"] or "")[:200],
+            "source_kind": src if src in TAKE_SOURCE_KINDS else "audio",
+            "alignment_mode": mode if mode in TAKE_ALIGNMENT_MODES else "pause_aligned",
+            "active": bool(row["active"]),
+            "duration_sec": round(dur, 3),
+            "measured_cpm": round(cpm, 1),
+            "sound": _json_object(row["sound_json"]) or {},
+            "cues": cls._clean_take_cues(raw_cues),
+            "adlibs": cls._clean_take_adlibs(raw_adlibs),
+            "created_at": str(row["created_at"] or ""),
+        }
+
+    def list_script_takes(self, script_id: Optional[str] = None) -> List[Dict[str, Any]]:
+        """Stored voiceover/subtitle alignment takes for ``script_id`` (newest first), or all takes when None."""
+        with contextlib.closing(self._db()) as db:
+            if script_id is None:
+                rows = db.execute("SELECT * FROM script_takes ORDER BY id DESC LIMIT 1000").fetchall()
+            else:
+                if not isinstance(script_id, str) or not script_id:
+                    return []
+                rows = db.execute("SELECT * FROM script_takes WHERE script_id = ? ORDER BY id DESC", (script_id,)).fetchall()
+        return [self._take_row(r) for r in rows]
+
+    def get_script_take(self, script_id: str, take_id: Any) -> Optional[Dict[str, Any]]:
+        tid = self._take_id(take_id)
+        if not isinstance(script_id, str) or not script_id or tid is None:
+            return None
+        with contextlib.closing(self._db()) as db:
+            row = db.execute("SELECT * FROM script_takes WHERE script_id = ? AND id = ?", (script_id, tid)).fetchone()
+        return self._take_row(row) if row is not None else None
+
+    def get_active_script_take(self, script_id: str) -> Optional[Dict[str, Any]]:
+        if not isinstance(script_id, str) or not script_id:
+            return None
+        with contextlib.closing(self._db()) as db:
+            row = db.execute(
+                "SELECT * FROM script_takes WHERE script_id = ? AND active = 1 ORDER BY id DESC LIMIT 1",
+                (script_id,),
+            ).fetchone()
+        return self._take_row(row) if row is not None else None
+
+    def save_script_take(
+        self,
+        script_id: str,
+        *,
+        label: str = "",
+        source_kind: str = "audio",
+        alignment_mode: str = "pause_aligned",
+        active: bool = True,
+        duration_sec: float = 0.0,
+        measured_cpm: float = 0.0,
+        sound: Optional[Dict[str, Any]] = None,
+        cues: Optional[List[Dict[str, Any]]] = None,
+        adlibs: Optional[List[Dict[str, Any]]] = None,
+        created_at: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        clean_label = " ".join(str(label or "").split()).strip()[:200]
+        clean_src = source_kind if source_kind in TAKE_SOURCE_KINDS else "audio"
+        clean_mode = alignment_mode if alignment_mode in TAKE_ALIGNMENT_MODES else "pause_aligned"
+        clean_dur = round(max(0.0, float(duration_sec)), 3) if math.isfinite(float(duration_sec)) else 0.0
+        clean_cpm = round(max(0.0, float(measured_cpm)), 1) if math.isfinite(float(measured_cpm)) else 0.0
+        clean_sound = sound if isinstance(sound, dict) else {}
+        clean_cues = self._clean_take_cues(cues or [])
+        clean_adlibs = self._clean_take_adlibs(adlibs or [])
+        stamp = str(created_at or "").strip() or time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
+        with contextlib.closing(self._db()) as db:
+            db.execute("BEGIN IMMEDIATE")
+            if active:
+                db.execute("UPDATE script_takes SET active = 0 WHERE script_id = ?", (script_id,))
+            cur = db.execute(
+                "INSERT INTO script_takes (script_id, label, source_kind, alignment_mode, active, duration_sec,"
+                " measured_cpm, sound_json, cues_json, adlibs_json, created_at) VALUES (?,?,?,?,?,?,?,?,?,?,?)",
+                (
+                    script_id,
+                    clean_label,
+                    clean_src,
+                    clean_mode,
+                    1 if active else 0,
+                    clean_dur,
+                    clean_cpm,
+                    _dumps(clean_sound),
+                    _dumps(clean_cues),
+                    _dumps(clean_adlibs),
+                    stamp,
+                ),
+            )
+            take_id = int(cur.lastrowid or 0)
+            db.execute(
+                "DELETE FROM script_takes WHERE script_id = ? AND active = 0 AND id NOT IN"
+                " (SELECT id FROM script_takes WHERE script_id = ? ORDER BY id DESC LIMIT ?)",
+                (script_id, script_id, MAX_TAKES_PER_SCRIPT),
+            )
+            db.commit()
+        return self.get_script_take(script_id, take_id)  # type: ignore[return-value]
+
+    def activate_script_take(self, script_id: str, take_id: Any) -> Optional[Dict[str, Any]]:
+        if take_id in (None, 0, "0", ""):
+            self.clear_active_script_take(script_id)
+            return None
+        tid = self._take_id(take_id)
+        if not isinstance(script_id, str) or not script_id or tid is None:
+            return None
+        with contextlib.closing(self._db()) as db:
+            db.execute("BEGIN IMMEDIATE")
+            row = db.execute("SELECT 1 FROM script_takes WHERE script_id = ? AND id = ?", (script_id, tid)).fetchone()
+            if row is None:
+                db.rollback()
+                return None
+            db.execute("UPDATE script_takes SET active = 0 WHERE script_id = ?", (script_id,))
+            db.execute("UPDATE script_takes SET active = 1 WHERE script_id = ? AND id = ?", (script_id, tid))
+            db.commit()
+        return self.get_script_take(script_id, tid)
+
+    def clear_active_script_take(self, script_id: str) -> None:
+        if not isinstance(script_id, str) or not script_id:
+            return
+        with self._db() as db:
+            db.execute("UPDATE script_takes SET active = 0 WHERE script_id = ?", (script_id,))
+
+    def update_script_take_adlibs(self, script_id: str, take_id: Any, adlibs: List[Dict[str, Any]]) -> Optional[Dict[str, Any]]:
+        tid = self._take_id(take_id)
+        if not isinstance(script_id, str) or not script_id or tid is None:
+            return None
+        cleaned = self._clean_take_adlibs(adlibs)
+        with self._db() as db:
+            changed = db.execute(
+                "UPDATE script_takes SET adlibs_json = ? WHERE script_id = ? AND id = ?",
+                (_dumps(cleaned), script_id, tid),
+            ).rowcount
+        return self.get_script_take(script_id, tid) if changed else None
+
+    def delete_script_take(self, script_id: str, take_id: Any) -> bool:
+        tid = self._take_id(take_id)
+        if not isinstance(script_id, str) or not script_id or tid is None:
+            return False
+        with self._db() as db:
+            return db.execute("DELETE FROM script_takes WHERE script_id = ? AND id = ?", (script_id, tid)).rowcount > 0

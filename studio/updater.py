@@ -142,7 +142,7 @@ _FORBIDDEN_ZIP_PREFIXES = ("data/", "local_tools/", ".git/", ".github/", "tests/
 _WORK_TABLES = (
     "scripts", "samples", "trends", "video_plans", "sponsor_briefs",
     "lessons", "sample_beats", "sample_comments", "sample_sentiments", "metric_snapshots",
-    "plan_suggestions", "idea_sets",
+    "plan_suggestions", "idea_sets", "script_takes",
 )
 
 # One part of what follows X.Y.Z in a version, as (what kind it is, its number, its word). The kinds are

@@ -89,7 +89,7 @@ FORMAT = 1                              # how a backup file is laid out; a file 
 # The version of the data: of the tables in studio.db and of the files beside it. Raise it by one whenever a
 # table or a column is added or what a stored value means changes (tests/test_backup.py holds the layout this
 # number stands for, and fails when the layout moves without it). A backup that names a later one is refused.
-DATA_VERSION = 4
+DATA_VERSION = 5
 EXTENSION = "lmvbackup"
 EPOCH_HEADER = "X-Data-Epoch"           # with every answer: which data this is; with a change: which data the page means
 FIRST_EPOCH = "0"                       # the name of the data in a folder nothing was ever restored into
@@ -652,6 +652,7 @@ def _try_out(store: Store) -> None:
             trends.sightings(store),
             autovoice.voice_payload(store),
             autosuggest.for_plans(store, planner.plans(store)), autosuggest.ideas_state(store),
+            store.list_script_takes(),
         ]
         json.dumps(answers, ensure_ascii=False)
     except Exception as exc:  # noqa: BLE001 - whatever a reader trips over, the file is not used

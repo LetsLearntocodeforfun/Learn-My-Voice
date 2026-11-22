@@ -56,7 +56,7 @@ from typing import Any, Dict, List, Optional, Tuple
 
 from . import checks, corpus, creator, exports, keyword_import, llm, pipeline, textstats, timing, transcribe, trends
 from . import buildinfo, hooks, outside, posted, refs, suggest, video_ingest, wordlist
-from . import planner, rednote_analytics, soundstats, sponsored, tone_analyzer, updater
+from . import planner, recording, rednote_analytics, soundstats, sponsored, tone_analyzer, updater
 from . import autosuggest     # registers autopilot's tasks plans.suggest and ideas.refresh: on a list, nothing is started
 from . import setup as setup_status
 from . import autopilot, autovoice, backup, trend_sources
@@ -539,7 +539,7 @@ class Handler(BaseHTTPRequestHandler):
             text = json.dumps(_finite(payload), ensure_ascii=False, allow_nan=False)
         self._send(status, text.encode("utf-8"), "application/json; charset=utf-8")
 
-    def _read_json(self) -> Dict[str, Any]:
+    def _read_json(self, max_body: Optional[int] = None) -> Dict[str, Any]:
         """The request body as a JSON object. Read once per request; later calls return the same object.
 
         The media type has to be exactly ``application/json``. Looking for those words anywhere in the
@@ -554,7 +554,8 @@ class Handler(BaseHTTPRequestHandler):
         if (self.headers.get("Content-Type") or "").split(";")[0].strip().lower() != "application/json":
             raise ApiError(415, "json_required")
         length = _stated_length(self.headers.get("Content-Length"), missing=0)
-        if length > MAX_BODY:
+        limit = MAX_BODY if max_body is None else max_body
+        if length > limit:
             raise ApiError(413, "too_large")
         self._body_read = True
         try:
@@ -610,8 +611,12 @@ class Handler(BaseHTTPRequestHandler):
         if script is None:
             raise ApiError(404, "not_found")
         dna, is_example = store.load_dna()
+        active_take = store.get_active_script_take(script_id)
         try:
-            return exports.export_file(script, kind, dna, lang, dna_is_example=is_example, who=store.load_creator())
+            return exports.export_file(
+                script, kind, dna, lang, dna_is_example=is_example,
+                who=store.load_creator(), active_take=active_take,
+            )
         except KeyError:
             raise ApiError(404, "unknown_export")
 
@@ -1392,19 +1397,124 @@ class Handler(BaseHTTPRequestHandler):
             raise ApiError(exc.status, exc.code, exc.message, exc.message_zh, extra=exc.extra)
         raise ApiError(404, "not_found")
 
+    # ---- voiceover recording takes & audio-aligned timelines (studio/recording.py) ----
+    def _takes_state(self, script: Dict[str, Any]) -> Tuple[List[Dict[str, Any]], Optional[Dict[str, Any]]]:
+        store = self.app.store
+        takes = [recording.with_flower_cues(script, t_item) for t_item in store.list_script_takes(script["id"])]
+        clean_takes = [t_item for t_item in takes if t_item is not None]
+        active = next((t_item for t_item in clean_takes if t_item.get("active")), None)
+        return clean_takes, active
+
+    def _takes_api(self, method: str, path: str) -> None:
+        store = self.app.store
+        m_root = re.fullmatch(r"/api/scripts/([0-9a-f]{12})/takes(?:/(.*))?", path)
+        if not m_root:
+            raise ApiError(404, "not_found")
+        script_id = m_root.group(1)
+        rest = m_root.group(2)
+        script = store.get_script(script_id)
+        if script is None:
+            raise ApiError(404, "not_found", "Script not found.", "找不到这篇脚本。")
+
+        try:
+            if rest is None and method == "GET":
+                takes, active = self._takes_state(script)
+                return self._json({
+                    "takes": takes,
+                    "active_take": active,
+                    "capabilities": recording.capabilities(self.app.transcriber),
+                })
+
+            if rest is None and method == "POST":
+                body = self._read_json(max_body=recording.MAX_TAKE_JSON_BYTES)
+                filename = body.get("filename")
+                b64 = body.get("data_base64")
+                label = body.get("label") if isinstance(body.get("label"), str) else ""
+                src_kind = body.get("source_kind") if isinstance(body.get("source_kind"), str) else "audio"
+                if not isinstance(filename, str) or not filename.strip():
+                    raise ApiError(400, "bad_filename", "filename is required.", "必须提供文件名。")
+                if not isinstance(b64, str) or not b64.strip():
+                    raise ApiError(400, "bad_base64", "data_base64 is required.", "必须提供文件数据。")
+                payload_b64 = b64.split(",", 1)[1] if b64.startswith("data:") and "," in b64 else b64
+                try:
+                    raw_bytes = base64.b64decode(payload_b64.strip(), validate=True)
+                except (binascii.Error, ValueError):
+                    raise ApiError(400, "bad_base64", "data_base64 is not valid base64.", "文件数据不是有效的 base64 编码。")
+                take = recording.ingest_take(
+                    store,
+                    script_id,
+                    filename,
+                    raw_bytes,
+                    label=label,
+                    source_kind=src_kind,
+                    transcriber=self.app.transcriber,
+                )
+                takes, active = self._takes_state(script)
+                return self._json({"take": take, "takes": takes, "active_take": active}, 201)
+
+            if rest == "clear-active" and method == "POST":
+                self._read_json()
+                store.clear_active_script_take(script_id)
+                takes, active = self._takes_state(script)
+                return self._json({"active_take": active, "takes": takes})
+
+            m_act = re.fullmatch(r"([0-9]{1,18})/activate", rest or "")
+            if m_act and method == "POST":
+                self._read_json()
+                tid = int(m_act.group(1))
+                if tid == 0:
+                    store.clear_active_script_take(script_id)
+                else:
+                    activated = store.activate_script_take(script_id, tid)
+                    if activated is None:
+                        raise ApiError(404, "not_found", "Take not found.", "找不到这条录音记录。")
+                takes, active = self._takes_state(script)
+                return self._json({"active_take": active, "takes": takes})
+
+            m_del = re.fullmatch(r"([0-9]{1,18})", rest or "")
+            if m_del and method == "DELETE":
+                tid = int(m_del.group(1))
+                if not store.delete_script_take(script_id, tid):
+                    raise ApiError(404, "not_found", "Take not found.", "找不到这条录音记录。")
+                takes, active = self._takes_state(script)
+                return self._json({"ok": True, "active_take": active, "takes": takes})
+
+            m_adlib = re.fullmatch(r"([0-9]{1,18})/apply-adlib", rest or "")
+            if m_adlib and method == "POST":
+                body = self._read_json()
+                tid = int(m_adlib.group(1))
+                res = recording.apply_adlib(store, script_id, tid, body.get("line_no"))
+                updated_script = res["script"] or store.get_script(script_id) or script
+                takes, active = self._takes_state(updated_script)
+                return self._json({
+                    "script": posted.with_posted(store, updated_script),
+                    "take": res["take"],
+                    "takes": takes,
+                    "active_take": active,
+                })
+        except recording.RecordingError as exc:
+            raise ApiError(exc.status, exc.code, exc.message, exc.message_zh, extra=exc.extra)
+        except TextTooLong as exc:
+            raise ApiError(413, exc.code, exc.message, exc.message_zh, extra={"limit": exc.limit})
+
+        raise ApiError(405 if rest is None else 404, "method_not_allowed" if rest is None else "not_found")
+
     # ---- api ----------------------------------------------------------------
     def _api(self, method: str, path: str) -> None:
         app = self.app
         store = app.store
         route = (method, path)
+        is_take_upload = method == "POST" and bool(re.fullmatch(r"/api/scripts/[0-9a-f]{12}/takes", path))
         if method == "POST":
-            self._read_json()       # every POST must be JSON, also one that needs nothing from its body
+            self._read_json(max_body=recording.MAX_TAKE_JSON_BYTES if is_take_upload else None)       # every POST must be JSON
         if path == "/api/backup" or path.startswith(("/api/backup/", "/api/restore")):
             return self._backup_api(method, path)       # one file that holds everything, and restoring one
         if path == "/api/autopilot" or path.startswith("/api/autopilot/"):
             return self._autopilot_api(method, path)    # what the app does by itself, and taking it back
         if path == "/api/sponsored" or path.startswith("/api/sponsored/") or re.fullmatch(r"/api/scripts/[0-9a-f]{12}/sponsor(/ticks)?", path):
             return self._sponsored_api(method, path)    # a brand's brief, and the list beside a script drafted from it
+        if re.fullmatch(r"/api/scripts/[0-9a-f]{12}/takes(?:/.*)?", path):
+            return self._takes_api(method, path)
 
         if route == ("GET", "/api/state"):
             _, is_example = store.load_dna()

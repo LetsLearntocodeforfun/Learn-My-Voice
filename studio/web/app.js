@@ -610,6 +610,7 @@ async function saveNow(opts) {
     poAfterSave(s);     // posted.js: a posted script that was edited says so
     rfAfterSave(s);     // refs.js: a new title or keyword changes which of the creator's material is on the same topic
     spAfterSave(s);     // sponsored.js: re-check required mentions, forbidden wording and tags on the saved script
+    if (typeof rcAfterSave === 'function') rcAfterSave(s);
     if (!dirty) setSaved('saved');
   } catch (e) {
     dirty = true;
@@ -692,6 +693,7 @@ function paintScript() {
           <a href="#" data-export="voiceover">${esc(t('exp_voice'))}<small>${esc(t('exp_voice_d'))}</small></a>
           <a href="#" data-export="shots">${esc(t('exp_shots'))}<small>${esc(t('exp_shots_d'))}</small></a>
           <a href="#" data-export="flower">${esc(t('exp_flower'))}<small>${esc(t('exp_flower_d'))}</small></a>
+          <a href="#" data-export="fcpxml">${esc(t('exp_fcpxml'))}<small>${esc(t('exp_fcpxml_d'))}</small></a>
           <a href="#" data-export="prompter">${esc(t('tp_exp'))}<small>${esc(t('tp_exp_d'))}</small></a>
         </div></div>
       <button class="btn ghost" id="delete-btn">${esc(t('delete'))}</button></div>
@@ -703,6 +705,7 @@ function paintScript() {
     <div id="wl-note"></div>
     <div id="vm-box"></div>
     <div id="sp-box"></div>
+    <div id="rc-box"></div>
     <div id="craft-bar"></div>
     <div id="rf-box"></div>
     <div id="lines">${s.lines.map(lineHtml).join('')}</div>
@@ -766,6 +769,7 @@ function paintScript() {
   craftAttach();    // craft.js: the per-line writing tools and whichever of them is open
   rfAttach();       // refs.js: the creator's own material beside the lines, put back as it was before this redraw
   spAttach();       // sponsored.js: the brand-brief checklist beside a sponsored script
+  if (typeof rcAttach === 'function') rcAttach();
 }
 
 async function renderScript(id) {
