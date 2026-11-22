@@ -305,15 +305,27 @@ class BeatDraftPromptTest(unittest.TestCase):
         self.store.create_sample(title="手写脚本", text="今天去买咖啡啦 / 顺便逛了一下超市嘛")
         unconfirmed = video_ingest.parse_stage1_reply(
             self.store,
-            _stage1_reply(extra_beats=[{
-                "beat_type": "TRANSITION_BRIDGE",
-                "start_sec": 18.2,
-                "end_sec": 20.0,
-                "audio_mode": "VOICEOVER",
-                "verbatim_transcript_zh_en": "说到面霜顺便提一嘴护手霜啦",
-                "english_meaning": "Speaking of cream, quick mention of hand cream <script>alert(1)</script>",
-                "visual_broll_summary": "Reaching for hand cream tube",
-            }]),
+            _stage1_reply(extra_beats=[
+                {
+                    "beat_type": "TRANSITION_BRIDGE",
+                    "start_sec": 18.2,
+                    "end_sec": 20.0,
+                    "audio_mode": "VOICEOVER",
+                    "delivery_cue": "[UNCONFIRMED_DELIVERY_PROSE]",
+                    "verbatim_transcript_zh_en": "说到面霜顺便提一嘴 <护手霜> 啦",
+                    "english_meaning": "UNCONFIRMED_ENGLISH_PROSE <script>alert(1)</script>",
+                    "visual_broll_summary": "UNCONFIRMED_VISUAL_PROSE",
+                },
+                {
+                    "beat_type": "COUPLE_BANTER",
+                    "start_sec": 20.0,
+                    "end_sec": 22.5,
+                    "audio_mode": "TALKING_HEAD",
+                    "verbatim_transcript_zh_en": "某人每次都要顺手抹一点我的护手霜哈",
+                    "english_meaning": "UNCONFIRMED_BANTER_MEANING",
+                    "visual_broll_summary": "UNCONFIRMED_BANTER_VISUAL",
+                },
+            ]),
             title="秋冬面霜分享 " + MARKUP,
         )
         _, user_before, basis_before = pipeline._build_draft(
@@ -332,15 +344,27 @@ class BeatDraftPromptTest(unittest.TestCase):
         )
         user_after = brief["user"]
         basis_after = brief["basis"]
+        self.assertNotIn("semantic", user_after.lower())
+        self.assertIn("example_snippets", user_after)
         self.assertIn("<creator_beat_examples>", user_after)
         self.assertLess(user_after.index("<creator_beat_examples>"), user_after.index("<script_request>"))
-        # Raw <script> or <img must never stand unescaped inside the fenced block
+        # Raw angle brackets never stand unescaped inside the fenced JSON block
         block_json = user_after.split("<creator_beat_examples>", 1)[1].split("</creator_beat_examples>", 1)[0]
-        self.assertNotIn("<script>", block_json)
-        self.assertNotIn("<img", block_json)
+        self.assertNotIn("<护手霜>", block_json)
+        self.assertIn(r"\u003c护手霜\u003e", block_json)
+        for unconfirmed_prose in (
+            "UNCONFIRMED_DELIVERY_PROSE",
+            "UNCONFIRMED_ENGLISH_PROSE",
+            "UNCONFIRMED_VISUAL_PROSE",
+            "Did you take my cream?",
+        ):
+            self.assertNotIn(unconfirmed_prose, block_json)
         parsed_block = json.loads("\n".join(
             ln for ln in block_json.strip().splitlines() if not ln.strip().startswith("<!--")
         ))
+        for item in parsed_block:
+            self.assertEqual(set(item.keys()), {"beat_type", "audio_mode", "spoken_text"})
+            self.assertNotEqual(item["audio_mode"], "LIVE_CLIP")
         roles = [b["beat_type"] for b in parsed_block]
         self.assertIn("HOOK", roles)
         self.assertIn("PRODUCT_EXPERIENCE", roles)
@@ -361,11 +385,18 @@ class BeatDraftPromptTest(unittest.TestCase):
         self.assertEqual(saved_script["basis"]["beat_ids"], basis_after["beat_ids"])
         self.assertEqual(saved_script["basis"]["beat_sample_ids"], [unconfirmed["id"]])
 
-        # For COUPLE_VLOG (or when on_camera_partner is set), COUPLE_BANTER is eligible
+        # For COUPLE_VLOG (or when on_camera_partner is set), TALKING_HEAD/VOICEOVER COUPLE_BANTER is eligible,
+        # while LIVE_CLIP beats remain excluded from <creator_beat_examples>.
         _, couple_user, _ = pipeline._build_draft(
             self.store, notes="周末跟搭档逛街", target_sec=60, video_format="COUPLE_VLOG"
         )
-        self.assertIn("COUPLE_BANTER", couple_user)
+        couple_block = couple_user.split("<creator_beat_examples>", 1)[1].split("</creator_beat_examples>", 1)[0]
+        couple_beats = json.loads("\n".join(
+            ln for ln in couple_block.strip().splitlines() if not ln.strip().startswith("<!--")
+        ))
+        self.assertIn("COUPLE_BANTER", [b["beat_type"] for b in couple_beats])
+        self.assertTrue(all(b["audio_mode"] != "LIVE_CLIP" for b in couple_beats))
+        self.assertNotIn("Did you take my cream?", couple_block)
 
 
 class BeatPagesAndRefsBrowserTest(unittest.TestCase):

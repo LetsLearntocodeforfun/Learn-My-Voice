@@ -203,8 +203,8 @@ def _select_draft_beats(
     words: List[str],
     has_partner: bool,
 ) -> List[Dict[str, Any]]:
-    """Select up to ``DRAFT_BEAT_EXAMPLES_MAX`` confirmed, non-sponsored beats from ``store`` for a draft prompt."""
-    raw = store.list_confirmed_organic_beats()
+    """Select up to ``DRAFT_BEAT_EXAMPLES_MAX`` confirmed, non-sponsored creator beats (excluding LIVE_CLIP) for a draft prompt."""
+    raw = [b for b in store.list_confirmed_organic_beats() if b.get("audio_mode") != "LIVE_CLIP"]
     if not raw:
         return []
     if not has_partner and video_format != "COUPLE_VLOG":
@@ -261,20 +261,12 @@ def _select_draft_beats(
 
 
 def _format_beat_for_prompt(b: Dict[str, Any]) -> Dict[str, Any]:
-    out: Dict[str, Any] = {
+    """Send only the creator's confirmed words and fixed enum labels (omitting unconfirmed Stage 1B model prose)."""
+    return {
         "beat_type": b["beat_type"],
         "audio_mode": b["audio_mode"],
         "spoken_text": b["spoken_text"],
     }
-    if b.get("delivery"):
-        out["delivery"] = b["delivery"]
-    if b.get("english_meaning"):
-        out["english_meaning"] = b["english_meaning"]
-    if b.get("visual_summary"):
-        out["visual_summary"] = b["visual_summary"]
-    if b.get("sample_title"):
-        out["video_title"] = b["sample_title"]
-    return out
 
 
 def _build_draft(store: Store, *, notes: str, target_sec: int, video_format: str,

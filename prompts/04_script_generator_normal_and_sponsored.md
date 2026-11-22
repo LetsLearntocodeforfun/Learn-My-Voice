@@ -94,7 +94,7 @@ You output a synchronized bilingual filming script. EVERY single Chinese word mu
 </creator_voice_dna>
 
 <retrieved_real_exemplars_from_creator_past_videos>
-<!-- 2-3 verbatim snippets per beat type retrieved via semantic + beat-type search from the creator's own archive -->
+<!-- Confirmed non-sponsored past scripts from the creator's archive, ordered by keyword match, interactions and recency (`example_snippets` in `creator_voice_dna` and any `creator_beat_examples` block below hold confirmed spoken lines by beat role) -->
 {{retrieved_beat_exemplars_json}}
 </retrieved_real_exemplars_from_creator_past_videos>
 
