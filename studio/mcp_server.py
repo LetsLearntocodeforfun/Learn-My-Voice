@@ -20,7 +20,7 @@ import traceback
 from pathlib import Path
 from typing import Any, BinaryIO, Callable, Dict, List, Optional
 
-from . import autopilot, autosuggest, checks, corpus, creator, exports, llm, outside, pipeline, planner, rednote_analytics, tone_analyzer, trends
+from . import autopilot, autosuggest, benchmark, checks, corpus, creator, exports, llm, outside, pipeline, planner, rednote_analytics, tone_analyzer, trends
 from .store import EXTRA_METRIC_FIELDS, METRIC_FIELDS, StaleScript, Store, TextTooLong, _owner_only
 
 PROTOCOL_VERSIONS = ("2025-06-18", "2025-03-26", "2024-11-05")
@@ -621,6 +621,51 @@ def t_add_video_plan(store: Store, args: Dict[str, Any]) -> Dict[str, Any]:
     }
 
 
+def t_get_voice_calibration(store: Store, _args: Dict[str, Any]) -> Dict[str, Any]:
+    """Read-only deterministic leave-one-out voice calibration holdout check (#/voice)."""
+    raw = benchmark.evaluate_store(store)
+    rows = []
+    for item in (raw.get("holdout_samples") or [])[:benchmark.MAX_SHOWN_HOLDOUT_ITEMS]:
+        if isinstance(item, dict):
+            rows.append({
+                "id": str(item.get("id") or "")[:64],
+                "title": str(item.get("title") or "")[:200],
+                "breaths": int(item.get("breaths") or 0),
+                "score": item.get("score"),
+                "voicematch_score": item.get("voicematch_score"),
+                "tone_similarity": item.get("tone_similarity"),
+                "compliance_clean": bool(item.get("compliance_clean")),
+                "compliance_matches": [str(m)[:80] for m in (item.get("compliance_matches") or [])[:5]],
+            })
+    return {
+        "readiness_tier": raw.get("readiness_tier"),
+        "organic_samples_total": raw.get("organic_samples_total"),
+        "samples_evaluated": raw.get("samples_evaluated"),
+        "sample_cap": raw.get("sample_cap"),
+        "capped": bool(raw.get("capped")),
+        "min_samples_required": raw.get("min_samples_required"),
+        "calibrated_samples_target": raw.get("calibrated_samples_target"),
+        "margin_target": raw.get("margin_target"),
+        "dna_is_example": bool(raw.get("dna_is_example")),
+        "reference_breaths": raw.get("reference_breaths"),
+        "reference_breaths_sufficient": bool(raw.get("reference_breaths_sufficient")),
+        "synthetic_slop_count": raw.get("synthetic_slop_count"),
+        "own_mean_score": raw.get("own_mean_score"),
+        "slop_mean_score": raw.get("slop_mean_score"),
+        "margin": raw.get("margin"),
+        "pairwise_separation_rate": raw.get("pairwise_separation_rate"),
+        "own_guardrail_clean_rate": raw.get("own_guardrail_clean_rate"),
+        "own_compliance_flagged_count": raw.get("own_compliance_flagged_count"),
+        "slop_flagged_rate": raw.get("slop_flagged_rate"),
+        "slop_flagged_count": raw.get("slop_flagged_count"),
+        "own_score_band": raw.get("own_score_band"),
+        "slop_score_band": raw.get("slop_score_band"),
+        "holdout_samples": rows,
+        "wordlist": raw.get("wordlist"),
+        "note": benchmark.HONESTY_NOTE["en"],
+    }
+
+
 def t_get_autopilot_status(store: Store, args: Dict[str, Any]) -> Dict[str, Any]:
     """Read-only summary of Autopilot settings, recent runs, open plan keyword suggestions, and automatic idea sets."""
     run_limit = _int(args, "run_limit", 15, 1, 50)
@@ -829,6 +874,14 @@ TOOLS: Dict[str, Dict[str, Any]] = {t["public"]["name"]: t for t in [
           {"run_limit": {"type": "integer", "default": 15, "minimum": 1, "maximum": 50,
                          "description": "At most 50 recent Autopilot run entries are returned."}},
           [], read_only=True),
+    _tool("get_voice_calibration", t_get_voice_calibration,
+          "Use this to read the deterministic leave-one-out voice calibration holdout check (#/voice), comparing the "
+          "creator's confirmed non-sponsored material against synthetic generic AI and marketing templates. Returns "
+          "readiness_tier ('insufficient_samples', 'calibrating', or 'calibrated'), own_mean_score vs slop_mean_score, "
+          "margin, pairwise_separation_rate, own_guardrail_clean_rate and slop_flagged_rate. "
+          "Limits: strictly read-only; counts surface speech habits and word-list hits in code with no model calls, and "
+          "says nothing about live AI draft quality, legal compliance, or human listener preference.",
+          {}, [], read_only=True),
 ]}
 
 

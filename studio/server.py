@@ -59,7 +59,7 @@ from . import buildinfo, hooks, outside, posted, refs, suggest, video_ingest, wo
 from . import planner, rednote_analytics, soundstats, sponsored, tone_analyzer, updater
 from . import autosuggest     # registers autopilot's tasks plans.suggest and ideas.refresh: on a list, nothing is started
 from . import setup as setup_status
-from . import autopilot, autovoice, backup, trend_sources
+from . import autopilot, autovoice, backup, benchmark, trend_sources
 from .jobs import JobError, Jobs, Progress
 from .store import (
     HISTORY_ID,
@@ -1670,6 +1670,8 @@ class Handler(BaseHTTPRequestHandler):
                 return self._json({"dna": pipeline.set_speaking_rate(store, int(cpm)), "is_example": False})
             except ValueError:
                 raise ApiError(400, "no_profile")
+        if route == ("GET", "/api/voice/calibration"):
+            return self._json(benchmark.evaluate_store(store))
         if route == ("GET", "/api/voice/history"):
             return self._json({"history": setup_status.voice_history(store)})
         m = re.fullmatch(r"/api/voice/history/(%s)/restore" % HISTORY_ID, path)

@@ -170,6 +170,41 @@ def plans(store: Store) -> List[Dict[str, Any]]:
     return [_shown(plan, scripts, posted) for plan in stored]
 
 
+def month_grid(store: Store, year: int, month: int) -> Dict[str, Any]:
+    """Monday-first calendar month grid of plans for ``(year, month)``, plus unscheduled plans. Reads only."""
+    first_of_month = datetime.date(int(year), int(month), 1)
+    start_monday = first_of_month - datetime.timedelta(days=first_of_month.weekday())
+    month_prefix = "%04d-%02d" % (first_of_month.year, first_of_month.month)
+    grid_days: List[str] = []
+    cur_day = start_monday
+    while len(grid_days) < 42:
+        if len(grid_days) >= 28 and len(grid_days) % 7 == 0 and not cur_day.isoformat().startswith(month_prefix):
+            break
+        grid_days.append(cur_day.isoformat())
+        cur_day += datetime.timedelta(days=1)
+
+    shown = plans(store)
+    by_day: Dict[str, List[Dict[str, Any]]] = {d: [] for d in grid_days}
+    unscheduled: List[Dict[str, Any]] = []
+    for plan in shown:
+        day = plan.get("day") or ""
+        if not day:
+            unscheduled.append(plan)
+        elif day in by_day:
+            by_day[day].append(plan)
+    weeks = [
+        [{"day": d, "in_month": d.startswith(month_prefix), "plans": by_day[d]} for d in grid_days[i:i + 7]]
+        for i in range(0, len(grid_days), 7)
+    ]
+    return {
+        "month": month_prefix,
+        "days": grid_days,
+        "weeks": weeks,
+        "unscheduled": unscheduled,
+        "total_plans": len(shown),
+    }
+
+
 def get(store: Store, plan_id: Any) -> Dict[str, Any]:
     """One plan as it is shown. Raises ``PlannerError("not_found")``."""
     plan = store.get_video_plan(plan_id) if isinstance(plan_id, str) else None

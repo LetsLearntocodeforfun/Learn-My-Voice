@@ -550,8 +550,8 @@ class WorkflowsTest(unittest.TestCase):
     def setUp(self):
         self.files = {path.name: path.read_text(encoding="utf-8") for path in sorted(WORKFLOWS.glob("*.yml"))}
 
-    def test_there_are_the_two_workflows(self):
-        self.assertEqual(sorted(self.files), ["release-candidate.yml", "tests.yml"])
+    def test_there_are_the_workflows(self):
+        self.assertEqual(sorted(self.files), ["release-candidate.yml", "release.yml", "tests.yml"])
 
     def test_every_action_is_pinned_to_a_commit_and_comes_from_github_itself(self):
         for name, text in self.files.items():
@@ -567,16 +567,17 @@ class WorkflowsTest(unittest.TestCase):
             self.assertRegex(text, r"(?m)^permissions:\n  contents: read\n", name)       # the default for every job
             self.assertNotIn("pull_request_target", text, name)
             self.assertNotIn("secrets.", text, name)                            # nothing but the run's own token
-        release = self.files["release-candidate.yml"]
-        self.assertEqual(len(re.findall(r"contents: write", release)), 1)
-        publish = release[release.index("\n  publish:"):]
-        self.assertIn("contents: write", publish)
-        self.assertEqual(re.findall(r"^\s+(\w[\w-]*): write", release, re.M), ["contents"])
+        for wf_name in ("release-candidate.yml", "release.yml"):
+            release = self.files[wf_name]
+            self.assertEqual(len(re.findall(r"contents: write", release)), 1, wf_name)
+            publish = release[release.index("\n  publish:"):]
+            self.assertIn("contents: write", publish, wf_name)
+            self.assertEqual(re.findall(r"^\s+(\w[\w-]*): write", release, re.M), ["contents"], wf_name)
         self.assertEqual(re.findall(r"^\s+(\w[\w-]*): write", self.files["tests.yml"], re.M), [])
         self.assertEqual(re.findall(r"^[ \t]*permissions:", self.files["tests.yml"], re.M), ["permissions:"])     # only the one at the top
 
     def test_no_text_from_a_push_is_written_into_a_command(self):
-        # A branch name is chosen by whoever pushes. In a `run:` line it would be read as part of the command;
+        # A branch or tag name is chosen by whoever pushes. In a `run:` line it would be read as part of the command;
         # through `env:` it is only ever a value.
         for name, text in self.files.items():
             lines = text.split("\n")
@@ -605,8 +606,10 @@ class WorkflowsTest(unittest.TestCase):
         # A later push does not stop a release-candidate run, nor the tests inside it.
         self.assertNotIn("cancel-in-progress", release)
         self.assertIn("startsWith(github.ref, 'refs/heads/beta/') && github.run_id || 'latest'", tests)
-        self.assertIn("persist-credentials: false", release)
-        self.assertEqual(release.count("actions/checkout@"), release.count("persist-credentials: false"))
+        for wf_name in ("release-candidate.yml", "release.yml", "tests.yml"):
+            wf_text = self.files[wf_name]
+            self.assertIn("persist-credentials: false", wf_text, wf_name)
+            self.assertEqual(wf_text.count("actions/checkout@"), wf_text.count("persist-credentials: false"), wf_name)
         # The numbers of jobs the notes are told to expect are the numbers the two matrices make.
         self.assertIn("--legs tests=3 --legs try=2", release)
         self.assertIn('python: ["3.9", "3.14", "3.15"]', tests)
@@ -618,14 +621,15 @@ class WorkflowsTest(unittest.TestCase):
         allowed = dict(re.findall(r"- os: (\S+)\n\s+experimental: (true|false)", tests))
         self.assertEqual(allowed, {"macos-15-intel": "false", "ubuntu-24.04": "false", "windows-latest": "false"})
         self.assertIn("continue-on-error: ${{ matrix.experimental }}", tests)
-        trial = dict(re.findall(r"- os: (\S+)\n\s+experimental: (true|false)", self.files["release-candidate.yml"]))
-        self.assertEqual(trial["macos-15-intel"], "false")
+        for wf_name in ("release-candidate.yml", "release.yml"):
+            trial = dict(re.findall(r"- os: (\S+)\n\s+experimental: (true|false)", self.files[wf_name]))
+            self.assertEqual(trial["macos-15-intel"], "false", wf_name)
         # Whatever GitHub calls its Macs, the notes file a job under macOS by how its name starts.
         for runner in list(allowed) + ["macos-latest", "macos-26", "macos-15"]:
             self.assertEqual(build_release.system_of(runner + " / Python 3.9"), {"m": "macos", "w": "windows", "u": "linux"}[runner[0]])
 
     def test_every_job_that_checks_something_leaves_a_result_whatever_happens(self):
-        for name, kind in (("tests.yml", "tests"), ("release-candidate.yml", "try")):
+        for name, kind in (("tests.yml", "tests"), ("release-candidate.yml", "try"), ("release.yml", "try")):
             text = self.files[name]
             fallback = "run: python tools/build_release.py result --kind %s --if-missing\n" % kind      # never replaces what the job wrote
             self.assertEqual(text.count(fallback), 1, name)
@@ -638,50 +642,123 @@ class WorkflowsTest(unittest.TestCase):
             for line in self.files[name].split("\n"):
                 if re.match(r"\s*run: python tools/(run_tests|try_release)\.py", line) or "result --kind" in line:
                     self.assertNotIn("$", line, name)
-        self.assertIn("run: python tools/try_release.py\n", self.files["release-candidate.yml"])
-        self.assertNotIn("defaults:", self.files["release-candidate.yml"])       # no shell is forced on the jobs that run everywhere
+        for wf_name in ("release-candidate.yml", "release.yml"):
+            self.assertIn("run: python tools/try_release.py\n", self.files[wf_name], wf_name)
+            self.assertNotIn("defaults:", self.files[wf_name], wf_name)         # no shell is forced on the jobs that run everywhere
         uploads = re.findall(r"uses: actions/upload-artifact@.*\n((?:\s+.*\n)+?)(?=\s*- |\n|\Z)", "".join(self.files.values()))
-        self.assertEqual(len(uploads), 5)
+        self.assertEqual(len(uploads), 9)
         for block in uploads:
             self.assertIn("overwrite: true", block)
             # Every upload has to find its files, but one: a desktop build that failed has made no installer.
             self.assertIn("if-no-files-found: ignore" if "name: installer-" in block else "if-no-files-found: error", block)
 
     def test_the_commands_the_workflows_run_exist(self):
-        both = self.files["release-candidate.yml"] + self.files["tests.yml"]
+        all_wf = "".join(self.files.values())
         for command in ("build", "verify", "result", "notes"):
-            self.assertIn("python tools/build_release.py %s" % command, both)
+            self.assertIn("python tools/build_release.py %s" % command, self.files["release-candidate.yml"])
+            self.assertIn("python tools/build_release.py %s" % command, self.files["release.yml"])
             with self.assertRaises(SystemExit) as stopped, contextlib.redirect_stdout(io.StringIO()):
                 build_release.main([command, "--help"])
             self.assertEqual(stopped.exception.code, 0)
+        self.assertIn("python tools/sbom.py", self.files["release.yml"])
         self.assertIn("python tools/try_release.py", self.files["release-candidate.yml"])
+        self.assertIn("python tools/try_release.py", self.files["release.yml"])
         self.assertIn("run: python tools/run_tests.py\n", self.files["tests.yml"])
-        self.assertNotIn("unittest discover", "\n".join(line for line in both.split("\n") if not line.lstrip().startswith("#")))
-        for tool in ("build_release", "try_release", "run_tests"):
-            self.assertTrue((ROOT / "tools" / (tool + ".py")).is_file())
+        self.assertNotIn("unittest discover", "\n".join(line for line in all_wf.split("\n") if not line.lstrip().startswith("#")))
+        for tool in ("build_release", "try_release", "run_tests", "sbom"):
+            self.assertTrue((ROOT / "tools" / (tool + ".py")).is_file(), tool)
         for script in ("build", "try_installer"):
-            self.assertIn("run: python desktop/%s.py\n" % script, self.files["release-candidate.yml"])
+            for wf_name in ("release-candidate.yml", "release.yml"):
+                self.assertIn("run: python desktop/%s.py\n" % script, self.files[wf_name], wf_name)
             self.assertTrue((ROOT / "desktop" / (script + ".py")).is_file())
 
     def test_a_release_needs_an_installer_for_macos_and_windows_and_attaches_only_what_passed_its_trial(self):
-        release = self.files["release-candidate.yml"]
-        desktop = release[release.index("\n  desktop:"):release.index("\n  publish:")]
-        self.assertIn("continue-on-error: true", desktop)                       # the publish job decides, from what was written down
-        self.assertIn("needs: build", desktop)                                  # built around the very package that is published
-        self.assertIn("DESKTOP_PACKAGE: dist/${{ needs.build.outputs.file }}", desktop)
-        self.assertEqual(desktop.count("run: python tools/build_release.py result --kind desktop --if-missing\n"), 1)
-        self.assertNotIn("contents: write", desktop)
-        publish = release[release.index("\n  publish:"):]
-        self.assertIn("--installers installers --attach attach.txt", publish)
-        self.assertIn('gh release create "$TAG" "${FILES[@]}"', publish)        # only what the notes step listed is attached
-        self.assertIn("--require macos:desktop --require windows:desktop", publish)
-        self.assertNotIn("linux:desktop", release)                              # there is no desktop app for Linux yet
-        # A desktop job that GitHub cancelled for want of a machine does not stop the publish job from running:
-        # it waits for all four, and runs when the three that every candidate needs succeeded.
-        self.assertIn("    needs: [tests, build, try, desktop]\n", publish)
-        self.assertIn("    if: ${{ always() && needs.tests.result == 'success' && needs.build.result == 'success' "
-                      "&& needs.try.result == 'success' }}\n", publish)
-        self.assertEqual(release.count("always() && needs."), 1)                # only the publish job is given that
+        for wf_name in ("release-candidate.yml", "release.yml"):
+            release = self.files[wf_name]
+            desktop = release[release.index("\n  desktop:"):release.index("\n  publish:")]
+            self.assertIn("continue-on-error: true", desktop, wf_name)          # the publish job decides, from what was written down
+            self.assertIn("needs: build", desktop, wf_name)                     # built around the very package that is published
+            self.assertIn("DESKTOP_PACKAGE: dist/${{ needs.build.outputs.file }}", desktop, wf_name)
+            self.assertEqual(desktop.count("run: python tools/build_release.py result --kind desktop --if-missing\n"), 1, wf_name)
+            self.assertNotIn("contents: write", desktop, wf_name)
+            publish = release[release.index("\n  publish:"):]
+            self.assertIn("--installers installers --attach attach.txt", publish, wf_name)
+            self.assertIn('gh release create "$TAG" "${FILES[@]}"', publish, wf_name)   # only what the notes step listed is attached
+            self.assertIn("--require macos:desktop --require windows:desktop", publish, wf_name)
+            self.assertNotIn("linux:desktop", release, wf_name)                 # there is no desktop app for Linux yet
+            # A desktop job that GitHub cancelled for want of a machine does not stop the publish job from running:
+            # it waits for all four, and runs when the three that every candidate/release needs succeeded.
+            self.assertIn("    needs: [tests, build, try, desktop]\n", publish, wf_name)
+            self.assertIn("    if: ${{ always() && needs.tests.result == 'success' && needs.build.result == 'success' "
+                          "&& needs.try.result == 'success' }}\n", publish, wf_name)
+            self.assertEqual(release.count("always() && needs."), 1, wf_name)   # only the publish job is given that
+
+    def test_final_release_workflow_runs_only_on_final_semver_tags_attaches_sbom_and_is_not_prerelease(self):
+        final = self.files["release.yml"]
+        self.assertIn('tags: ["v[0-9]+.[0-9]+.[0-9]+"]', final)
+        # Verify the tag pattern admits v1.0.0 / v2.10.3 and excludes -beta / .rc tags.
+        semver_tag_re = re.compile(r"^v[0-9]+\.[0-9]+\.[0-9]+$")
+        for good_tag in ("v1.0.0", "v1.2.3", "v10.0.12"):
+            self.assertIsNotNone(semver_tag_re.fullmatch(good_tag), good_tag)
+        for non_final_tag in ("v0.2.0-beta", "v0.2.0-beta.rc.7", "v1.0.0-beta", "v1.0.0-rc.1", "beta/0.2.0"):
+            self.assertIsNone(semver_tag_re.fullmatch(non_final_tag), non_final_tag)
+
+        self.assertIn("uses: ./.github/workflows/tests.yml", final)
+        self.assertIn("build_release.py build --release", final)
+        self.assertNotIn("--rc", final)
+        self.assertNotIn("--prerelease", final)
+        self.assertNotIn("cancel-in-progress", final)
+        self.assertIn("--legs tests=3 --legs try=2", final)
+        self.assertIn("--require macos --require linux:tests --require windows:tests", final)
+        self.assertIn("--require macos:desktop --require windows:desktop", final)
+        self.assertIn('python tools/sbom.py --version "$BUILT_VERSION" --out dist/sbom.cdx.json', final)
+        self.assertIn("sbom.cdx.json.sha256", final)
+        self.assertIn("--sbom dist/sbom.cdx.json", final)
+
+        # Verify build_release.py notes --sbom writes sbom.cdx.json.sha256, cites SBOM in notes, and attaches both files.
+        tmp = Path(tempfile.mkdtemp())
+        try:
+            final_build = {"version": "1.0.0", "commit": "d" * 40, "built_on": "2026-11-22"}
+            pkg = tmp / "learn-my-voice-1.0.0.zip"
+            with zipfile.ZipFile(str(pkg), "w") as archive:
+                archive.writestr("learn-my-voice-1.0.0/studio/build.json", json.dumps(final_build))
+            Path(str(pkg) + ".sha256").write_text("x", encoding="utf-8")
+            sbom_file = tmp / "sbom.cdx.json"
+            sbom_bytes = b'{"bomFormat": "CycloneDX", "specVersion": "1.5"}\n'
+            sbom_file.write_bytes(sbom_bytes)
+            sbom_sha = hashlib.sha256(sbom_bytes).hexdigest()
+
+            results_dir = tmp / "results"
+            results_dir.mkdir()
+            build_release.write_result(results_dir / "t1.json", "tests", "macos-15-intel / Python 3.9", "success")
+            build_release.write_result(results_dir / "r1.json", "try", "macos-15-intel / Python 3.9", "success")
+            attach = tmp / "attach.txt"
+            notes_out = tmp / "notes.md"
+            with mock.patch.object(build_release, "changelog_section", return_value="- Ready for 1.0."):
+                code = build_release.main([
+                    "notes", "--package", str(pkg), "--results", str(results_dir),
+                    "--sbom", str(sbom_file), "--require", "macos",
+                    "--attach", str(attach), "--out", str(notes_out),
+                ])
+            self.assertEqual(code, 0)
+            attached_names = [Path(line).name for line in attach.read_text(encoding="utf-8").splitlines() if line]
+            self.assertEqual(attached_names, [
+                "learn-my-voice-1.0.0.zip",
+                "learn-my-voice-1.0.0.zip.sha256",
+                "sbom.cdx.json",
+                "sbom.cdx.json.sha256",
+            ])
+            self.assertEqual(
+                (tmp / "sbom.cdx.json.sha256").read_text(encoding="utf-8"),
+                "%s  sbom.cdx.json\n" % sbom_sha,
+            )
+            notes_text = notes_out.read_text(encoding="utf-8")
+            self.assertIn("**Release 1.0.0.**", notes_text)
+            self.assertNotIn("release candidate", notes_text.lower())
+            self.assertIn("python3 tools/build_release.py build --release`", notes_text)
+            self.assertIn("%s  sbom.cdx.json" % sbom_sha, notes_text)
+        finally:
+            shutil.rmtree(str(tmp), ignore_errors=True)
 
 
 class RunTestsTest(TempCase):

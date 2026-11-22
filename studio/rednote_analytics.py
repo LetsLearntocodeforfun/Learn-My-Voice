@@ -808,6 +808,20 @@ def analytics_overview(store: Store) -> Dict[str, Any]:
     for s in all_snaps:
         snaps_by_sample.setdefault(s["sample_id"], []).append(s)
     sentiments = store.list_sample_sentiments()
+    needed_comment_ids: List[str] = []
+    for sample in samples:
+        sid = sample["id"]
+        rec = sentiments.get(sid)
+        if not rec or not isinstance(rec.get("summary"), dict):
+            continue
+        s_basis = "model" if rec.get("source") in ("ai", "manual") else "word_lists"
+        for q in (rec["summary"].get("audience_questions") or [])[:4]:
+            if isinstance(q, dict) and q.get("question_zh") and not isinstance(q.get("quoted"), bool):
+                q_b = q.get("basis") if q.get("basis") in ("model", "word_lists") else s_basis
+                if q_b == "model":
+                    needed_comment_ids.append(sid)
+                    break
+    comments_by_sample = store.list_comments_for_samples(needed_comment_ids) if needed_comment_ids else {}
 
     organic = [s for s in samples if not s.get("is_sponsored")]
     org_views = [float(s["views"]) for s in organic if s.get("views") is not None and s["views"] > 0]
@@ -859,7 +873,7 @@ def analytics_overview(store: Store) -> Dict[str, Any]:
                         quoted = q["quoted"]
                     elif q_basis == "model":
                         if sample_comments is None:
-                            sample_comments = store.list_sample_comments(sid)
+                            sample_comments = comments_by_sample.get(sid, [])
                         quoted = _is_quoted_in_comments(q["question_zh"], sample_comments)
                     else:
                         quoted = True

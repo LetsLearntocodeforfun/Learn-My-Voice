@@ -252,7 +252,8 @@ def changelog_section(version_heading: str) -> str:
 
 def release_notes(build: Dict[str, Any], sha256: str, file_name: str, results: List[Dict[str, Any]], require: List[str],
                   run_url: str = "", branch: str = "", legs: Optional[Dict[str, int]] = None,
-                  installers: Optional[List[Dict[str, str]]] = None) -> Tuple[str, List[str]]:
+                  installers: Optional[List[Dict[str, str]]] = None,
+                  sbom_sha256: str = "", sbom_name: str = "") -> Tuple[str, List[str]]:
     """``(notes, problems)``. ``problems`` is not empty when something required did not pass: then nothing should
     be published.
 
@@ -276,10 +277,17 @@ def release_notes(build: Dict[str, Any], sha256: str, file_name: str, results: L
         elif found["failed"] or not found["passed"]:
             problems.append("%s: %s %s" % (system, "the tests" if kind == "tests" else "starting the package",
                                            "failed" if found["failed"] else "did not run"))
-    lines = [
-        "**A release candidate of %s.** Built by GitHub Actions from commit `%s`%s. It is for trying out, and is not the finished %s."
-        % (base, build["commit"][:12], " on branch `%s`" % branch if branch else "", base),
-    ]
+    is_final_release = (".rc." not in version) and (not version.endswith(".dev"))
+    if is_final_release:
+        lines = [
+            "**Release %s.** Built by GitHub Actions from commit `%s`%s."
+            % (base, build["commit"][:12], " on branch `%s`" % branch if branch else ""),
+        ]
+    else:
+        lines = [
+            "**A release candidate of %s.** Built by GitHub Actions from commit `%s`%s. It is for trying out, and is not the finished %s."
+            % (base, build["commit"][:12], " on branch `%s`" % branch if branch else "", base),
+        ]
     # The desktop app comes first when there is one: it is what a person who only wants to use the app installs.
     desktop = desktop_section(results, installers or [])
     lines += desktop + [
@@ -337,6 +345,15 @@ def release_notes(build: Dict[str, Any], sha256: str, file_name: str, results: L
         "commit `%s`, `python3 tools/build_release.py build%s` makes the same file."
         % (build["commit"][:12], _rc_arguments(version)),
     ]
+    if sbom_sha256 and sbom_name:
+        lines += [
+            "",
+            "CycloneDX 1.5 SBOM (`%s`):" % sbom_name,
+            "",
+            "```",
+            "%s  %s" % (sbom_sha256, sbom_name),
+            "```",
+        ]
     body = changelog_section(base)
     if body:
         lines += ["", "### What is in %s" % base, "", body]
@@ -416,9 +433,11 @@ def _fenced(text: str, limit: int = 1500) -> str:
 
 def _rc_arguments(version: str) -> str:
     found = re.search(r"\.rc\.(\d+)(?:\.(\d+))?$", version)
-    if not found:
-        return ""
-    return " --rc %s%s" % (found.group(1), " --attempt %s" % found.group(2) if found.group(2) else "")
+    if found:
+        return " --rc %s%s" % (found.group(1), " --attempt %s" % found.group(2) if found.group(2) else "")
+    if not version.endswith(".dev"):
+        return " --release"
+    return ""
 
 
 def _github_output(values: Dict[str, Any]) -> None:
@@ -441,6 +460,7 @@ def main(argv: Optional[List[str]] = None) -> int:
     build.add_argument("--rc", type=int)
     build.add_argument("--attempt", type=int, default=1)
     build.add_argument("--release", action="store_true", help="stamp the exact base version from CHANGELOG.md without .rc or .dev")
+    build.add_argument("--expect-tag", default="", help="when non-empty, fail unless the built tag matches this exact git tag")
     build.add_argument("--out", default="dist")
     verify = commands.add_parser("verify")
     verify.add_argument("package")
@@ -466,6 +486,7 @@ def main(argv: Optional[List[str]] = None) -> int:
     notes.add_argument("--installers", default="", metavar="DIR", help="where the desktop app's installers and pictures are, if any were built")
     notes.add_argument("--attach", default="", metavar="FILE",
                        help="write the files a release should carry to FILE, one on a line: the package, its checksum, and each installer whose trial passed")
+    notes.add_argument("--sbom", default="", metavar="FILE", help="optional CycloneDX SBOM JSON file to checksum, cite, and attach")
     notes.add_argument("--branch", default="")
     notes.add_argument("--out", default="")
     args = parser.parse_args(argv)
@@ -474,6 +495,8 @@ def main(argv: Optional[List[str]] = None) -> int:
         if git("status", "--porcelain", "--untracked-files=no").strip():
             print("Note: there are changes that are not committed. They are NOT in the package, which is built from HEAD.", file=sys.stderr)
         made = build_package(Path(args.out), args.rc, args.attempt, release=bool(args.release))
+        if args.expect_tag and made["tag"] != args.expect_tag.strip():
+            raise SystemExit("pushed tag %s does not match CHANGELOG.md tag %s" % (args.expect_tag.strip(), made["tag"]))
         verify_package(Path(made["path"]), made["sha256"])
         print(json.dumps(made, indent=1))
         _github_output({key: made[key] for key in ("version", "tag", "file", "sha256")})
@@ -508,11 +531,22 @@ def main(argv: Optional[List[str]] = None) -> int:
     build_file, results = verify_package(package, sha256), read_results(Path(args.results))
     folder = Path(args.installers) if args.installers else None
     installers = find_installers(folder, build_file["version"])
+    sbom_path = Path(args.sbom) if args.sbom else None
+    sbom_sha256, sbom_name = "", ""
+    if sbom_path is not None:
+        if not sbom_path.is_file():
+            raise SystemExit("SBOM file %s does not exist" % sbom_path)
+        sbom_sha256 = hashlib.sha256(sbom_path.read_bytes()).hexdigest()
+        sbom_name = sbom_path.name
     text, problems = release_notes(build_file, sha256, package.name, results, args.require, args.run_url,
-                                   " ".join(args.branch.split())[:100], legs, installers)
+                                   " ".join(args.branch.split())[:100], legs, installers, sbom_sha256, sbom_name)
     if args.attach:
         passed = {r["label"] for r in results if r["kind"] == "desktop" and r["ok"]}
         files = [str(package), str(package) + ".sha256"]
+        if sbom_path is not None:
+            sbom_sum_path = Path(str(sbom_path) + ".sha256")
+            sbom_sum_path.write_text("%s  %s\n" % (sbom_sha256, sbom_name), encoding="utf-8")
+            files += [str(sbom_path), str(sbom_sum_path)]
         for entry in installers:
             if entry["system"] in passed:
                 Path(entry["path"] + ".sha256").write_text("%s  %s\n" % (entry["sha256"], entry["name"]), encoding="utf-8")

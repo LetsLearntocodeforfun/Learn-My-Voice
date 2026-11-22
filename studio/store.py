@@ -24,7 +24,7 @@ import time
 import unicodedata
 import uuid
 from pathlib import Path
-from typing import Any, Callable, Dict, List, Optional, Tuple
+from typing import Any, Callable, Dict, Iterable, List, Optional, Tuple
 
 from . import keystore
 
@@ -2202,6 +2202,29 @@ class Store:
             "text": r["text"], "likes": r["likes"], "sentiment": r["sentiment"] or "neutral",
             "is_question": bool(r["is_question"]), "created_at": r["created_at"],
         } for r in rows]
+
+    def list_comments_for_samples(self, sample_ids: Iterable[str]) -> Dict[str, List[Dict[str, Any]]]:
+        """Stored viewer comments grouped by ``sample_id`` in bounded SQL chunks (avoids N+1 queries)."""
+        unique_ids = list(dict.fromkeys(sid for sid in sample_ids if isinstance(sid, str) and sid))
+        if not unique_ids:
+            return {}
+        out: Dict[str, List[Dict[str, Any]]] = {sid: [] for sid in unique_ids}
+        with self._db() as db:
+            for start in range(0, len(unique_ids), 400):
+                chunk = unique_ids[start:start + 400]
+                marks = ",".join("?" for _ in chunk)
+                rows = db.execute(
+                    "SELECT * FROM sample_comments WHERE sample_id IN (%s)"
+                    " ORDER BY COALESCE(likes, 0) DESC, created_at DESC, rowid DESC" % marks,
+                    chunk,
+                ).fetchall()
+                for r in rows:
+                    out.setdefault(r["sample_id"], []).append({
+                        "id": r["id"], "sample_id": r["sample_id"],
+                        "text": r["text"], "likes": r["likes"], "sentiment": r["sentiment"] or "neutral",
+                        "is_question": bool(r["is_question"]), "created_at": r["created_at"],
+                    })
+        return out
 
     def clear_sample_comments(self, sample_id: str) -> int:
         with self._db() as db:
