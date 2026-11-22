@@ -1130,6 +1130,31 @@ class Store:
         with _IDEAS_LOCK:
             self._write_json(self.recommendations_path, payload)
 
+    def read_recommendations_bytes(self) -> Optional[bytes]:
+        """The ideas file exactly as it is, or None when there is none. For keeping it and comparing it, not for reading ideas.
+
+        Raises ``OSError`` when the file is there and cannot be opened.
+        """
+        try:
+            return self.recommendations_path.read_bytes()
+        except FileNotFoundError:
+            return None
+
+    def write_recommendations_bytes(self, data: Optional[bytes]) -> None:
+        """Make the ideas file hold exactly ``data``, or remove it when ``data`` is None.
+
+        For putting back what the file held, byte for byte, and for putting a kept set in its place
+        (``studio/autosuggest.py``). Written the way every file here is: whole, or not at all.
+        """
+        with _IDEAS_LOCK:
+            if data is None:
+                try:
+                    self.recommendations_path.unlink()
+                except FileNotFoundError:
+                    pass
+            else:
+                self._write_bytes(self.recommendations_path, data)
+
     # ---- sets of ideas an automatic refresh made (studio/autosuggest.py) ----
     # One row is one set of topic ideas that autopilot's task ``ideas.refresh`` made. This part only stores: what
     # a state means, and when a set may take the place of the saved ideas, is in ``studio/autosuggest.py``.
@@ -1208,14 +1233,18 @@ class Store:
     def remove_idea_set(self, set_id: str) -> bool:
         """Take a set out again and, in the same step, give every set it replaced its earlier state back.
 
-        True when there was such a set. This is how a run that made a set is undone.
+        True when there was such a set. This is how a run that made a set is undone. A replaced set does not
+        get a state back that another set holds by now: one set waits and one is in use, at most.
         """
         with self._db() as db:
             db.execute("BEGIN IMMEDIATE")
             gone = db.execute("DELETE FROM idea_sets WHERE id = ?", (set_id,)).rowcount > 0
             if gone:
-                db.execute("UPDATE idea_sets SET status = was, was = '', replaced_by = ''"
-                           " WHERE replaced_by = ? AND status = 'replaced' AND was IN ('waiting', 'in_use')", (set_id,))
+                for state in ("in_use", "waiting"):
+                    if db.execute("SELECT 1 FROM idea_sets WHERE status = ?", (state,)).fetchone() is None:
+                        db.execute("UPDATE idea_sets SET status = was, was = '', replaced_by = '' WHERE id IN"
+                                   " (SELECT id FROM idea_sets WHERE replaced_by = ? AND status = 'replaced' AND was = ?"
+                                   " ORDER BY created_at DESC, rowid DESC LIMIT 1)", (set_id, state))
         return gone
 
     # ---- imported material ---------------------------------------------
@@ -2503,9 +2532,10 @@ class Store:
     # ``sightings`` are NULL unless the trend list said them. This part only stores; ``studio/autosuggest.py``
     # decides what is offered.
     #
-    # ``status`` is ``open`` until the creator takes the keyword (``taken``) or dismisses it (``dismissed``). A plan
-    # is offered a keyword at most once (the UNIQUE rule), so one that was dismissed is not offered for that plan
-    # again. Nothing here changes a plan: taking a keyword is ``planner.change``, asked for by the creator.
+    # ``status`` is ``open`` until the creator takes the keyword (``taken``) or dismisses it (``dismissed``), or
+    # the run that offered it is undone (``withdrawn``). A plan is offered a keyword at most once (the UNIQUE
+    # rule), so one that was dismissed or withdrawn is not offered for that plan again. Nothing here changes a
+    # plan: taking a keyword is ``planner.change``, asked for by the creator.
     MAX_SUGGESTIONS_LISTED = 5000       # rows handed out at once, whatever a database from elsewhere holds
 
     @staticmethod
@@ -2577,17 +2607,19 @@ class Store:
             return db.execute("UPDATE plan_suggestions SET status = ?, decided_at = ? WHERE id = ? AND status = 'open'",
                               (status, float(now), suggestion_id)).rowcount > 0
 
-    def remove_open_plan_suggestions(self, ids: List[str]) -> int:
-        """Remove those of ``ids`` that are still open and return how many that were.
+    def withdraw_plan_suggestions(self, ids: List[str]) -> int:
+        """Mark those of ``ids`` that are still open as ``withdrawn`` and return how many that were.
 
-        One the creator took or dismissed stays as it is: it is the creator's decision by then.
+        This is how a run that offered them is undone. The rows stay, so the same keyword is not offered for
+        the same plan by the next run. One the creator took or dismissed stays as it is: it is the creator's
+        decision by then.
         """
-        wanted = [one for one in ids if isinstance(one, str)]
+        wanted = [one for one in ids if isinstance(one, str)][:1000]
         if not wanted:
             return 0
         with self._db() as db:
-            return db.execute("DELETE FROM plan_suggestions WHERE status = 'open' AND id IN (%s)" % ",".join("?" * len(wanted)),
-                              wanted).rowcount
+            return db.execute("UPDATE plan_suggestions SET status = 'withdrawn' WHERE status = 'open' AND id IN (%s)"
+                              % ",".join("?" * len(wanted)), wanted).rowcount
     # ---- brand briefs for sponsored scripts (studio/sponsored.py) --------
     # A brief has a table of its own (``sponsor_briefs``) and nothing below reads or writes a script's row. So
     # nothing that hands out a script hands out a brief, and none of this moves a script's ``updated_at``.
