@@ -169,6 +169,32 @@ def at_the_rename(notes):
         yield looks
 
 
+def holds(store):
+    """What a data folder holds, to compare before and after: every row, every small file, the settings.
+
+    Left out: the app's own ``backups`` folder (work folders, the note of a copy under way, the name of the
+    data) and folders with nothing in them.
+    """
+    with contextlib.closing(sqlite3.connect(str(store.db_path))) as db:
+        tables = sorted(row[0] for row in db.execute("SELECT name FROM sqlite_master WHERE type = 'table'"))
+        rows = {table: db.execute("SELECT * FROM %s ORDER BY 1" % table).fetchall() for table in tables}
+    files = {}
+    for entry in sorted(store.data_dir.iterdir()):
+        if entry.name == "backups" or entry.name.startswith("studio.db"):
+            continue
+        if entry.is_dir():
+            inside = {inner.name: inner.read_bytes() for inner in sorted(entry.iterdir()) if inner.is_file()}
+            if inside:
+                files[entry.name + "/"] = inside
+        else:
+            files[entry.name] = entry.read_bytes()
+    return rows, files
+
+
+class Killed(BaseException):
+    """Stands in for the app being closed: nothing that catches an ordinary error catches this."""
+
+
 def found(version="9.0.0", *, notes="Faster exports and cleaner checks.", suffix=".zip", with_checksum=True):
     """What a look that found ``version`` keeps in settings: a release with an exact package and optional checksum."""
     name = "learn-my-voice-%s%s" % (version, suffix)
@@ -268,6 +294,27 @@ class Case(unittest.TestCase):
         self.store.update_config(lambda config: config.update(
             updates={"auto_check": True, "include_prereleases": True, "last_checked_at": time.time() - 60, "cached": rel}
         ))
+
+    def make_sibling(self, version="0.1.9", *, with_whisper=True):
+        sib = self.tmp / ("learn-my-voice-%s" % version)
+        sib_store = Store(sib / "data")
+        sib_store.update_config(lambda c: (
+            c.update(provider="anthropic", model="claude-sonnet-4-5", trend_weight="heat"),
+            c["keys"].update(anthropic="sk-ant-migrated-secret"),
+        ))
+        sib_store.keep_for_page({"lang": "en", "theme": "dark", "accent": "green"})
+        sib_store.save_creator({"name": "小林", "pronoun": "they"})
+        sib_store.save_dna(dict(EXAMPLE_DNA, persona_summary=dict(EXAMPLE_DNA["persona_summary"], one_line_essence_en="Earlier A")))
+        sib_store.save_dna(dict(EXAMPLE_DNA, persona_summary=dict(EXAMPLE_DNA["persona_summary"], one_line_essence_en="Current B")))
+        sib_store.create_script(title="旧版脚本", lines=[{"spoken_script_zh": "这周去超市买菜啦 / 拿了两盒水饺"}])
+        sib_store.create_sample(title="旧版素材", text="周末在家煮咖啡嘛 / 顺便收拾一下厨房啦")
+        sib_store.upsert_trends([{"keyword": "秋冬护肤", "heat": 12000}], source="manual")
+        planner.create_plan_item(sib_store, {"title": "下周拍早餐", "scheduled_for": "2026-11-28"})
+        if with_whisper:
+            fake_venv = sib / "local_tools" / "whisper" / "venv" / "bin"
+            fake_venv.mkdir(parents=True, exist_ok=True)
+            (fake_venv / "python3").write_bytes(b"fake-2gb-whisper-runtime")
+        return sib, sib_store
 
 
 class ServerCase(Case):
@@ -926,27 +973,6 @@ class DownloadIntegrityTest(ServerCase):
 
 # ---------------------------------------------------------------------------------------------- 5. U2, U5, U6: sibling scan & safe empty-only migration
 class SiblingScanAndMigrationTest(ServerCase):
-    def make_sibling(self, version="0.1.9", *, with_whisper=True):
-        sib = self.tmp / ("learn-my-voice-%s" % version)
-        sib_store = Store(sib / "data")
-        sib_store.update_config(lambda c: (
-            c.update(provider="anthropic", model="claude-sonnet-4-5", trend_weight="heat"),
-            c["keys"].update(anthropic="sk-ant-migrated-secret"),
-        ))
-        sib_store.keep_for_page({"lang": "en", "theme": "dark", "accent": "green"})
-        sib_store.save_creator({"name": "小林", "pronoun": "they"})
-        sib_store.save_dna(dict(EXAMPLE_DNA, persona_summary=dict(EXAMPLE_DNA["persona_summary"], one_line_essence_en="Earlier A")))
-        sib_store.save_dna(dict(EXAMPLE_DNA, persona_summary=dict(EXAMPLE_DNA["persona_summary"], one_line_essence_en="Current B")))
-        sib_store.create_script(title="旧版脚本", lines=[{"spoken_script_zh": "这周去超市买菜啦 / 拿了两盒水饺"}])
-        sib_store.create_sample(title="旧版素材", text="周末在家煮咖啡嘛 / 顺便收拾一下厨房啦")
-        sib_store.upsert_trends([{"keyword": "秋冬护肤", "heat": 12000}], source="manual")
-        planner.create_plan_item(sib_store, {"title": "下周拍早餐", "scheduled_for": "2026-11-28"})
-        if with_whisper:
-            fake_venv = sib / "local_tools" / "whisper" / "venv" / "bin"
-            fake_venv.mkdir(parents=True, exist_ok=True)
-            (fake_venv / "python3").write_bytes(b"fake-2gb-whisper-runtime")
-        return sib, sib_store
-
     def test_routine_update_status_and_checks_scan_siblings_only_when_current_folder_is_empty(self):
         self.packaged("0.2.0")
         self.make_sibling("0.1.9")
@@ -1153,6 +1179,139 @@ class SiblingScanAndMigrationTest(ServerCase):
 
         # Current store remained completely untouched and empty throughout.
         self.assertTrue(updater.is_data_empty(self.store))
+
+
+# ---------------------------------------------------------------------------------------------- 5b. a copy is all of it or none of it
+class AllOrNothingTest(ServerCase):
+    """A copy from an earlier folder that cannot finish leaves the folder it was going into as it was."""
+
+    def setUp(self):
+        super().setUp()
+        self.packaged("0.2.0")
+        self.sib, _ = self.make_sibling("0.1.9", with_whisper=False)
+        self.backups = self.app.backups
+
+    def stop_at(self, step, error):
+        def before_step(name):
+            if name == step:
+                raise error
+        self.backups._before_step = before_step
+
+    def copy(self):
+        return self.send_full("POST", "/api/update/migrate", {"source_path": str(self.sib)})
+
+    def work_folders(self, backups=None):
+        folder = (backups or self.backups).folder
+        return [entry.name for entry in folder.iterdir() if entry.name.startswith("work-")] if folder.is_dir() else []
+
+    def test_a_copy_that_fails_at_any_step_leaves_the_folder_as_it_was_and_can_be_tried_again(self):
+        self.store.update_config(lambda config: config.update(trend_weight="heat"))     # settings of its own, and no work
+        before = holds(self.store)
+        self.assertEqual(updater.MOVE_STEPS[0], backup.DATABASE)
+        for step in updater.MOVE_STEPS:
+            self.stop_at(step, OSError(errno.ENOSPC, "No space left on device"))
+            status, answer, headers = self.copy()
+            self.assertEqual((status, self.said(answer)), (507, "move_failed"), step)
+            self.assertIn("the disk is full", answer["message"])
+            self.assertIn("as it was before", answer["message"])
+            self.assertIn("磁盘已满", answer["message_zh"])
+            self.assertEqual(holds(self.store), before, step)
+            self.assertTrue(updater.is_data_empty(self.store), step)
+            self.assertEqual((headers[backup.EPOCH_HEADER], self.backups._note_path.exists(), self.work_folders()),
+                             (backup.FIRST_EPOCH, False, []), step)
+        # A database that another program holds is named as that; nothing had been touched.
+        for held in (sqlite3.OperationalError("database is locked"),
+                     TimeoutError("the database stayed in use by another program")):
+            self.stop_at(backup.DATABASE, held)
+            status, answer, _ = self.copy()
+            self.assertEqual((status, self.said(answer)), (409, "move_failed"), held)
+            self.assertIn("in use by another program", answer["message"])
+            self.assertIn("占用", answer["message_zh"])
+            self.assertEqual(holds(self.store), before)
+        # Anything else is given as the system worded it.
+        self.stop_at(backup.PLAIN_FILES[1], PermissionError(errno.EACCES, "not allowed here"))
+        status, answer, _ = self.copy()
+        self.assertEqual((status, self.said(answer)), (500, "move_failed"))
+        self.assertIn("not allowed here", answer["message"])
+        self.assertIn("not allowed here", answer["message_zh"])
+        self.assertEqual(holds(self.store), before)
+        # Once nothing stands in the way, the same copy goes through.
+        self.backups._before_step = lambda name: None
+        status, answer, headers = self.copy()
+        self.assertEqual(status, 200, answer)
+        self.assertNotEqual(headers[backup.EPOCH_HEADER], backup.FIRST_EPOCH)
+        self.assertEqual([script["title"] for script in self.store.list_scripts()], ["旧版脚本"])
+        self.assertEqual(self.store.load_creator()["name"], "小林")
+        self.assertEqual((self.backups._note_path.exists(), self.work_folders()), (False, []))
+
+    def test_the_app_closed_in_the_middle_of_a_copy_starts_again_with_the_folder_as_it_was(self):
+        before = holds(self.store)
+        for step in (backup.PLAIN_FILES[0], backup.PLAIN_FILES[-1], backup.HISTORY_FOLDER, "config.json"):
+            backups = backup.Backups(self.store, self.app.jobs)
+
+            def before_step(name, step=step):
+                if name == step:
+                    raise Killed()
+            backups._before_step = before_step
+            with mock.patch.object(updater, "_put_back_as_it_was", side_effect=Killed()):   # nothing runs once it is closed
+                with self.assertRaises(Killed):
+                    updater.migrate_from_previous_folder(self.store, self.sib, backups=backups, jobs=self.app.jobs)
+            self.assertNotEqual(holds(self.store), before, step)                # part of the other folder is in it
+            self.assertFalse(updater.is_data_empty(self.store), step)
+            note = json.loads(backups._note_path.read_text(encoding="utf-8"))
+            self.assertIsNotNone(backup._WORK.fullmatch(note["work"]), note)   # a work folder ``Backups`` knows as its own
+            self.assertTrue((backups.folder / note["work"] / "old" / backup.DATABASE).is_file())
+            started = backup.Backups(self.store, self.app.jobs)                 # the app starts again
+            self.assertEqual(holds(self.store), before, step)
+            self.assertTrue(updater.is_data_empty(self.store), step)
+            self.assertTrue(started.put_back_at_start)
+            self.assertNotEqual(started.epoch, backup.FIRST_EPOCH)              # a page left open starts afresh
+            self.assertEqual((started._note_path.exists(), self.work_folders(started)), (False, []))
+        # And then the copy can be made.
+        again = backup.Backups(self.store, self.app.jobs)
+        self.assertFalse(again.put_back_at_start)
+        answer = updater.migrate_from_previous_folder(self.store, self.sib, backups=again, jobs=self.app.jobs)
+        self.assertEqual((answer["scripts"], answer["samples"]), (1, 1))
+        self.assertEqual(self.store.load_creator()["name"], "小林")
+
+    def test_closed_before_anything_was_put_in_place_there_is_nothing_to_undo(self):
+        before = holds(self.store)
+        self.stop_at(backup.DATABASE, Killed())
+        with self.assertRaises(Killed):
+            updater.migrate_from_previous_folder(self.store, self.sib, backups=self.backups, jobs=self.app.jobs)
+        self.assertEqual(holds(self.store), before)
+        self.assertEqual((self.backups._note_path.exists(), self.work_folders()), (False, []))
+        started = backup.Backups(self.store, self.app.jobs)
+        self.assertEqual((holds(self.store), started.put_back_at_start, started.epoch), (before, False, backup.FIRST_EPOCH))
+
+    def test_when_the_folder_cannot_be_put_back_the_creator_is_told_what_to_do_and_the_next_start_does_it(self):
+        before = holds(self.store)
+        self.stop_at(backup.HISTORY_FOLDER, OSError("the disk went away"))
+        with mock.patch.object(updater, "_put_back_as_it_was", side_effect=OSError("and it is still away")):
+            status, answer, headers = self.copy()
+        self.assertEqual((status, self.said(answer)), (500, "move_undo_failed"))
+        for part in ("the disk went away", "and it is still away", "Close the app and start it again", "was not changed"):
+            self.assertIn(part, answer["message"])
+        self.assertIn("重新打开", answer["message_zh"])
+        self.assertNotEqual(holds(self.store), before)
+        # A page that was open cannot write into what is half there.
+        self.assertNotEqual(headers[backup.EPOCH_HEADER], backup.FIRST_EPOCH)
+        status, stale = self.send("POST", "/api/scripts", {"title": "写进半截数据里"}, headers={backup.EPOCH_HEADER: backup.FIRST_EPOCH})
+        self.assertEqual((status, self.said(stale)), (409, "stale_data"))
+        self.assertTrue(self.backups._note_path.is_file())
+        started = backup.Backups(self.store, self.app.jobs)                     # the app starts again
+        self.assertEqual(holds(self.store), before)
+        self.assertTrue(started.put_back_at_start)
+        self.assertEqual((started._note_path.exists(), self.work_folders(started)), (False, []))
+
+    def test_the_folder_an_unpacked_package_is_filled_in_is_not_kept_or_put_back(self):
+        """Nobody works in it yet, and it is thrown away when the copy fails: the refusal says what it holds."""
+        target = Store(self.tmp / "elsewhere" / "learn-my-voice-0.3.0" / "data")
+        with mock.patch.object(updater, "_keep_as_it_is", side_effect=AssertionError("nothing is kept here")), \
+                mock.patch.object(Store, "_write_bytes", side_effect=OSError(errno.ENOSPC, "No space left on device")):
+            with self.assertRaises(updater.UpdateError) as refused:
+                updater.migrate_from_previous_folder(target, self.sib)
+        self.assertEqual((refused.exception.code, refused.exception.status), ("move_failed", 507))
 
 
 # ---------------------------------------------------------------------------------------------- 6. U3 & U5: bounded apply-zip, never into an existing folder

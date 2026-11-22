@@ -56,6 +56,7 @@ Standard library only.
 from __future__ import annotations
 
 import contextlib
+import errno
 import gc
 import hashlib
 import json
@@ -1218,6 +1219,67 @@ def _bad_source_data_error(detail_en: str, detail_zh: str) -> UpdateError:
     )
 
 
+def _why(exc: BaseException) -> Tuple[str, str, int]:
+    """What stopped a write or a read, as ``(English, Chinese, HTTP status)``, in words a person can act on.
+
+    A full disk and a database that another program holds are named as what they are: both happen, and both are
+    for the creator to put right, not signs that something is wrong with the data. Anything else is given as
+    the system worded it, cut short.
+    """
+    said = str(exc)
+    low = said.lower()
+    full = (isinstance(exc, OSError) and exc.errno in (errno.ENOSPC, getattr(errno, "EDQUOT", errno.ENOSPC))) \
+        or (isinstance(exc, sqlite3.Error) and "full" in low)                  # SQLite: "database or disk is full"
+    if full:
+        return "the disk is full", "磁盘已满", 507
+    if isinstance(exc, TimeoutError) or (isinstance(exc, sqlite3.Error) and ("locked" in low or "busy" in low)):
+        return ("the database is in use by another program, such as a second copy of the app or an AI app connected to it",
+                "数据库正被另一个程序占用，比如另一个打开的工作台，或连着它的 AI 应用", 409)
+    shown = ("%s: %s" % (type(exc).__name__, said[:160])) if said else type(exc).__name__
+    return shown, shown, 500
+
+
+def _move_failed_error(exc: BaseException, as_before: bool = True) -> UpdateError:
+    """The copy did not go through. ``as_before``: the folder it was going into is as it was before."""
+    english, chinese, status = _why(exc)
+    if as_before:
+        return UpdateError(
+            "move_failed",
+            "Copying from the earlier folder could not be finished: %s. This folder is as it was before, with "
+            "nothing from the other folder in it, and the other folder was not changed. You can try again." % english,
+            "从旧版本文件夹复制没有完成：%s。当前文件夹和复制之前一样，里面没有留下旧文件夹的任何内容，旧文件夹也没有改动。可以再试一次。"
+            % chinese,
+            status,
+        )
+    return UpdateError(
+        "move_failed",
+        "Copying from the earlier folder could not be finished: %s. The folder it was going into holds part of the "
+        "data. The earlier folder was not changed." % english,
+        "从旧版本文件夹复制没有完成：%s。目标文件夹里留有一部分内容。旧文件夹没有改动。" % chinese,
+        status,
+    )
+
+
+def _move_undo_failed_error(exc: BaseException, failed: BaseException, at_next_start: bool) -> UpdateError:
+    """The copy did not go through, and what it had already written could not be taken out again."""
+    english, chinese, _ = _why(exc)
+    undo_english, undo_chinese, _ = _why(failed)
+    if at_next_start:
+        then = "Close the app and start it again: it then puts this folder back as it was before the copy."
+        then_zh = "请关闭应用再重新打开：它会把当前文件夹放回复制之前的样子。"
+    else:
+        then = "Part of the other folder's data is in it now."
+        then_zh = "里面现在留有旧文件夹的一部分内容。"
+    return UpdateError(
+        "move_undo_failed",
+        "Copying from the earlier folder failed (%s), and this folder could not be put back as it was (%s). %s "
+        "The earlier folder was not changed." % (english, undo_english, then),
+        "从旧版本文件夹复制失败了（%s），当前文件夹也没能放回复制之前的样子（%s）。%s旧文件夹没有改动。"
+        % (chinese, undo_chinese, then_zh),
+        500,
+    )
+
+
 def _clean_migrated_config(src_cfg: Dict[str, Any], target_existing_cfg: Dict[str, Any]) -> Dict[str, Any]:
     """Keep the earlier folder's settings and sealed API keys, without carrying over stale release caches."""
     out = dict(src_cfg)
@@ -1357,23 +1419,100 @@ def _stage_folder_migration(src_data: Path, work: Path, target_existing_cfg: Dic
     return staged, copied, cfg_bytes
 
 
-def _apply_staged_to_empty_store(target_store: Store, new_dir: Path, cfg_bytes: Optional[bytes]) -> None:
-    """Copy verified staged data into ``target_store`` (replacing DB content via SQLite backup, never unlinking DB)."""
-    backup._copy_database(new_dir / backup.DATABASE, target_store.db_path)
+MOVE_STEPS = (backup.DATABASE,) + tuple(backup.PLAIN_FILES) + (backup.HISTORY_FOLDER, "config.json")
+
+
+def _keep_as_it_is(target_store: Store, old: Path) -> bool:
+    """Copy what the (empty) data folder of ``target_store`` holds into ``old``. Returns whether it had settings.
+
+    The copies are laid out the way ``Backups`` keeps what was there before a restore (``<work>/old``): the
+    database as a snapshot, the small files that are there, ``config.json``. So the same folder serves two
+    ways back: ``_put_back_as_it_was`` when a copy fails, and ``Backups.recover`` when the app is closed in
+    the middle of one and started again.
+    """
+    old.mkdir(mode=0o700)
+    backup._snapshot(target_store.db_path, old / backup.DATABASE)
     with store_module._DNA_LOCK:
         for name in backup.PLAIN_FILES:
+            there = target_store.data_dir / name
+            if backup._is_plain_file(there):
+                Store._write_bytes(old / name, there.read_bytes())
+        earlier = backup._history_names(target_store.dna_history_dir)
+        if earlier:
+            (old / backup.HISTORY_FOLDER).mkdir(mode=0o700)
+        for name in earlier:
+            Store._write_bytes(old / backup.HISTORY_FOLDER / name, (target_store.dna_history_dir / name).read_bytes())
+    with store_module._CONFIG_LOCK:
+        settings = target_store.config_path.read_bytes() if backup._is_plain_file(target_store.config_path) else None
+    if settings is not None:
+        Store._write_bytes(old / "config.json", settings)
+    return settings is not None
+
+
+def _put_back_as_it_was(target_store: Store, old: Path, had_settings: bool) -> None:
+    """Make the data folder of ``target_store`` hold exactly what ``_keep_as_it_is`` copied into ``old``.
+
+    Step for step what ``Backups._put_back`` does, so that the result is the same whichever of the two runs.
+    """
+    backup._copy_database(old / backup.DATABASE, target_store.db_path)
+    with store_module._DNA_LOCK:
+        for name in backup.PLAIN_FILES:
+            kept, there = old / name, target_store.data_dir / name
+            if backup._is_plain_file(kept):
+                Store._write_bytes(there, kept.read_bytes())
+            elif os.path.lexists(str(there)):
+                there.unlink()
+        kept_earlier = backup._history_names(old / backup.HISTORY_FOLDER)
+        for name in backup._history_names(target_store.dna_history_dir):
+            if name not in kept_earlier:
+                (target_store.dna_history_dir / name).unlink()
+        if kept_earlier:
+            target_store.dna_history_dir.mkdir(mode=0o700, exist_ok=True)
+        for name in kept_earlier:
+            Store._write_bytes(target_store.dna_history_dir / name, (old / backup.HISTORY_FOLDER / name).read_bytes())
+    with store_module._CONFIG_LOCK:
+        if backup._is_plain_file(old / "config.json"):
+            Store._write_bytes(target_store.config_path, (old / "config.json").read_bytes())
+        elif not had_settings and os.path.lexists(str(target_store.config_path)):
+            target_store.config_path.unlink()
+    target_store.__dict__.pop("_voice_reference", None)
+
+
+def _apply_staged_to_empty_store(target_store: Store, new_dir: Path, cfg_bytes: Optional[bytes],
+                                 step: Callable[[str], None] = lambda name: None,
+                                 done: Optional[List[str]] = None) -> None:
+    """Put the checked copy in ``new_dir`` into the data folder of ``target_store``, one of MOVE_STEPS after another.
+
+    The database first: SQLite replaces its content in one step and leaves it as it was when that step cannot
+    finish, and the file itself is never removed. Then the small files, the earlier voice profiles and the
+    settings. ``step`` is called with the name of each step before it is taken (a test raises there to stop a
+    copy halfway); ``done`` receives the name of each step once it has changed something. Any failure is the
+    caller's to undo.
+    """
+    done = [] if done is None else done
+    step(backup.DATABASE)
+    backup._copy_database(new_dir / backup.DATABASE, target_store.db_path)
+    done.append(backup.DATABASE)
+    with store_module._DNA_LOCK:
+        for name in backup.PLAIN_FILES:
+            step(name)
             staged_f = new_dir / name
             if backup._is_plain_file(staged_f):
                 Store._write_bytes(target_store.data_dir / name, staged_f.read_bytes(), mode=0o600)
+                done.append(name)
+        step(backup.HISTORY_FOLDER)
         staged_hist = new_dir / backup.HISTORY_FOLDER
         earlier = backup._history_names(staged_hist)
         if earlier:
             target_store.dna_history_dir.mkdir(mode=0o700, exist_ok=True)
+            done.append(backup.HISTORY_FOLDER)
             for hname in earlier:
                 Store._write_bytes(target_store.dna_history_dir / hname, (staged_hist / hname).read_bytes(), mode=0o600)
+    step("config.json")
     if cfg_bytes is not None:
         with store_module._CONFIG_LOCK:
             Store._write_bytes(target_store.config_path, cfg_bytes, mode=0o600)
+        done.append("config.json")
     target_store.__dict__.pop("_voice_reference", None)
     _owner_only(target_store.data_dir)
 
@@ -1388,6 +1527,16 @@ def migrate_from_previous_folder(target_store: Store, source_app_dir: Path, *,
     - Respects ``Backups``'s gate and advances ``Backups.epoch`` so a page open before migration cannot overwrite
       what arrived.
     - Validates and rebuilds ``studio.db`` through ``studio.backup`` before anything in ``target_store`` is touched.
+    - With ``backups`` (the folder the running app works in): all of it or none of it, the way a restore is
+      (``Backups._replace``). What the folder holds is copied aside first, and a note in ``<data>/backups``
+      says a copy has begun. A failure at any step puts the folder back as it was and is refused as
+      ``move_failed``: the folder is still empty and the copy can be tried again. If the app is closed in the
+      middle, the next start finds the note and puts the folder back (``Backups.recover``). Only when putting
+      back fails as well is the refusal ``move_undo_failed``, which says what to do. The data epoch advances
+      when the copy is in place, not before.
+    - Without ``backups`` (a folder nobody works in yet: the one ``unpack_and_migrate_zip`` is filling, which
+      it throws away when this fails) nothing is copied aside and nothing is put back; ``move_failed`` then
+      says that the folder holds part of the data.
     - Never copies ``local_tools/whisper``; reports ``whisper_copied=False`` and ``had_whisper`` so the caller/page
       can state plainly that local transcription must be set up again in a new ``.zip`` folder.
     """
@@ -1410,22 +1559,70 @@ def migrate_from_previous_folder(target_store: Store, source_app_dir: Path, *,
         active_jobs = jobs if jobs is not None else (backups.jobs if backups is not None else None)
         if active_jobs is not None and active_jobs.unfinished():
             raise _migrate_busy_error()
-        if not is_data_empty(target_store):
+        try:
+            empty = is_data_empty(target_store)
+        except (OSError, sqlite3.Error) as exc:
+            raise _move_failed_error(exc)
+        if not empty:
             raise _data_not_empty_error()
 
         work_parent = backups.folder if backups is not None else dst_data
-        work_parent.mkdir(mode=0o700, parents=True, exist_ok=True)
-        work = Path(tempfile.mkdtemp(dir=str(work_parent), prefix="work-migrate-"))
+        work: Optional[Path] = None
+        work_is_needed = False              # true only when the next start has to put the folder back from it
         try:
-            existing_cfg = target_store._read_raw_config_dict()
-            _staged, copied_files, cfg_bytes = _stage_folder_migration(src_data, work, existing_cfg)
+            try:
+                work_parent.mkdir(mode=0o700, parents=True, exist_ok=True)
+                # Named so that ``Backups.recover`` knows the folder as one of its work folders (backup._WORK).
+                work = Path(tempfile.mkdtemp(dir=str(work_parent), prefix="work-migrate_"))
+                existing_cfg = target_store._read_raw_config_dict()
+                _staged, copied_files, cfg_bytes = _stage_folder_migration(src_data, work, existing_cfg)
+                old = work / "old"
+                had_settings = False
+                if backups is not None:
+                    had_settings = _keep_as_it_is(target_store, old)
+                    Store._write_bytes(backups._note_path, Store._encode(
+                        {"work": work.name, "had_settings": had_settings, "started_at": time.time()}))
+            except (OSError, sqlite3.Error) as exc:
+                if backups is not None:
+                    backup._remove(backups._note_path)
+                raise _move_failed_error(exc)           # nothing in the folder has been touched yet
+
             if backups is not None:
                 backups.gate.keep_everyone_out()
-            _apply_staged_to_empty_store(target_store, work / "new", cfg_bytes)
+            done: List[str] = []
+            try:
+                _apply_staged_to_empty_store(target_store, work / "new", cfg_bytes,
+                                             backups._before_step if backups is not None else (lambda name: None), done)
+                if backups is not None:
+                    backups._set_state(dict(backups._state, epoch=uuid.uuid4().hex[:12]))
+            except BaseException as exc:
+                if backups is None:
+                    if isinstance(exc, UpdateError) or not isinstance(exc, Exception):
+                        raise
+                    raise _move_failed_error(exc, as_before=not done)
+                try:
+                    # When the first step, the database, could not be taken, SQLite left it as it was and
+                    # nothing else was touched: there is nothing to put back.
+                    if done:
+                        _put_back_as_it_was(target_store, old, had_settings)
+                except BaseException as failed:
+                    work_is_needed = True   # the note names it: the next start puts the folder back from there
+                    if not isinstance(failed, Exception):
+                        raise
+                    try:                    # a page open before must not write into what is half there
+                        backups._set_state(dict(backups._state, epoch=uuid.uuid4().hex[:12]))
+                    except Exception:  # noqa: BLE001 - the refusal below says what matters
+                        pass
+                    raise _move_undo_failed_error(exc, failed, at_next_start=True)
+                backup._remove(backups._note_path)
+                if isinstance(exc, UpdateError) or not isinstance(exc, Exception):
+                    raise
+                raise _move_failed_error(exc)
             if backups is not None:
-                backups._set_state(dict(backups._state, epoch=uuid.uuid4().hex[:12]))
+                backup._remove(backups._note_path)
         finally:
-            backup._remove_folder(work)
+            if work is not None and not work_is_needed:
+                backup._remove_folder(work)
 
         upgraded = Store(dst_data)
         # Counted through a connection that is closed here, not through Store.list_scripts() and
