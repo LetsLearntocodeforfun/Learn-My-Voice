@@ -28,6 +28,7 @@ import hashlib
 import http.client
 import importlib.util
 import io
+import itertools
 import json
 import os
 import re
@@ -534,7 +535,15 @@ class TrialsTest(ServerCase):
 
 # ---------------------------------------------------------------------------------------------- 3. versions & hostile GitHub inputs
 class VersionAndHardeningTest(ServerCase):
-    def test_version_ordering_agrees_with_build_release_and_buildinfo(self):
+    # What tools/build_release.py makes from the version a changelog heading names.
+    @staticmethod
+    def builds_of(base):
+        """Oldest first: a local build, candidate 1, its second attempt, candidate 2, the release."""
+        return [build_release.version_for(base, None), build_release.version_for(base, 1, 1),
+                build_release.version_for(base, 1, 2), build_release.version_for(base, 2, 1),
+                build_release.version_for(base, None, release=True)]
+
+    def test_versions_come_in_the_order_they_are_made_in(self):
         ordered = [
             "0.2.0-alpha",
             "0.2.0-beta.dev",
@@ -547,6 +556,11 @@ class VersionAndHardeningTest(ServerCase):
             "0.2.0-beta.1",
             "0.2.0-beta.2",
             "0.2.0-beta.10",
+            "0.2.0-rc.1.dev",           # a pre-release that is itself named rc: the name, then the build marks
+            "0.2.0-rc.1.rc.1",
+            "0.2.0-rc.1.rc.1.2",
+            "0.2.0-rc.1",
+            "0.2.0-rc.2",
             "0.2.0.dev",
             "0.2.0.rc.1",
             "0.2.0.rc.1.2",
@@ -554,40 +568,115 @@ class VersionAndHardeningTest(ServerCase):
             "0.3.0-beta.rc.1",
             "0.3.0-beta",
             "0.3.0",
+            "1.0.0-RC.2.dev",
+            "1.0.0-RC.2.rc.3",
+            "1.0.0-RC.2",
+            "1.0.0",
         ]
-        for i in range(len(ordered)):
-            ver = ordered[i]
+        for i, ver in enumerate(ordered):
             self.assertIsNotNone(buildinfo._VERSION.fullmatch(ver), ver)
             self.assertIsNotNone(updater.parse_version(ver), ver)
             self.assertEqual(updater.parse_version("v" + ver), updater.parse_version(ver))
             self.assertFalse(updater.is_newer(ver, ver))
-            for j in range(i + 1, len(ordered)):
-                later = ordered[j]
+            for later in ordered[i + 1:]:
                 self.assertTrue(updater.is_newer(later, ver), (ver, later))
                 self.assertFalse(updater.is_newer(ver, later), (ver, later))
+        # The same version written another way is neither newer nor older.
+        for one, other in (("1.0.0-RC.2", "1.0.0-rc.2"), ("1.10.3+local", "1.10.3"), ("0.2.0-beta.RC.1", "0.2.0-beta.rc.1"),
+                           ("01.2.3", "1.2.3"), (" v0.2.0 ", "0.2.0")):
+            self.assertEqual(updater.parse_version(one), updater.parse_version(other), (one, other))
+            self.assertFalse(updater.is_newer(one, other) or updater.is_newer(other, one), (one, other))
+        # Only a plain X.Y.Z is a release; what is no version is treated as not one.
+        self.assertEqual([updater.is_prerelease_version(ver) for ver in
+                          ("0.2.0", "0.2.0+local", "0.2.0-beta", "0.2.0.dev", "0.2.0.rc.1", "0.3.0-rc.1", "0.2.0.1", "", None)],
+                         [False, False, True, True, True, True, True, True, True])
 
-        # Every build_release.version_for sequence for a base version orders dev < rc.1 < rc.1.2 < rc.2 < release.
-        for base in ("0.2.0-beta", "0.2.0-beta.2", "0.2.0", "1.4.0"):
-            seq = [
-                build_release.version_for(base, None),
-                build_release.version_for(base, 1, 1),
-                build_release.version_for(base, 1, 2),
-                build_release.version_for(base, 2, 1),
-                build_release.version_for(base, None, release=True),
-            ]
-            for a, b in zip(seq, seq[1:]):
-                self.assertIsNotNone(buildinfo._VERSION.fullmatch(a), a)
-                self.assertTrue(updater.is_newer(b, a), (a, b))
+    def test_every_version_a_changelog_heading_leads_to_is_read_as_the_build_file_reads_it_and_in_order(self):
+        """``tools/build_release.py`` makes the versions, ``studio/buildinfo.py`` says which a build file may hold.
 
-        # Build metadata accepted by buildinfo is parsed; hostile or oversized inputs return None without raising.
-        self.assertIsNotNone(updater.parse_version("1.10.3+local"))
-        for bad in (
-            None, 5, [], "", "v", "0.2", "0.2.0.0", "0.2.0+<script>", "0.2.0+",
-            "0.2.0-beta.rc.0", "0.2.0-beta.rc.1.0", "0.2.0-beta.rc.1.dev",
-            "9" * 6000 + ".0.0", "０.２.０", "0.2.0-" + "a" * 90,
-        ):
-            self.assertIsNone(updater.parse_version(bad), repr(bad))
+        For every heading tried, each of the five builds is a version here exactly when a build file may hold
+        it, and where all five are, they come in the order they are made in. Before, a heading such as
+        ``## v0.3.0-rc.1`` gave versions the build file held and the updater did not know: a copy with such a
+        version was never offered anything newer.
+        """
+        names = ("alpha", "beta", "rc", "RC", "dev", "x", "0", "1", "2", "10")
+        after = [""] + ["-" + ".".join(parts) for count in (1, 2, 3) for parts in itertools.product(names, repeat=count)]
+        after += [
+            "-rc1", "-Beta.RC.3", "-007", "-a.b.c.d.e", "-a.b.c.d.e.f",        # five parts leave room for .rc.N.M, six do not
+            "-a.b.c.d.e.f.g.h", "-a.b.c.d.e.f.g.h.i",                         # eight are a release and nothing else; nine nothing
+            "-a..b", "-.a", "-beta.", "-beta-2", "-bet\u00e9", "-" + "a" * 300,
+        ]
+        tried = held = whole = 0
+        for tail in after:
+            for core in ("1.2.3", "0.3.0"):
+                base = build_release.base_version("# Changes\n\n## v%s%s (not released yet)\n\n## v0.1.0\n" % (core, tail))
+                builds = self.builds_of(base)
+                keys = [updater.parse_version(version) for version in builds]
+                for version, key in zip(builds, keys):
+                    tried += 1
+                    held += key is not None
+                    self.assertEqual(key is not None, buildinfo._VERSION.fullmatch(version) is not None, version)
+                if None not in keys:
+                    whole += 1
+                    for earlier, later in zip(builds, builds[1:]):
+                        self.assertTrue(updater.is_newer(later, earlier), (earlier, later))
+                        self.assertFalse(updater.is_newer(earlier, later), (earlier, later))
+        # The headings tried are of both kinds: most lead to versions, some to none or to a release only.
+        self.assertGreater(whole, 2000)
+        self.assertGreater(tried - held, 20)
+        for base in ("0.3.0-rc.1", "1.0.0-RC.2", "0.3.0-beta.rc.1", "0.3.0-dev", "0.3.0-rc"):
+            self.assertNotIn(None, [updater.parse_version(version) for version in self.builds_of(base)], base)
+
+    def test_what_is_no_version_is_none_and_nothing_is_raised(self):
+        long_one = "1.2.3-" + "a" * updater.MAX_VERSION_CHARS
+        for bad in (None, 5, 1.5, [], b"1.2.3", "", " ", "v", "vv1.2.3", "0.2", "1.2.3.", "1.2.3-", "1.2.3+", "0.2.0+<script>",
+                    "0.2.0-a..b", "0.2.0 beta", "0.2.0-b\u00e9ta", "\uff10.\uff12.\uff10", "1.2.3" + ".x" * 9,
+                    "9" * 6000 + ".0.0", long_one, "1.2.3\x00", "<script>alert(1)</script>"):
+            self.assertIsNone(updater.parse_version(bad), repr(bad)[:60])
             self.assertFalse(updater.is_newer(str(bad), "0.2.0"))
+            self.assertFalse(updater.is_newer("9.9.9", str(bad)))
+            self.assertTrue(updater.is_prerelease_version(bad if isinstance(bad, str) else None))
+            if isinstance(bad, str) and bad not in (long_one, "vv1.2.3") and len(bad) < 100:
+                self.assertIsNone(buildinfo._VERSION.fullmatch(bad.strip()), repr(bad))
+        # The one thing a build file could hold in theory and this does not take: a version longer than a
+        # build file may be (buildinfo.MAX_BYTES), which therefore no build file holds.
+        self.assertEqual(updater.MAX_VERSION_CHARS, buildinfo.MAX_BYTES)
+        self.assertIsNotNone(buildinfo._VERSION.fullmatch(long_one))
+        self.assertIsNotNone(updater.parse_version("1.2.3-" + "a" * (updater.MAX_VERSION_CHARS - 6)))
+
+    def test_a_run_from_the_source_reads_the_heading_as_the_build_script_does(self):
+        self.assertEqual((updater._CHANGELOG_HEADING_RE.pattern, updater._CHANGELOG_HEADING_RE.flags),
+                         (build_release._VERSION_HEADING.pattern, build_release._VERSION_HEADING.flags))
+        for heading in ("## v0.3.0-rc.1 (not released yet)", "## v1.0.0-RC.2", "## v0.4.0 (1 December 2026)",
+                        "## v0.3.0-beta-2", "## v0.3.0-bet\u00e9", "## v0.3.0-beta.rc.1"):
+            changelog = "# Changes\n\nWhat changed.\n\n%s\n\n- one\n\n## v0.1.0 (earlier)\n" % heading
+            (self.tmp / "CHANGELOG.md").write_text(changelog, encoding="utf-8")
+            with mock.patch.object(updater, "ROOT", self.tmp), \
+                    mock.patch.object(buildinfo, "BUILD_FILE", self.tmp / "no-build.json"):
+                running = updater.current_version_info()
+            base = build_release.base_version(changelog)
+            self.assertEqual((running["from_source"], running["base_version"], running["version"]),
+                             (True, base, build_release.version_for(base, None)), heading)
+
+    def test_a_copy_whose_version_is_named_rc_is_offered_what_is_newer(self):
+        def release(tag, early=True):
+            return {"tag_name": tag, "draft": False, "prerelease": early, "assets": []}
+
+        self.packaged("0.3.0-rc.1")
+        self.app.update_checks = True
+        # Only older ones are out: the best of them is named, and nothing is offered.
+        older = [release("v0.3.0-rc.1.rc.4"), release("v0.3.0-beta"), release("v0.2.0", early=False)]
+        self.app.update_transport = lambda method, url, headers: json.dumps(older).encode("utf-8")
+        status, answer = self.send("GET", "/api/update?check=1&force=1")
+        self.assertEqual((status, answer["current"]["version"], answer["include_prereleases"]), (200, "0.3.0-rc.1", True))
+        self.assertEqual((answer["latest"]["version"], answer["update_available"]), ("0.3.0-rc.1.rc.4", False))
+        # A later pre-release of the same name, and a release, are offered.
+        for tags, best in (([release("v0.3.0-rc.2"), release("v0.3.0-rc.1")], "0.3.0-rc.2"),
+                           ([release("v1.0.0-RC.2"), release("v0.3.0", early=False)], "1.0.0-RC.2"),
+                           ([release("v0.3.0", early=False), release("v0.3.0-rc.1")], "0.3.0")):
+            self.app.update_transport = lambda method, url, headers, tags=tags: json.dumps(tags).encode("utf-8")
+            status, answer = self.send("GET", "/api/update?check=1&force=1")
+            self.assertEqual((status, answer["latest"]["version"], answer["update_available"]), (200, best, True), tags)
 
     def test_hostile_github_releases_json_and_urls_are_neutralized_or_refused(self):
         self.packaged("0.2.0")

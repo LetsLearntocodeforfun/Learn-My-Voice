@@ -107,14 +107,13 @@ _CHUNK = 256 * 1024
 # unpacked folder in place is tried again for a little over a second. Elsewhere a refusal is a real one.
 _PLACE_TRIES = 12 if os.name == "nt" else 1
 
-_CORE_VER_RE = re.compile(
-    r"^(?P<major>[0-9]{1,9})\.(?P<minor>[0-9]{1,9})\.(?P<patch>[0-9]{1,9})(?P<rest>.*)$",
-    re.ASCII,
-)
-_RC_TAIL_RE = re.compile(r"^\.rc\.(?P<rc>[0-9]{1,9})(?:\.(?P<attempt>[0-9]{1,9}))?$", re.ASCII)
-_PRE_PART_RE = re.compile(r"^[0-9A-Za-z-]{1,32}$", re.ASCII)
-_BUILD_META_RE = re.compile(r"^[0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+){0,7}$", re.ASCII)
-_CHANGELOG_HEADING_RE = re.compile(r"^## v([0-9]{1,9}\.[0-9]{1,9}\.[0-9]{1,9}(?:-[0-9A-Za-z.-]{1,40})?)\b", re.M | re.ASCII)
+# A build file is at most buildinfo.MAX_BYTES long, so no version the app can be running as is longer than this.
+MAX_VERSION_CHARS = buildinfo.MAX_BYTES
+_VERSION_SPLIT_RE = re.compile(r"([0-9]+)\.([0-9]+)\.([0-9]+)(.*)", re.S)
+# The first heading of the changelog names the version being worked towards. Letter for letter the pattern
+# tools/build_release.py takes it with (_VERSION_HEADING), flags included, so that a run from the source and a
+# package built from the same commit read the same base version. tests/test_updater.py holds the two together.
+_CHANGELOG_HEADING_RE = re.compile(r"^## v([0-9]+\.[0-9]+\.[0-9]+(?:-[0-9A-Za-z.]+)?)\b", re.M)
 _SHA256_LINE_RE = re.compile(r"^([0-9a-fA-F]{64})(?:[ \t]+\*?(\S.*))?$", re.ASCII)
 _REPO_RE = re.compile(r"^[A-Za-z0-9_.-]{1,100}/[A-Za-z0-9_.-]{1,100}$", re.ASCII)
 _SIBLING_DIR_RE = re.compile(r"^learn-my-voice-([0-9]{1,9}\.[0-9]{1,9}\.[0-9]{1,9}(?:[-.][0-9A-Za-z]+){0,8})$", re.ASCII)
@@ -128,8 +127,12 @@ _WORK_TABLES = (
     "lessons", "sample_beats", "sample_comments", "sample_sentiments", "metric_snapshots",
 )
 
-VersionPrePart = Union[Tuple[int, int], Tuple[int, str]]
-VersionKey = Tuple[int, int, int, int, Tuple[VersionPrePart, ...], int, int, int]
+# One part of what follows X.Y.Z in a version, as (what kind it is, its number, its word). The kinds are
+# numbered in the order they sort in: see parse_version.
+VersionPart = Tuple[int, int, str]
+VersionKey = Tuple[int, int, int, int, Tuple[VersionPart, ...]]
+_PART_DEV, _PART_RC, _PART_END, _PART_NUMBER, _PART_WORD = range(5)
+_VERSION_END: VersionPart = (_PART_END, 0, "")
 UpdateStream = Union[bytes, bytearray, Iterator[bytes], Any]
 UpdateTransport = Callable[[str, str, Dict[str, str]], UpdateStream]
 
@@ -195,78 +198,59 @@ def repo_name() -> str:
 # ---- version parsing & ordering (agrees with tools/build_release.py & studio/buildinfo.py) ----
 
 def parse_version(raw: Any) -> Optional[VersionKey]:
-    """Parse a release or build version into a strictly comparable tuple, or None when invalid.
+    """A version as something that can be compared, or None when ``raw`` is not a version.
 
-    Accepts every version ``tools/build_release.py`` builds and ``studio/buildinfo.py`` reads:
-    ``X.Y.Z``, ``X.Y.Z-pre``, ``X.Y.Z-pre.N``, ``<base>.dev``, ``<base>.rc.N``, ``<base>.rc.N.M``,
-    optional leading ``v``, and optional ``+build`` metadata.
+    What counts as a version is what ``studio/buildinfo.py`` reads from a build file (``buildinfo._VERSION``),
+    with an optional ``v`` in front as a tag has it, and nothing longer than MAX_VERSION_CHARS. So every version
+    this app can be running as is one, and so is every version ``tools/build_release.py`` makes from a changelog
+    heading that a build file can hold: ``<base>`` for a release, ``<base>.dev`` for a local build,
+    ``<base>.rc.N`` and ``<base>.rc.N.M`` for a release candidate and its later attempts, where ``<base>`` is
+    ``X.Y.Z`` or ``X.Y.Z-<parts with dots between them>``.
 
-    Ordering within the same ``X.Y.Z``:
-    ``0.2.0-alpha < 0.2.0-beta.dev < 0.2.0-beta.rc.1 < 0.2.0-beta.rc.1.2 < 0.2.0-beta
-      < 0.2.0-beta.1 < 0.2.0-beta.2 < 0.2.0-beta.10 < 0.2.0.dev < 0.2.0.rc.1 < 0.2.0``
+    How two versions compare:
+
+    - ``X.Y.Z`` first, as numbers.
+    - Then a version with ``-...`` after ``X.Y.Z`` (a pre-release such as ``0.2.0-beta``) comes before every
+      version without, whatever else follows: ``0.2.0-beta.10 < 0.2.0.dev < 0.2.0``.
+    - Then the parts after ``X.Y.Z``, split at the dots, one by one. Where two versions differ first decides:
+      a part ``dev`` comes first, then a part ``rc``, then the version that has no further part, then a
+      number (by its value), then any other word (by its letters, capitals counting as small letters). So a
+      build made on the way to a version comes before that version, and a version with more to its name
+      comes after the shorter one, as Semantic Versioning has it:
+      ``0.2.0-beta.dev < 0.2.0-beta.rc.1 < 0.2.0-beta.rc.1.2 < 0.2.0-beta.rc.2 < 0.2.0-beta < 0.2.0-beta.1``.
+    - The first part of a pre-release is always a word or a number, never one of the two build marks: in
+      ``0.3.0-rc.1`` the ``rc`` is the name of the pre-release, as ``beta`` is in ``0.3.0-beta``, and
+      ``0.3.0-beta < 0.3.0-rc.1 < 0.3.0-rc.1.1``. A candidate built on the way to it is ``0.3.0-rc.1.rc.1``.
+    - Anything from a ``+`` on says how a build was made and does not order it.
+
+    The same text is the same version however it came about: ``0.3.0-beta.rc.1`` is one place in the order,
+    whether it was built as the first candidate of ``0.3.0-beta`` or from a heading that reads that way.
     """
     if not isinstance(raw, str):
         return None
     cleaned = raw.strip()
-    if not cleaned or len(cleaned) > 80 or not cleaned.isascii():
-        return None
     if cleaned.startswith("v"):
         cleaned = cleaned[1:]
-    if "+" in cleaned:
-        core, meta = cleaned.split("+", 1)
-        if not _BUILD_META_RE.fullmatch(meta):
-            return None
-    else:
-        core = cleaned
-    m = _CORE_VER_RE.fullmatch(core)
-    if not m:
+    if not cleaned or len(cleaned) > MAX_VERSION_CHARS or not cleaned.isascii():
         return None
-    major = int(m.group("major"))
-    minor = int(m.group("minor"))
-    patch = int(m.group("patch"))
-    rest = m.group("rest")
-
-    # Determine build substage suffix (.dev vs .rc.N[.M] vs final of base).
-    substage = 2
-    rc_num = 0
-    rc_att = 0
-    if rest.endswith(".dev"):
-        substage = 0
-        rest = rest[:-4]
-    else:
-        rc_pos = rest.rfind(".rc.")
-        if rc_pos != -1:
-            rc_match = _RC_TAIL_RE.fullmatch(rest[rc_pos:])
-            if not rc_match:
-                return None
-            substage = 1
-            rc_num = int(rc_match.group("rc"))
-            rc_att = int(rc_match.group("attempt")) if rc_match.group("attempt") is not None else 1
-            if rc_num < 1 or rc_att < 1:
-                return None
-            rest = rest[:rc_pos]
-
-    if not rest:
-        has_pre = 1
-        pre_key: Tuple[VersionPrePart, ...] = ()
-    elif rest.startswith("-") and len(rest) > 1:
-        parts = rest[1:].split(".")
-        if len(parts) > 8 or not all(_PRE_PART_RE.fullmatch(p) and p.lower() != "rc" for p in parts):
-            return None
-        has_pre = 0
-        parsed_parts: List[VersionPrePart] = []
-        for p in parts:
-            if p.isdigit():
-                if len(p) > 9:
-                    return None
-                parsed_parts.append((0, int(p)))
-            else:
-                parsed_parts.append((1, p.lower()))
-        pre_key = tuple(parsed_parts)
-    else:
+    if buildinfo._VERSION.fullmatch(cleaned) is None:
         return None
-
-    return (major, minor, patch, has_pre, pre_key, substage, rc_num, rc_att)
+    found = _VERSION_SPLIT_RE.fullmatch(cleaned.split("+", 1)[0])
+    if found is None:
+        return None
+    rest = found.group(4)
+    pre_release = rest.startswith("-")
+    parts: List[VersionPart] = []
+    for index, name in enumerate(rest[1:].split(".") if rest else []):
+        word = name.lower()
+        if word in ("dev", "rc") and not (pre_release and index == 0):
+            parts.append((_PART_DEV if word == "dev" else _PART_RC, 0, ""))
+        elif name.isdigit():
+            parts.append((_PART_NUMBER, int(name), ""))
+        else:
+            parts.append((_PART_WORD, 0, word))
+    parts.append(_VERSION_END)
+    return (int(found.group(1)), int(found.group(2)), int(found.group(3)), 0 if pre_release else 1, tuple(parts))
 
 
 def is_newer(candidate: str, current: str) -> bool:
@@ -278,10 +262,11 @@ def is_newer(candidate: str, current: str) -> bool:
 
 
 def is_prerelease_version(ver: Optional[str]) -> bool:
+    """Whether ``ver`` is anything but a plain ``X.Y.Z`` (with or without ``+...``). What is no version counts as one."""
     parsed = parse_version(ver or "")
     if parsed is None:
         return True
-    return not (parsed[3] == 1 and parsed[5] == 2)
+    return not (parsed[3] == 1 and parsed[4] == (_VERSION_END,))
 
 
 def current_version_info() -> Dict[str, Any]:
