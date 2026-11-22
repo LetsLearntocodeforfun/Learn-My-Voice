@@ -1385,7 +1385,8 @@ class Handler(BaseHTTPRequestHandler):
     def _autopilot_voice_fallback(self, method: str) -> Dict[str, Any]:
         """Fallback handler for ``GET/POST /api/autopilot/voice`` (replaced by W3's voice-learning module on merge)."""
         store = self.app.store
-        held = autopilot.all_settings(store).get("voice")
+        raw_ap = store.load_config().get(autopilot.KEY)
+        held = raw_ap.get("voice") if isinstance(raw_ap, dict) else None
         cur = held if isinstance(held, dict) else {}
         watch_dir = str(cur.get("watch_dir") or "").strip()[:1000]
         route_val = str(cur.get("transcribe_route") or "off")
@@ -1430,7 +1431,8 @@ class Handler(BaseHTTPRequestHandler):
         """Fallback handler for ``GET/POST /api/autopilot/sources`` (replaced by W2's trend-sources module on merge)."""
         import urllib.parse
         store = self.app.store
-        held = autopilot.all_settings(store).get("sources")
+        raw_ap = store.load_config().get(autopilot.KEY)
+        held = raw_ap.get("sources") if isinstance(raw_ap, dict) else None
         cur = held if isinstance(held, dict) else {}
         ai_lookup = bool(cur.get("ai_lookup")) if isinstance(cur.get("ai_lookup"), bool) else False
         keyword_files = bool(cur.get("keyword_files")) if isinstance(cur.get("keyword_files"), bool) else False

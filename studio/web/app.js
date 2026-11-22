@@ -434,6 +434,7 @@ function renderNav(route) {
     item('#/trends', 'nav_trends', 'trends', route === 'trends') +
     item('#/library', 'nav_library', 'library', route === 'library') +
     item('#/voice', 'nav_voice', 'voice', route === 'voice') +
+    item('#/autopilot', 'nav_autopilot', 'trends', route === 'autopilot') +
     item('#/settings', 'nav_settings', 'settings', route === 'settings') +
     `<div class="grow"></div><button type="button" class="lang" id="lang-btn">${icon('globe')}<span>${esc(t('lang_btn'))}</span></button>`;
   document.getElementById('lang-btn').onclick = () => {
@@ -477,6 +478,7 @@ async function router() {
     else if (hash === '#/trends') { renderNav('trends'); await renderTrends(); }
     else if (hash === '#/library') { renderNav('library'); await renderLibrary(); }
     else if (hash === '#/voice') { renderNav('voice'); await renderVoice(); }
+    else if (hash === '#/autopilot') { renderNav('autopilot'); await renderAutopilot(); }
     else if (hash === '#/settings') { renderNav('settings'); renderSettings(); }
     else { renderNav('home'); await renderHome(); }
     if (typeof upCheckOnStartup === 'function') upCheckOnStartup();

@@ -15,6 +15,12 @@ Object.assign(I18N.zh, {
   st_step_script: '第一篇脚本', st_why_script: '写一篇试试，并看到它参照了你的哪些素材。',
   st_step_grow: '越用越像你', st_why_grow: '你改稿的地方会变成可以确认的经验；素材多了可以重新学习。',
   st_continue: '继续', st_saved: '已保存', st_home_next: '设置还没做完，下一步：', st_home_go: '继续设置',
+  st_ap_title: '可选：开启自动学习（Autopilot）',
+  st_ap_desc: '默认关闭。开启后可在应用打开期间为近期计划匹配热词建议、刷新候选选题或监控草稿文件夹，所有运行均可一键撤销。',
+  st_ap_enable_suggest: '开启（只给建议）',
+  st_ap_enable_auto: '开启（安全边界内自动应用）',
+  st_ap_open: '打开自动学习设置',
+  st_ap_enabled_badge: '已开启：{m}',
   cr_storage: '这些保存在这台电脑上。之后用 AI 写稿、学声音、想选题时，它们会随提示词一起发给你选的 AI；查热词时只发内容方向。用本地模型的话，不会离开这台电脑。',
   cr_name: '怎么称呼你', cr_name_ph: '名字或昵称', cr_pronoun: '英文界面里用哪个称呼', cr_she: '她 she', cr_he: '他 he', cr_they: 'TA they',
   cr_channel: '账号名（可不填）', cr_niches: '你主要拍什么', cr_niches_ph: '例如：护肤、日常 Vlog、好物分享',
@@ -130,6 +136,12 @@ Object.assign(I18N.en, {
   st_step_script: 'First script', st_why_script: 'Draft one and see which of {@names} own material it was based on.',
   st_step_grow: 'Keeps learning', st_why_grow: 'Edits to drafts become lessons to confirm; more material means learning again.',
   st_continue: 'Continue', st_saved: 'Saved', st_home_next: 'Setup is not finished. Next step: ', st_home_go: 'Continue setup',
+  st_ap_title: 'Optional: Autopilot background helpers',
+  st_ap_desc: 'Off by default. While the app is open, Autopilot can suggest trend keywords for {@names} plans, refresh candidate topic ideas or watch a drafts folder — every run can be undone.',
+  st_ap_enable_suggest: 'Enable (Suggest only)',
+  st_ap_enable_auto: 'Enable (Auto within bounds)',
+  st_ap_open: 'Open Autopilot',
+  st_ap_enabled_badge: 'Enabled: {m}',
   cr_storage: 'This is stored on this computer. Later, when AI drafts a script, learns the voice or suggests topics, it is sent to the chosen AI with the prompt; a trend lookup sends only the niches. With a local model it does not leave this computer.',
   cr_name: 'Name', cr_name_ph: 'Name or nickname', cr_pronoun: 'Pronoun used in the English interface', cr_she: 'she', cr_he: 'he', cr_they: 'they',
   cr_channel: 'Account name (optional)', cr_niches: 'Main kinds of content', cr_niches_ph: 'e.g. skincare, daily vlogs, product picks',
@@ -264,7 +276,7 @@ function pollSetup(fn, ms, allowedHashes) {
 
 async function renderSetup(openStep) {
   stopSetupPolling();
-  const s = await api('GET', '/api/setup');
+  const [s, ap] = await Promise.all([api('GET', '/api/setup'), api('GET', '/api/autopilot').catch(() => null)]);
   if (typeof openStep === 'string') setupUi.open = openStep;
   if (!SETUP_STEPS.includes(setupUi.open)) setupUi.open = s.next === 'done' ? 'grow' : s.next;
   const done = { creator: s.creator.done, material: s.material.done, voice: s.voice.state === 'active', script: s.first_script.done, grow: s.lessons.accepted > 0 };
@@ -285,10 +297,32 @@ async function renderSetup(openStep) {
         <span class="step-title">${esc(t('st_step_' + key))}<small>${esc(summary[key] || t('st_why_' + key))}</small></span></button>
       ${open ? '<div class="step-body" id="step-body"></div>' : ''}</section>`;
   };
+  const apModeLabel = ap && ap.level === 'auto' ? t('ap_level_auto') : t('ap_level_suggest');
+  const apCard = `<div class="card soft" id="st-autopilot-card" style="margin-top:18px">
+    <div class="row" style="flex-wrap:wrap;gap:10px;align-items:center">
+      <div class="spacer">
+        <h3 style="margin:0">${esc(t('st_ap_title'))}</h3>
+        <p class="hint" style="margin:4px 0 0">${esc(t('st_ap_desc'))}</p>
+      </div>
+      ${ap && ap.enabled ? `<span class="tag ok" id="st-ap-badge">${esc(tf('st_ap_enabled_badge', { m: apModeLabel }))}</span>` : ''}
+      ${ap && ap.on && !ap.enabled ? `<button type="button" class="btn" data-st-ap-enable="suggest">${esc(t('st_ap_enable_suggest'))}</button>
+        <button type="button" class="btn" data-st-ap-enable="auto">${esc(t('st_ap_enable_auto'))}</button>` : ''}
+      <a class="btn" href="#/autopilot" id="st-ap-open">${esc(t('st_ap_open'))}</a>
+    </div>
+  </div>`;
   $view.innerHTML = `<div class="wrap"><h1>${esc(t('st_title'))}</h1><p class="sub">${esc(t('st_sub'))}</p>
     <ul class="promise">${[1, 2, 3, 4].map((n) => `<li>${esc(t('st_promise_' + n))}</li>`).join('')}</ul>
-    ${SETUP_STEPS.map(step).join('')}</div>`;
+    ${SETUP_STEPS.map(step).join('')}${apCard}</div>`;
   $view.querySelectorAll('[data-open]').forEach((b) => { b.onclick = () => renderSetup(b.dataset.open); });
+  $view.querySelectorAll('[data-st-ap-enable]').forEach((b) => {
+    b.onclick = async () => {
+      try {
+        await api('POST', '/api/autopilot/settings', { enabled: true, level: b.dataset.stApEnable });
+        toast(t('ap_saved_toast'));
+        await renderSetup(setupUi.open);
+      } catch (err) { showError(err); }
+    };
+  });
   const body = document.getElementById('step-body');
   if (!body) return;
   const painters = { creator: paintStepCreator, material: paintStepMaterial, voice: paintStepVoice, script: paintStepScript, grow: paintStepGrow };
