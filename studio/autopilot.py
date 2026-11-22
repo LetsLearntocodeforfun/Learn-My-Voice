@@ -36,12 +36,15 @@ When a task runs (``Autopilot.run_due``, called by the scheduler thread once a m
   refused, until the app is closed. A task has to put a limit on everything it waits for.
 - A task that raises is logged as ``failed`` with what it said, cut to MAX_DETAIL_CHARS. The others still run.
   It is tried again after RETRY_AFTER_SEC, then after twice that, four times that and so on while it keeps
-  failing, and never later than its own cadence. A run the app was closed in the middle of is found at the
-  next start, marked ``interrupted``, and tried again by the same rule.
+  failing, up to 128 times that (RETRY_LOOKBACK failures in a row are counted), and never later than its own
+  cadence. A run the app was closed in the middle of is found at the next start, marked ``interrupted``, and
+  tried again by the same rule.
 - A task that calls a model is not started once the day's limit of automatic model calls is used up. It is
-  logged as ``skipped`` and not tried again that day, nor before its cadence has passed: it is never queued for
-  later behind the creator's back. Inside a run every model call is reserved first (``Context.spend``); a
-  refusal there is counted on the run (``calls_refused``). The limit is ``daily_model_calls`` in the settings,
+  logged as ``skipped``, once, and leaves no further line while the limit holds it back. It has its turn when
+  calls are to be had again: when the next day begins, or as soon as the creator raises the limit. Nothing is
+  queued behind the creator's back: a task held back for days then runs once, not once for each of them.
+  Inside a run every model call is reserved first (``Context.spend``); a refusal there is counted on the run
+  (``calls_refused``). The limit is ``daily_model_calls`` in the settings,
   DEFAULT_DAILY_CALLS unless the creator changed it, 0 to MAX_DAILY_CALLS. It counts the calls of runs the
   scheduler started, for the day (by this computer's clock) the run began. A run the creator started by hand
   is their own click, like every other button that calls a model: it is not held back and not counted.
@@ -111,8 +114,8 @@ DAILY_CAP = "daily_cap"                 # ``detail`` of a run that was skipped: 
 DEFAULT_DAILY_CALLS = 12                # automatic model calls a day, unless the creator chose another number
 MAX_DAILY_CALLS = 200                   # the most the creator can choose; 0 means no automatic model call at all
 MAX_CALLS_AT_ONCE = 50                  # what one ``spend`` may ask for: more than that is a mistake in a task
-# The shortest cadence a task may have. Each turn of a task writes one line in the log, so this is also what
-# keeps one task to 144 lines a day.
+# The shortest cadence a task may have. Each turn the scheduler gives a task writes at most one line in the log, so
+# this is also what keeps those to 144 a day for one task. Runs started by hand come on top; MAX_RUNS bounds all.
 MIN_EVERY_SEC = 600
 MAX_EVERY_SEC = 30 * 86400              # the longest: the log is read to know when a task last ran
 MAX_TASKS = 24                          # tasks one registry holds; with KEEP_RUNS_PER_TASK, fewer lines than MAX_RUNS
@@ -121,7 +124,7 @@ MAX_OTHER_SETTINGS = 40                 # settings of other modules that are han
 LOOK_EVERY_SEC = 60.0                   # how often the scheduler looks for what is due
 FIRST_LOOK_AFTER_SEC = 5.0              # after the app started: the page loads first
 RETRY_AFTER_SEC = 3600                  # a failed task is tried again after this, doubled for each failure in a row
-RETRY_LOOKBACK = 8                      # how many of a task's newest runs are read to count failures in a row
+RETRY_LOOKBACK = 8                      # how many of a task's newest runs are read to count failures in a row: the wait stops doubling there
 KEEP_RUNS_PER_TASK = 400                # lines of the log kept for one task (and all of today's)
 MAX_RUNS = 10000                        # lines kept in all, whatever a database from elsewhere holds
 RECENT_RUNS = 50                        # lines the page is given
@@ -237,8 +240,9 @@ class Task:
     - ``calls_model``: whether a run may call a model. Such a task is not started when the day's limit is used
       up, and has to reserve every call with ``context.spend()`` before it makes it.
     - ``due(context)``: an optional further condition, asked once the cadence has passed and then at every look
-      until it is true. It only reads and has to be quick: it is asked while other changes wait. Say here that
-      there is nothing to do (no new file, no new trend): a task that is not due leaves no line in the log.
+      until it is true. It only reads and has to be quick: while it is asked no other task can start and no
+      backup can be restored. Say here that there is nothing to do (no new file, no new trend): a task that is
+      not due leaves no line in the log.
     """
 
     __slots__ = ("name", "run", "every_sec", "calls_model", "due")
@@ -833,8 +837,11 @@ class Autopilot:
                        (json.dumps(records, ensure_ascii=False, allow_nan=False), run_id))
 
     # -- when a task is due -------------------------------------------------
-    def _due_at(self, task: Task, rows: List[Any], now: float) -> float:
-        """When ``task`` may next be started, from its newest lines in the log (the newest first). See the module's words."""
+    def _due_at(self, task: Task, rows: List[Any], now: float, room: bool) -> float:
+        """When ``task`` may next be started, from its newest lines in the log (the newest first). See the module's words.
+
+        ``room``: whether any of today's automatic model calls are left.
+        """
         if not rows:
             return 0.0
         status = _status_of(rows[0], self._current)
@@ -853,7 +860,9 @@ class Autopilot:
                 failures += 1
             return began + min(task.every_sec, RETRY_AFTER_SEC * 2 ** (failures - 1))
         if status == SKIPPED:
-            return max(began + task.every_sec, _day_bounds(began)[1])
+            # Held back by the day's limit. It was due then and still is, as soon as calls are to be had again:
+            # the creator raised the limit, or a new day began.
+            return began if room else _day_bounds(began)[1]
         return began + task.every_sec
 
     def _wants(self, task: Task) -> bool:
@@ -867,10 +876,11 @@ class Autopilot:
         now = float(self.clock())
         waiting = []
         with _db(self.store) as db:
+            room = self._spent_in(db, now) < prefs["daily_model_calls"]
             for index, task in enumerate(self.registry.tasks()):
                 if task.name in tried or prefs["tasks"].get(task.name) is not True:
                     continue
-                due_at = self._due_at(task, _newest(db, task.name, RETRY_LOOKBACK), now)
+                due_at = self._due_at(task, _newest(db, task.name, RETRY_LOOKBACK), now, room)
                 if due_at <= now:
                     waiting.append((due_at, index, task))
         for _when, _index, task in sorted(waiting, key=lambda entry: entry[:2]):
@@ -907,7 +917,7 @@ class Autopilot:
                 with _db(self.store) as db:
                     rows = _newest(db, task.name, RETRY_LOOKBACK)
                     spent = self._spent_in(db, now)
-                if self._due_at(task, rows, now) > now:
+                if self._due_at(task, rows, now, spent < prefs["daily_model_calls"]) > now:
                     return None, None
                 try:
                     if not self._wants(task):
@@ -1063,7 +1073,8 @@ class Autopilot:
         not run by itself: a switch is off, or it is running now. Never earlier than ``now``: a task that is due
         has ``now`` there and is taken up at the scheduler's next look, within LOOK_EVERY_SEC. With a further
         condition it is the earliest time, not a promise);
-        ``running``, the run under way; ``runs``, the newest RECENT_RUNS lines of the log; ``now``.
+        ``running``, the run under way; ``runs``, the newest RECENT_RUNS lines of the log; ``now``;
+        ``look_every_sec``, how often the scheduler looks for what is due.
         """
         prefs = settings(self.store)
         now = float(self.clock())
@@ -1071,17 +1082,18 @@ class Autopilot:
         current = self._current
         tasks = []
         with _db(self.store) as db:
+            spent = self._spent_in(db, now)
+            room = spent < prefs["daily_model_calls"]
             for task in self.registry.tasks():
                 rows = _newest(db, task.name, RETRY_LOOKBACK)
                 switched_on = prefs["tasks"].get(task.name) is True
-                due_at = self._due_at(task, rows, now) if active and switched_on else None
+                due_at = self._due_at(task, rows, now, room) if active and switched_on else None
                 tasks.append({
                     "name": task.name, "on": switched_on, "every_sec": task.every_sec, "calls_model": task.calls_model,
                     "has_condition": task.due is not None,
                     "last_run": _public(rows[0], current) if rows else None,
                     "next_run_at": max(due_at, now) if due_at is not None and math.isfinite(due_at) else None,
                 })
-            spent = self._spent_in(db, now)
             runs = [_public(row, current) for row in
                     db.execute("SELECT * FROM autopilot_runs ORDER BY rowid DESC LIMIT ?", (RECENT_RUNS,)).fetchall()]
             under_way = db.execute("SELECT * FROM autopilot_runs WHERE id = ?", (current,)).fetchone() if current else None
@@ -1092,7 +1104,7 @@ class Autopilot:
                                   "default": DEFAULT_DAILY_CALLS},
             "tasks": tasks,
             "running": _public(under_way, current) if under_way is not None else None,
-            "runs": runs, "now": now,
+            "runs": runs, "now": now, "look_every_sec": LOOK_EVERY_SEC,
         }
 
     def save_settings(self, changes: Any) -> Dict[str, Any]:

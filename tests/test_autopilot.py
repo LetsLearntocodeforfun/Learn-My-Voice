@@ -12,8 +12,8 @@ Each class covers one thing a creator, or a module that registers a task, can re
   when the app is opened is caught up on;
 - a task that raises is logged with what it said, cut short; the next one still runs; it is tried again after
   an hour, then two, then four, and never later than its cadence;
-- a task over the day's limit of automatic model calls is skipped, logged as skipped, and not tried again that
-  day; inside a run a call over the limit is refused;
+- a task over the day's limit of automatic model calls is skipped and logged as skipped, once; it has its turn
+  when the next day begins or the creator raises the limit; inside a run a call over the limit is refused;
 - an undo reverses a run's changes last first, once, and refuses a second time;
 - a run the app was closed in the middle of is marked as interrupted at the next start;
 - the log is bounded, and a log from elsewhere with anything in it can still be shown;
@@ -240,6 +240,7 @@ class SwitchesTest(Case):
                          {"enabled": False, "level": "suggest", "daily_model_calls": 12, "tasks": {}})
         self.assertFalse(self.store.config_path.exists())                    # and reading wrote nothing
         self.assertEqual(self.pilot.status()["daily_model_calls"], {"limit": 12, "spent": 0, "max": 200, "default": 12})
+        self.assertEqual(self.pilot.status()["look_every_sec"], 60.0)        # the page can say how soon a due task is taken up
 
 
 # ---------------------------------------------------------------------------------------------- 2. registering
@@ -601,6 +602,17 @@ class FailureTest(Case):
         self.later(23 * HOUR)
         self.assertEqual(self.look(), [("trends.refresh", "done")])
 
+    def test_for_a_task_with_a_long_cadence_the_wait_stops_doubling_at_128_hours(self):
+        self.task("voice.relearn", every=30 * DAY, run=lambda context: [].pop())
+        self.switch_on("voice.relearn")
+        with quiet():
+            self.assertEqual(self.look(), [("voice.relearn", "failed")])
+            for wait in (1, 2, 4, 8, 16, 32, 64, 128, 128, 128):             # hours; eight failures in a row are counted
+                self.later(wait * HOUR - 1)
+                self.assertEqual(self.look(), [], wait)
+                self.later(1)
+                self.assertEqual(self.look(), [("voice.relearn", "failed")], wait)
+
     def test_a_task_with_a_cadence_shorter_than_an_hour_is_tried_again_at_its_cadence(self):
         self.task("voice.ingest_folder", every=600, run=lambda context: [].pop())
         self.switch_on("voice.ingest_folder")
@@ -692,16 +704,33 @@ class LimitTest(Case):
         self.assertEqual(self.pilot.status()["daily_model_calls"]["spent"], 3)
         self.assertEqual([line["status"] for line in self.lines() if line["task"] == "trends.refresh"], ["done", "skipped", "done"])
 
-    def test_a_skipped_task_also_waits_for_its_cadence(self):
-        self.calling("ideas.refresh", every=3 * DAY)
+    def test_a_task_held_back_today_has_its_turn_tomorrow_however_long_its_cadence_and_runs_once(self):
         self.calling("trends.refresh", every=600)
-        self.switch_on("ideas.refresh", "trends.refresh", daily_model_calls=1)
-        self.clock.now = BASE + 14 * HOUR                                    # eleven at night
+        self.calling("ideas.refresh", every=3 * DAY)
+        self.switch_on("trends.refresh", "ideas.refresh", daily_model_calls=1)
+        self.assertEqual(self.look(), [("trends.refresh", "done"), ("ideas.refresh", "skipped")])
+        midnight = autopilot._day_bounds(BASE)[1]
+        self.assertEqual([task["next_run_at"] for task in self.pilot.status()["tasks"]], [BASE + 600, midnight])
+        self.later(600)
+        self.assertEqual(self.look(), [("trends.refresh", "skipped")])       # the day's one call is spent
+        self.clock.now = midnight + 2 * DAY                                  # the app was closed over the next two days
+        # ideas.refresh, held back first, goes first, and runs once: not once for each day it was held back.
         self.assertEqual(self.look(), [("ideas.refresh", "done"), ("trends.refresh", "skipped")])
-        self.later(HOUR)                                                     # midnight
-        self.assertEqual(self.look(), [("trends.refresh", "done")])          # its ten minutes passed long ago
-        self.later(3 * DAY - 2 * HOUR)
-        self.assertEqual([name for name, _ended in self.look()], ["trends.refresh"])    # ideas.refresh: an hour to go
+        self.assertEqual(self.look(), [])
+        self.assertEqual(self.ran, ["trends.refresh", "ideas.refresh"])
+
+    def test_when_the_creator_raises_the_limit_a_task_that_was_held_back_runs_at_the_next_look(self):
+        self.calling("trends.refresh")
+        self.calling("ideas.refresh", every=3 * DAY)
+        self.switch_on("trends.refresh", "ideas.refresh", daily_model_calls=2)
+        self.assertEqual(self.look(), [("trends.refresh", "done"), ("ideas.refresh", "skipped")])
+        self.later(60)
+        self.assertEqual(self.look(), [])                                    # held back: no line at every look
+        state = self.pilot.save_settings({"daily_model_calls": 5})           # the creator, in Settings
+        self.assertEqual((state["tasks"][1]["name"], state["tasks"][1]["next_run_at"]), ("ideas.refresh", state["now"]))
+        line = self.pilot.run_due()[0]
+        self.assertEqual((line["task"], line["status"], line["model_calls"], self.pilot.spent_today()), ("ideas.refresh", "done", 2, 4))
+        self.assertEqual(self.look(), [])
 
     def test_reserving_says_yes_until_the_limit_and_then_no_and_several_are_reserved_together_or_not_at_all(self):
         told = []
@@ -738,7 +767,11 @@ class LimitTest(Case):
         self.task("plans.suggest")
         self.switch_on("trends.refresh", "plans.suggest", daily_model_calls=0)
         self.assertEqual(self.look(), [("trends.refresh", "skipped"), ("plans.suggest", "done")])
-        self.assertEqual(self.ran, ["plans.suggest"])
+        self.later(HOUR)
+        self.assertEqual(self.look(), [("plans.suggest", "done")])           # no second line for the task that is held back
+        self.clock.now = autopilot._day_bounds(BASE)[1]
+        self.assertEqual(self.look(), [("plans.suggest", "done"), ("trends.refresh", "skipped")])     # one line a day says so
+        self.assertEqual(self.ran, ["plans.suggest"] * 3)
 
     def test_a_limit_the_creator_lowers_while_a_task_runs_holds_from_then_on(self):
         told = []
@@ -1768,7 +1801,7 @@ class RestoreCase(Case):
         return self.backups.stage(copy)
 
     def elsewhere(self):
-        """Another data folder, with a script in it and this test's task switched on."""
+        """Another data folder, with a script in it."""
         there = Store(self.tmp / ("elsewhere-%d" % self.count) / "data")
         there.create_script(title="那边的一篇")
         return there
@@ -1836,7 +1869,7 @@ class RestoreTest(RestoreCase):
         self.task("voice.relearn", run=lambda context: (started.set(), release.wait(10)) and {})
         self.switch_on("voice.relearn")
         preview = self.staged(self.backup_of(self.elsewhere()))
-        self.assertEqual(self.pilot.run_due.__self__.jobs.unfinished(), 0)
+        self.assertEqual(self.jobs.unfinished(), 0)
         look = threading.Thread(target=self.pilot.run_due, daemon=True)      # the scheduler's own run, not one started by hand
         look.start()
         self.assertTrue(started.wait(10))
