@@ -105,6 +105,9 @@ def kept_value(name: Any, value: Any) -> Optional[str]:
     return None
 
 _DNA_LOCK = threading.RLock()       # one replacement of the active voice profile at a time
+# One replacement of the saved topic ideas at a time: a save (Store.save_recommendations) and the step in which
+# studio/autosuggest.py looks at what is saved and then puts other ideas in its place or the earlier ones back.
+_IDEAS_LOCK = threading.RLock()
 _DAY_TEXT = re.compile(r"[0-9]{4}-[0-9]{2}-[0-9]{2}", re.ASCII)      # a day as it is stored: YYYY-MM-DD
 # Copies of earlier voice profiles: voice_dna-<date>-<time>[-<n>].json, or .unreadable for one that could not be read.
 _HISTORY_FILE = re.compile(r"voice_dna-([0-9]{8}-[0-9]{6})(?:-([0-9]{1,6}))?\.(json|unreadable)")
@@ -374,6 +377,39 @@ CREATE TABLE IF NOT EXISTS autopilot_runs (
     detail TEXT NOT NULL DEFAULT '',
     undo_json TEXT NOT NULL DEFAULT '[]',
     undone_at REAL
+);
+CREATE TABLE IF NOT EXISTS plan_suggestions (
+    id TEXT PRIMARY KEY,
+    plan_id TEXT NOT NULL,
+    keyword TEXT NOT NULL,
+    keyword_key TEXT NOT NULL,
+    matched TEXT NOT NULL DEFAULT '',
+    matched_in TEXT NOT NULL DEFAULT '',
+    relevance REAL,
+    score INTEGER,
+    source TEXT NOT NULL DEFAULT 'manual',
+    rising INTEGER,
+    sightings INTEGER,
+    status TEXT NOT NULL DEFAULT 'open',
+    run_id TEXT NOT NULL DEFAULT '',
+    created_at REAL NOT NULL,
+    decided_at REAL,
+    UNIQUE (plan_id, keyword_key)
+);
+CREATE TABLE IF NOT EXISTS idea_sets (
+    id TEXT PRIMARY KEY,
+    run_id TEXT NOT NULL DEFAULT '',
+    status TEXT NOT NULL DEFAULT 'waiting',
+    was TEXT NOT NULL DEFAULT '',
+    replaced_by TEXT NOT NULL DEFAULT '',
+    placed_by TEXT NOT NULL DEFAULT '',
+    ideas_json TEXT NOT NULL,
+    ideas_sha TEXT NOT NULL DEFAULT '',
+    had_ideas INTEGER NOT NULL DEFAULT 0,
+    earlier TEXT,
+    trends_json TEXT NOT NULL DEFAULT '[]',
+    created_at REAL NOT NULL,
+    decided_at REAL
 );
 """
 
@@ -1091,7 +1127,125 @@ class Store:
             return None
 
     def save_recommendations(self, payload: Dict[str, Any]) -> None:
-        self._write_json(self.recommendations_path, payload)
+        with _IDEAS_LOCK:
+            self._write_json(self.recommendations_path, payload)
+
+    def read_recommendations_bytes(self) -> Optional[bytes]:
+        """The ideas file exactly as it is, or None when there is none. For keeping it and comparing it, not for reading ideas.
+
+        Raises ``OSError`` when the file is there and cannot be opened.
+        """
+        try:
+            return self.recommendations_path.read_bytes()
+        except FileNotFoundError:
+            return None
+
+    def write_recommendations_bytes(self, data: Optional[bytes]) -> None:
+        """Make the ideas file hold exactly ``data``, or remove it when ``data`` is None.
+
+        For putting back what the file held, byte for byte, and for putting a kept set in its place
+        (``studio/autosuggest.py``). Written the way every file here is: whole, or not at all.
+        """
+        with _IDEAS_LOCK:
+            if data is None:
+                try:
+                    self.recommendations_path.unlink()
+                except FileNotFoundError:
+                    pass
+            else:
+                self._write_bytes(self.recommendations_path, data)
+
+    # ---- sets of ideas an automatic refresh made (studio/autosuggest.py) ----
+    # One row is one set of topic ideas that autopilot's task ``ideas.refresh`` made. This part only stores: what
+    # a state means, and when a set may take the place of the saved ideas, is in ``studio/autosuggest.py``.
+    #
+    # ``ideas_json`` is the set as the ideas file holds one, and ``ideas_sha`` the SHA-256 of those bytes.
+    # ``status`` is ``waiting`` (offered; the ideas file does not hold it), ``in_use`` (it was put into the ideas
+    # file), ``dismissed``, or ``replaced`` (a later set took its place: ``was`` says what it was until then and
+    # ``replaced_by`` which set that was). ``placed_by`` says who put it into the ideas file, ``run`` or
+    # ``creator``. ``earlier`` is what the ideas file held when a run put the set there, byte for byte;
+    # ``had_ideas`` 0 says there was no ideas file then.
+    @staticmethod
+    def _idea_set_row(row: sqlite3.Row) -> Dict[str, Any]:
+        def text(value: Any) -> str:
+            return value if isinstance(value, str) else ""
+
+        return {"id": text(row["id"]), "run_id": text(row["run_id"]), "status": text(row["status"]),
+                "was": text(row["was"]), "replaced_by": text(row["replaced_by"]), "placed_by": text(row["placed_by"]),
+                "ideas_json": text(row["ideas_json"]), "ideas_sha": text(row["ideas_sha"]),
+                "had_ideas": bool(row["had_ideas"]), "earlier": row["earlier"] if isinstance(row["earlier"], str) else None,
+                "trends_json": text(row["trends_json"]), "created_at": row["created_at"], "decided_at": row["decided_at"]}
+
+    def list_idea_sets(self, limit: int = 50) -> List[Dict[str, Any]]:
+        """The sets that are kept, the newest first, at most ``limit``: a database from elsewhere may hold any number."""
+        with self._db() as db:
+            rows = db.execute("SELECT * FROM idea_sets ORDER BY created_at DESC, rowid DESC LIMIT ?",
+                              (max(1, min(int(limit), 500)),)).fetchall()
+        return [self._idea_set_row(row) for row in rows]
+
+    def get_idea_set(self, set_id: Any) -> Optional[Dict[str, Any]]:
+        if not isinstance(set_id, str):
+            return None
+        with self._db() as db:
+            row = db.execute("SELECT * FROM idea_sets WHERE id = ?", (set_id,)).fetchone()
+        return self._idea_set_row(row) if row else None
+
+    def add_idea_set(self, new: Dict[str, Any], *, replaces: Any = (), keep: int = 12) -> None:
+        """Keep a new set and, in the same step, mark the sets whose place it takes and drop what is over ``keep``.
+
+        ``new`` holds ``id``, ``run_id``, ``status``, ``placed_by``, ``ideas_json``, ``ideas_sha``, ``had_ideas``,
+        ``earlier``, ``trends_json`` and ``created_at``. ``replaces`` are ids: each of those sets that is still
+        waiting or in use becomes ``replaced`` and remembers what it was. A set that is waiting or in use is
+        never dropped; of all the others the newest ``keep`` stay, and the oldest go first.
+        """
+        with self._db() as db:
+            db.execute("BEGIN IMMEDIATE")
+            db.execute(
+                "INSERT INTO idea_sets (id, run_id, status, placed_by, ideas_json, ideas_sha, had_ideas, earlier,"
+                " trends_json, created_at) VALUES (?,?,?,?,?,?,?,?,?,?)",
+                (new["id"], str(new.get("run_id") or ""), new["status"], str(new.get("placed_by") or ""),
+                 new["ideas_json"], str(new.get("ideas_sha") or ""), 1 if new.get("had_ideas") else 0,
+                 new.get("earlier") if isinstance(new.get("earlier"), str) else None,
+                 str(new.get("trends_json") or "[]"), float(new["created_at"])))
+            for old in replaces:
+                db.execute("UPDATE idea_sets SET was = status, status = 'replaced', replaced_by = ?"
+                           " WHERE id = ? AND id != ? AND status IN ('waiting', 'in_use')", (new["id"], old, new["id"]))
+            db.execute("DELETE FROM idea_sets WHERE status NOT IN ('waiting', 'in_use') AND id NOT IN"
+                       " (SELECT id FROM idea_sets WHERE status NOT IN ('waiting', 'in_use')"
+                       " ORDER BY created_at DESC, rowid DESC LIMIT ?)", (max(0, int(keep)),))
+
+    def decide_idea_set(self, set_id: str, *, expect: str, status: str, now: float, placed_by: str = "",
+                        replaces: Any = ()) -> bool:
+        """Move a set from the state ``expect`` to ``status``. False, and nothing written, when it is not in that state.
+
+        ``replaces`` are the ids of sets whose place it takes by this, as in ``add_idea_set``.
+        """
+        with self._db() as db:
+            db.execute("BEGIN IMMEDIATE")
+            moved = db.execute("UPDATE idea_sets SET status = ?, placed_by = ?, decided_at = ? WHERE id = ? AND status = ?",
+                               (status, placed_by, float(now), set_id, expect)).rowcount > 0
+            if moved:
+                for old in replaces:
+                    db.execute("UPDATE idea_sets SET was = status, status = 'replaced', replaced_by = ?"
+                               " WHERE id = ? AND id != ? AND status IN ('waiting', 'in_use')", (set_id, old, set_id))
+        return moved
+
+    def remove_idea_set(self, set_id: str) -> bool:
+        """Take a set out again and, in the same step, give every set it replaced its earlier state back.
+
+        True when there was such a set. This is how a run that made a set is undone. A replaced set does not
+        get a state back that another set holds by now: one set waits and one is in use, at most.
+        """
+        with self._db() as db:
+            db.execute("BEGIN IMMEDIATE")
+            gone = db.execute("DELETE FROM idea_sets WHERE id = ?", (set_id,)).rowcount > 0
+            if gone:
+                for state in ("in_use", "waiting"):
+                    if db.execute("SELECT 1 FROM idea_sets WHERE status = ?", (state,)).fetchone() is None:
+                        db.execute("UPDATE idea_sets SET status = was, was = '', replaced_by = '' WHERE id IN"
+                                   " (SELECT id FROM idea_sets WHERE replaced_by = ? AND status = 'replaced' AND was = ?"
+                                   " ORDER BY created_at DESC, rowid DESC LIMIT 1)", (set_id, state))
+        return gone
 
     # ---- imported material ---------------------------------------------
     @staticmethod
@@ -2362,9 +2516,110 @@ class Store:
                 (script_id, time.time(), plan_id, script_id, script_id, plan_id)).rowcount > 0
 
     def delete_video_plan(self, plan_id: str) -> bool:
-        """Remove a plan. A script made from it is the creator's work and stays."""
+        """Remove a plan, and with it the trend keywords that were suggested for it (``plan_suggestions``).
+
+        A script made from it is the creator's work and stays.
+        """
         with self._db() as db:
+            db.execute("BEGIN IMMEDIATE")
+            db.execute("DELETE FROM plan_suggestions WHERE plan_id = ?", (plan_id,))
             return db.execute("DELETE FROM video_plans WHERE id = ?", (plan_id,)).rowcount > 0
+
+    # ---- trend keywords suggested for a plan (studio/autosuggest.py) -------
+    # One row is one tracked trend keyword offered for one plan, with why it fits: the pieces of the keyword that
+    # were found (``matched``), in which of the plan's title, notes and questions (``matched_in``), which share of
+    # the keyword that is (``relevance``), and the keyword's score and source when it was offered. ``rising`` and
+    # ``sightings`` are NULL unless the trend list said them. This part only stores; ``studio/autosuggest.py``
+    # decides what is offered.
+    #
+    # ``status`` is ``open`` until the creator takes the keyword (``taken``) or dismisses it (``dismissed``), or
+    # the run that offered it is undone (``withdrawn``). A plan is offered a keyword at most once (the UNIQUE
+    # rule), so one that was dismissed or withdrawn is not offered for that plan again. Nothing here changes a
+    # plan: taking a keyword is ``planner.change``, asked for by the creator.
+    MAX_SUGGESTIONS_LISTED = 5000       # rows handed out at once, whatever a database from elsewhere holds
+
+    @staticmethod
+    def _suggestion_row(row: sqlite3.Row) -> Dict[str, Any]:
+        def text(value: Any) -> str:
+            return value if isinstance(value, str) else ""
+
+        def number(value: Any) -> Optional[float]:
+            return float(value) if isinstance(value, (int, float)) and not isinstance(value, bool) and math.isfinite(value) else None
+
+        def whole(value: Any) -> Optional[int]:
+            return int(number(value)) if number(value) is not None else None
+
+        return {"id": text(row["id"]), "plan_id": text(row["plan_id"]), "keyword": text(row["keyword"]),
+                "keyword_key": text(row["keyword_key"]), "matched": text(row["matched"]),
+                "matched_in": [part for part in text(row["matched_in"]).split(",") if part],
+                "relevance": number(row["relevance"]),
+                "score": whole(row["score"]), "source": text(row["source"]) or "manual",
+                "rising": None if row["rising"] is None else bool(row["rising"]), "sightings": whole(row["sightings"]),
+                "status": text(row["status"]), "run_id": text(row["run_id"]),
+                "created_at": row["created_at"], "decided_at": row["decided_at"]}
+
+    def list_plan_suggestions(self, status: Optional[str] = None) -> List[Dict[str, Any]]:
+        """The suggestions that are kept, or those in one state, the oldest first, at most MAX_SUGGESTIONS_LISTED."""
+        with self._db() as db:
+            if status is None:
+                rows = db.execute("SELECT * FROM plan_suggestions ORDER BY created_at ASC, rowid ASC LIMIT ?",
+                                  (self.MAX_SUGGESTIONS_LISTED,)).fetchall()
+            else:
+                rows = db.execute("SELECT * FROM plan_suggestions WHERE status = ? ORDER BY created_at ASC, rowid ASC LIMIT ?",
+                                  (status, self.MAX_SUGGESTIONS_LISTED)).fetchall()
+        return [self._suggestion_row(row) for row in rows]
+
+    def get_plan_suggestion(self, suggestion_id: Any) -> Optional[Dict[str, Any]]:
+        if not isinstance(suggestion_id, str):
+            return None
+        with self._db() as db:
+            row = db.execute("SELECT * FROM plan_suggestions WHERE id = ?", (suggestion_id,)).fetchone()
+        return self._suggestion_row(row) if row else None
+
+    def add_plan_suggestions(self, rows: List[Dict[str, Any]]) -> List[str]:
+        """Keep new suggestions, all in one step, and return the ids of those that were kept.
+
+        Each row holds ``id``, ``plan_id``, ``keyword``, ``keyword_key``, ``matched``, ``matched_in`` (a list),
+        ``relevance``, ``score``, ``source``, ``rising``, ``sightings``, ``run_id`` and ``created_at``. One for a
+        plan that is gone, or for a keyword that plan was offered before, is left out and not counted.
+        """
+        kept: List[str] = []
+        with self._db() as db:
+            db.execute("BEGIN IMMEDIATE")
+            for row in rows:
+                rising, sightings = row.get("rising"), row.get("sightings")
+                added = db.execute(
+                    "INSERT OR IGNORE INTO plan_suggestions (id, plan_id, keyword, keyword_key, matched, matched_in,"
+                    " relevance, score, source, rising, sightings, run_id, created_at)"
+                    " SELECT ?,?,?,?,?,?,?,?,?,?,?,?,? WHERE EXISTS (SELECT 1 FROM video_plans WHERE id = ?)",
+                    (row["id"], row["plan_id"], row["keyword"], row["keyword_key"], str(row.get("matched") or ""),
+                     ",".join(row.get("matched_in") or []), row.get("relevance"), row.get("score"),
+                     str(row.get("source") or "manual"), None if rising is None else (1 if rising else 0),
+                     sightings if isinstance(sightings, int) and not isinstance(sightings, bool) else None,
+                     str(row.get("run_id") or ""), float(row["created_at"]), row["plan_id"])).rowcount
+                if added:
+                    kept.append(row["id"])
+        return kept
+
+    def decide_plan_suggestion(self, suggestion_id: str, status: str, now: float) -> bool:
+        """Mark an open suggestion as ``taken`` or ``dismissed``. False, and nothing written, when it is not open."""
+        with self._db() as db:
+            return db.execute("UPDATE plan_suggestions SET status = ?, decided_at = ? WHERE id = ? AND status = 'open'",
+                              (status, float(now), suggestion_id)).rowcount > 0
+
+    def withdraw_plan_suggestions(self, ids: List[str]) -> int:
+        """Mark those of ``ids`` that are still open as ``withdrawn`` and return how many that were.
+
+        This is how a run that offered them is undone. The rows stay, so the same keyword is not offered for
+        the same plan by the next run. One the creator took or dismissed stays as it is: it is the creator's
+        decision by then.
+        """
+        wanted = [one for one in ids if isinstance(one, str)][:1000]
+        if not wanted:
+            return 0
+        with self._db() as db:
+            return db.execute("UPDATE plan_suggestions SET status = 'withdrawn' WHERE status = 'open' AND id IN (%s)"
+                              % ",".join("?" * len(wanted)), wanted).rowcount
     # ---- brand briefs for sponsored scripts (studio/sponsored.py) --------
     # A brief has a table of its own (``sponsor_briefs``) and nothing below reads or writes a script's row. So
     # nothing that hands out a script hands out a brief, and none of this moves a script's ``updated_at``.

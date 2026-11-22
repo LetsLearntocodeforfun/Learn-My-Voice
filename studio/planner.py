@@ -42,7 +42,7 @@ import re
 from typing import Any, Dict, List, Optional
 
 from . import llm, pipeline, rednote_analytics
-from .store import Store
+from .store import MAX_KEYWORDS_PER_SCRIPT, Store
 
 IDEA, PLANNED, SCRIPTING, READY, POSTED = "IDEA", "PLANNED", "SCRIPTING", "READY", "POSTED"
 PLAN_STATUSES = (IDEA, PLANNED, SCRIPTING, READY, POSTED)
@@ -97,6 +97,19 @@ REFUSALS = {
                          "一次最多加 %d 条计划。这次什么都没有加。" % MAX_AT_ONCE),
     "nothing_chosen": (400, "Nothing was chosen to add.", "还没有勾选要加的内容。"),
     "reply_required": (400, "Paste the AI's reply first.", "请先把 AI 的回复粘贴进来。"),
+    # A trend keyword suggested for a plan (studio/autosuggest.py): taking it, or dismissing it.
+    "suggestion_not_found": (404, "There is no such suggestion for this plan. Nothing was changed.",
+                             "这条计划没有这条建议。这次没有改动任何内容。"),
+    "suggestion_decided": (409, "This suggestion was already taken or dismissed, or the run that made it was undone. "
+                                "Nothing was changed.",
+                           "这条建议已经采用过或忽略过了，或者提出它的那次运行已经撤销了。这次没有改动任何内容。"),
+    "keywords_full": (409, "This plan already has %d keywords, as many as a plan can hold. Remove one from the plan "
+                           "first. The suggestion is still there, and nothing was changed." % MAX_KEYWORDS_PER_SCRIPT,
+                      "这条计划已经有 %d 个关键词了，不能再多。请先从计划里去掉一个。这条建议还在，这次没有改动任何内容。"
+                      % MAX_KEYWORDS_PER_SCRIPT),
+    "suggestion_unusable": (409, "This keyword cannot be kept as a keyword of a plan (it is empty or too long), so "
+                                 "nothing was changed.",
+                            "这个关键词没法存成计划的关键词（是空的或者太长），所以这次没有改动任何内容。"),
 }
 
 
@@ -207,7 +220,10 @@ def _opportunity_has_substance(opportunity: Dict[str, Any]) -> bool:
 def payload(store: Store) -> Dict[str, Any]:
     """Everything the plan page shows (``GET /api/plans``), and what the MCP tool that lists the plan returns.
 
-    - ``plans``: every plan as it is shown (``plans``). ``counts``: how many are in each state.
+    - ``plans``: every plan as it is shown (``plans``), each with ``suggestions``: the trend keywords that were
+      suggested for it and that the creator has neither taken nor dismissed (``autosuggest.for_plans``; ``[]``
+      when there are none). A suggestion is shown beside the plan; it is no part of it.
+      ``counts``: how many plans are in each state.
     - ``today``: today here, ``YYYY-MM-DD``, for the calendar.
     - ``opportunities`` and ``top_audience_questions``: from ``rednote_analytics.analytics_overview``, with
       their fields as that module gives them, without those that are planned already (a model opportunity
@@ -221,7 +237,12 @@ def payload(store: Store) -> Dict[str, Any]:
 
     It reads and works out. It writes nothing.
     """
+    from . import autosuggest       # here and not at the top: that module changes a plan through this one
+
     shown = plans(store)
+    if shown:
+        suggested = autosuggest.for_plans(store, shown)
+        shown = [dict(plan, suggestions=suggested.get(plan["id"], [])) for plan in shown]
     analytics = rednote_analytics.analytics_overview(store)
     titles = {_key(plan["title"]) for plan in shown}
     answered = {_key(question) for plan in shown for question in plan["questions"]}
