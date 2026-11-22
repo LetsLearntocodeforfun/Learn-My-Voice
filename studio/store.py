@@ -375,6 +375,26 @@ CREATE TABLE IF NOT EXISTS autopilot_runs (
     undo_json TEXT NOT NULL DEFAULT '[]',
     undone_at REAL
 );
+CREATE TABLE IF NOT EXISTS watched_files (
+    path TEXT PRIMARY KEY,
+    size INTEGER NOT NULL,
+    changed_ns INTEGER NOT NULL,
+    seen_at REAL NOT NULL,
+    state TEXT NOT NULL DEFAULT 'seen',
+    kind TEXT NOT NULL DEFAULT '',
+    reason TEXT NOT NULL DEFAULT '',
+    attempts INTEGER NOT NULL DEFAULT 0,
+    retry_at REAL,
+    result TEXT NOT NULL DEFAULT '',
+    run_id TEXT NOT NULL DEFAULT '',
+    done_at REAL
+);
+CREATE TABLE IF NOT EXISTS auto_lessons (
+    signature TEXT PRIMARY KEY,
+    lesson_id TEXT NOT NULL DEFAULT '',
+    scripts INTEGER NOT NULL DEFAULT 0,
+    accepted_at REAL NOT NULL
+);
 """
 
 # Columns added after a table first shipped: (table, column, definition). A database created by an
