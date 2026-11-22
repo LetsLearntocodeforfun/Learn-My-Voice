@@ -86,10 +86,11 @@ _PLACEHOLDER_SUBSTRINGS = (
     "{{",
 )
 
-FileMatcher = Callable[[Path], bool]
+FileMatcher = Callable[..., bool]
 FileIngester = Callable[[autopilot.Context, Path], Dict[str, Any]]
+FileActiveCheck = Optional[Callable[[Store], bool]]
 _HANDLER_LOCK = threading.Lock()
-_FILE_HANDLERS: Dict[str, Tuple[FileMatcher, FileIngester]] = {}
+_FILE_HANDLERS: Dict[str, Tuple[FileMatcher, FileIngester, FileActiveCheck]] = {}
 
 
 class VoiceAutoError(Exception):
@@ -119,16 +120,24 @@ def _unlink_quietly(path: Path) -> None:
 
 
 # ---- external file-handler registry --------------------------------------------
-def register_file_handler(kind: str, matches: FileMatcher, take_in: FileIngester) -> None:
+def register_file_handler(
+    kind: str,
+    matches: FileMatcher,
+    take_in: FileIngester,
+    *,
+    active: FileActiveCheck = None,
+) -> None:
     """Register a non-media watched-folder file handler (invoked once a matching file settles)."""
     if not isinstance(kind, str) or not _KIND_RE.fullmatch(kind) or kind == "media":
         raise ValueError("file handler kind must be a short lower-case identifier (not 'media'): %r" % (kind,))
     if not callable(matches) or not callable(take_in):
         raise ValueError("matches and take_in must be callables")
+    if active is not None and not callable(active):
+        raise ValueError("active must be callable or None")
     with _HANDLER_LOCK:
         if kind in _FILE_HANDLERS:
             raise ValueError("file handler %r is already registered" % (kind,))
-        _FILE_HANDLERS[kind] = (matches, take_in)
+        _FILE_HANDLERS[kind] = (matches, take_in, active)
 
 
 def unregister_file_handler(kind: str) -> bool:
@@ -137,9 +146,19 @@ def unregister_file_handler(kind: str) -> bool:
         return _FILE_HANDLERS.pop(kind, None) is not None
 
 
-def _snapshot_handlers() -> List[Tuple[str, FileMatcher, FileIngester]]:
+def _snapshot_handlers(store: Optional[Store] = None) -> List[Tuple[str, FileMatcher, FileIngester]]:
     with _HANDLER_LOCK:
-        return [(kind, pair[0], pair[1]) for kind, pair in _FILE_HANDLERS.items()]
+        entries = list(_FILE_HANDLERS.items())
+    out: List[Tuple[str, FileMatcher, FileIngester]] = []
+    for kind, (matches, take_in, active) in entries:
+        if active is not None and store is not None:
+            try:
+                if not active(store):
+                    continue
+            except Exception:  # noqa: BLE001 - treat faulty predicate as inactive
+                continue
+        out.append((kind, matches, take_in))
+    return out
 
 
 # ---- watched-folder path checks & settings -------------------------------------
@@ -358,13 +377,18 @@ def _classify_path(
     path: Path,
     route: str,
     handlers: List[Tuple[str, FileMatcher, FileIngester]],
+    store: Optional[Store] = None,
 ) -> Optional[str]:
     name_lower = path.name.lower()
     if path.name.startswith(".") or any(name_lower.endswith(suf) for suf in _IGNORED_SUFFIXES):
         return None
     for kind, matches, _take_in in handlers:
         try:
-            if matches(path):
+            try:
+                matched = matches(path, store) if store is not None else matches(path)  # type: ignore[call-arg]
+            except TypeError:
+                matched = matches(path)
+            if matched:
                 return kind
         except Exception:  # noqa: BLE001 - a faulty matcher skips the file rather than crashing due()
             continue
@@ -384,6 +408,7 @@ def _scan_watch_dir(
     watch_dir: str,
     route: str,
     handlers: List[Tuple[str, FileMatcher, FileIngester]],
+    store: Optional[Store] = None,
 ) -> List[Dict[str, Any]]:
     """Read-only scan up to depth 2 (root + immediate subfolders). Never modifies creator files."""
     if not watch_dir:
@@ -408,7 +433,7 @@ def _scan_watch_dir(
         if not stat.S_ISREG(st.st_mode) or st.st_size <= 0:
             return
         file_path = Path(os.path.normpath(entry.path))
-        kind = _classify_path(file_path, route, handlers)
+        kind = _classify_path(file_path, route, handlers, store=store)
         if kind is None:
             return
         found.append({
@@ -625,10 +650,10 @@ def _ingest_due(context: autopilot.Context) -> bool:
     watch_dir, route, exists = _clean_stored_voice(context.store, context.settings.get(SETTING_KEY))
     if not watch_dir or not exists:
         return False
-    handlers = _snapshot_handlers()
+    handlers = _snapshot_handlers(context.store)
     if route == "off" and not handlers:
         return False
-    scanned = _scan_watch_dir(watch_dir, route, handlers)
+    scanned = _scan_watch_dir(watch_dir, route, handlers, store=context.store)
     if not scanned:
         return False
     by_path = {row["path"]: row for row in context.store.list_watched_files()}
@@ -717,7 +742,7 @@ def _ingest_run(context: autopilot.Context) -> Dict[str, Any]:
             "confirmed": 0,
             "failed": 0,
         }
-    handlers = _snapshot_handlers()
+    handlers = _snapshot_handlers(store)
     if route == "off" and not handlers:
         return {
             "status": "skipped",
@@ -728,7 +753,7 @@ def _ingest_run(context: autopilot.Context) -> Dict[str, Any]:
             "failed": 0,
         }
 
-    scanned = _scan_watch_dir(watch_dir, route, handlers)
+    scanned = _scan_watch_dir(watch_dir, route, handlers, store=store)
     by_path = {row["path"]: row for row in store.list_watched_files()}
     now = context.now
 
@@ -809,6 +834,8 @@ def _ingest_run(context: autopilot.Context) -> Dict[str, Any]:
                         (str(exc)[:240], context.now, row["id"]),
                     )
                 failed_count += 1
+                continue
+            if isinstance(ext_res, dict) and ext_res.get("status") == "skipped":
                 continue
             ext_sample_id = ext_res.get("sample_id") if isinstance(ext_res, dict) and isinstance(ext_res.get("sample_id"), str) else None
             with _db(store) as db, db:

@@ -884,10 +884,11 @@ class EveryCallerTest(StoreCase):
             if self.calls_of(source, "load_lexicon"):
                 loaders[path.name] = len(self.calls_of(source, "load_lexicon"))
         # Who checks text. A new caller has to be added here, with the list it reads.
-        self.assertEqual(sorted(callers), ["checks.py", "creator.py", "guardrails.py", "sponsored.py", "trends.py", "wordlist.py"])
+        self.assertEqual(sorted(callers), ["autovoice.py", "checks.py", "creator.py", "guardrails.py", "sponsored.py", "trends.py", "wordlist.py"])
         for name, calls in callers.items():
             self.assertEqual(len(calls), 1, name)
             self.assertIn("lexicon=", calls[0], name)                             # none leaves the choice of list to the default
+        self.assertIn("lexicon={}", callers["autovoice.py"][0])                   # only the creator's never-say phrases: no word list at all
         self.assertIn("lexicon=lexicon", callers["checks.py"][0])                 # wordlist.effective(store), two lines above
         self.assertIn("lexicon={}", callers["creator.py"][0])                     # only the creator's never-say phrases: no word list at all
         self.assertIn("lexicon=self.reduced", callers["sponsored.py"][0])         # wordlist.effective(store), compliance + own_phrases
@@ -898,7 +899,7 @@ class EveryCallerTest(StoreCase):
         self.assertIn("lexicon = wordlist.effective(store)", checks_source)
         trends_source = (ROOT / "studio" / "trends.py").read_text(encoding="utf-8")
         self.assertIn("lexicon = wordlist.effective(store)", trends_source)
-        self.assertIn("score_trends(store.list_trends(), store.list_samples(), dna, weight, now, lexicon)", trends_source)
+        self.assertIn("score_trends(store.list_trends(), store.list_samples(), dna, weight, now, lexicon,", trends_source)
         # Who reads the shipped file: the linter itself (its default and its command line) and wordlist.shipped.
         self.assertEqual(loaders, {"guardrails.py": 2, "wordlist.py": 1})
         for name in ("server.py", "mcp_server.py", "suggest.py", "pipeline.py"):

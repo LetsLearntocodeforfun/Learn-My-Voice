@@ -88,7 +88,7 @@ import zlib
 from pathlib import Path
 from typing import Any, Callable, Dict, Iterator, List, Optional, Sequence, Set, Tuple, Union
 
-from . import backup, buildinfo, creator, keystore, llm, outside, wordlist
+from . import autopilot, autosuggest, autovoice, backup, buildinfo, creator, keystore, llm, outside, trend_sources, wordlist
 from . import store as store_module
 from .store import ROOT, Store, _owner_only
 
@@ -142,6 +142,7 @@ _FORBIDDEN_ZIP_PREFIXES = ("data/", "local_tools/", ".git/", ".github/", "tests/
 _WORK_TABLES = (
     "scripts", "samples", "trends", "video_plans", "sponsor_briefs",
     "lessons", "sample_beats", "sample_comments", "sample_sentiments", "metric_snapshots",
+    "plan_suggestions", "idea_sets",
 )
 
 # One part of what follows X.Y.Z in a version, as (what kind it is, its number, its word). The kinds are
@@ -1333,6 +1334,38 @@ def _page_keeps(value: Any) -> Optional[Dict[str, str]]:
     return kept or None
 
 
+def _autopilot_keeps(value: Any) -> Optional[Dict[str, Any]]:
+    """What Autopilot kept in another folder, cleaned key by key and carried switched off until turned back on."""
+    if not isinstance(value, dict):
+        return None
+    known = ("enabled", "level", "daily_model_calls", "tasks", trend_sources.SETTINGS_KEY, autovoice.SETTING_KEY)
+    if not any(k in value for k in known):
+        return None
+    base = autopilot._clean(value)
+    base["enabled"] = False
+    registered = {t.name for t in autopilot.REGISTRY.tasks()}
+    base["tasks"] = {k: v for k, v in base["tasks"].items() if k in registered}
+    if isinstance(value.get(trend_sources.SETTINGS_KEY), dict):
+        src = trend_sources.clean_source_settings(value.get(trend_sources.SETTINGS_KEY))
+        base[trend_sources.SETTINGS_KEY] = {
+            "ai_lookup": src["ai_lookup"],
+            "keyword_files": src["keyword_files"],
+            "pages": src["pages"],
+        }
+    if isinstance(value.get(autovoice.SETTING_KEY), dict):
+        raw_voice = value[autovoice.SETTING_KEY]
+        raw_route = raw_voice.get("transcribe_route")
+        route = raw_route if isinstance(raw_route, str) and raw_route in autovoice.TRANSCRIBE_ROUTES else "off"
+        raw_dir = raw_voice.get("watch_dir")
+        watch_dir = ""
+        if isinstance(raw_dir, str) and "\x00" not in raw_dir and len(raw_dir) <= 4096:
+            trimmed = autovoice._strip_trailing_sep(raw_dir.strip())
+            if trimmed and Path(trimmed).is_absolute() and not autovoice._has_user_symlink(Path(trimmed)):
+                watch_dir = os.path.normpath(trimmed)
+        base[autovoice.SETTING_KEY] = {"watch_dir": watch_dir, "transcribe_route": route}
+    return base
+
+
 # The settings a copy from another folder carries, besides the AI connection and what is kept about updates
 # (those two have rules of their own, in _settings_to_carry): each name config.json holds, with what turns a
 # value from outside into one the app would have stored itself, or into None, which leaves it out. A name
@@ -1341,6 +1374,7 @@ CARRIED_SETTINGS: Tuple[Tuple[str, Callable[[Any], Any]], ...] = (
     ("trend_weight", _as_a_backup_carries("trend_weight")),
     (wordlist.KEY, _as_a_backup_carries(wordlist.KEY)),
     ("page", _page_keeps),
+    (autopilot.KEY, _autopilot_keeps),
 )
 
 

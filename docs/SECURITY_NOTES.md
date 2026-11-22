@@ -12,7 +12,7 @@ Learn-My-Voice runs locally on your own computer. This note summarizes the defen
 
 ## 2. Encrypted-at-Rest API Keys & Local Data Permissions
 
-- **Sealed API keys (`studio/keystore.py`):** Cloud API keys (`Gemini`, `OpenAI`) are never stored in plaintext inside `data/config.json` and are never returned to the browser.
+- **Sealed API keys (`studio/keystore.py`):** Cloud API keys (`Gemini`, `OpenAI`, `Anthropic`) are never stored in plaintext inside `data/config.json` and are never returned to the browser.
   - **Windows:** Keys are protected with Win32 DPAPI (`CryptProtectData` / `CryptUnprotectData` with domain entropy).
   - **macOS & Linux:** Keys are sealed with Encrypt-then-MAC (`SHA-256` counter stream + `HMAC-SHA256`) using a `0600` master key stored outside `data/` in your user application-config folder. *(Threat model: sealing keeps plaintext keys out of `data/` copies, sync folders, and backups; any program running under your same OS user account shares your OS permissions.)*
   - **Safe cross-machine handling:** If a `data/` folder is copied to another computer or user account where the sealed key cannot be opened, the sealed blob is preserved untouched (never silently wiped) and Settings asks you to enter the key on that machine.
@@ -22,8 +22,8 @@ Learn-My-Voice runs locally on your own computer. This note summarizes the defen
 ## 3. Outbound Network & Redirect Hardening
 
 - **No redirect credential forwarding:** Cloud API requests reject `3xx` HTTP redirects before `Authorization` / API key headers or prompts can be forwarded elsewhere. Local-model (`Ollama` / `LM Studio`) requests bypass system proxies, reject embedded URL credentials, queries, or fragments, and follow at most 3 redirects only when the redirect target also resolves strictly to loopback (`127.0.0.1` / `::1`).
-- **Secret scrubbing:** Upstream HTTP/network error messages scrub active header tokens and `sk-...` / `AIza...` key patterns before surfacing diagnostics.
-- **No platform scraping:** The studio never logs into or scrapes Xiaohongshu (`xhslink.com` / `xiaohongshu.com`). All material enters from files you choose or text you paste.
+- **Secret scrubbing:** Upstream HTTP/network error messages scrub active header tokens and `sk-...` / `sk-ant-...` / `AIza...` key patterns before surfacing diagnostics.
+- **No Xiaohongshu / RedNote platform scraping:** The studio never logs into or scrapes Xiaohongshu (`xiaohongshu.com`, `rednote.com`, `xhslink.com`), and refuses those domains by name before any DNS or socket call. Optional **Autopilot** (`#/autopilot`, switched off by default) makes background requests only to sources you explicitly enable: your configured AI provider (bounded by a daily model-call cap) or up to 5 public `https://` trend pages you configure, which must resolve exclusively to global public IPs (`ip_address.is_global`, pinned at TLS connect time against DNS rebinding), permit `Learn-My-Voice-Autopilot` in `robots.txt`, and pass HTML script/style stripping and XML prompt fencing (`prompts/10_trend_page_reader.md`).
 
 ## 4. On-Device Transcription Supply Chain & macOS Sandbox Seal
 

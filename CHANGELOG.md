@@ -202,23 +202,42 @@ be read again then.
   whose Stage 4 prompt receives only the accepted `Sponsored Plan` (never the raw brief), attaches a live
   requirement/compliance checklist beside the editor, forces `is_sponsored=True` when marked as posted, and
   overwrites the brief's bytes via `PRAGMA secure_delete = ON` when deleted.
-- **Anthropic Claude provider, centralized stage temperatures, Stage 1B Beat Bank and 19 MCP tools.** Added an
-  Anthropic Messages client (`provider="anthropic"` with `stop_reason` truncation/refusal handling, `8192 -> 4096`
-  `max_tokens` retry-once, model validation and `sk-ant-...` secret scrubbing), centralized `STAGE_TEMPERATURES`
-  with HTTP 400 `temperature` retry-once across Gemini, OpenAI, Anthropic and local servers, structured Stage 1B
-  `sample_beats` stored per video (shown on Library and editor References, pruned on sample text edits and fed
-  as confirmed non-sponsored `<creator_beat_examples>` into drafts), and four hardened MCP tools
-  (`get_rednote_analytics`, `get_tone_analysis`, `list_video_plans`, `add_video_plan`, bringing the total to 19).
+- **Anthropic Claude provider, centralized stage temperatures, Stage 1B Beat Bank and 20 MCP tools.** Added an
+  Anthropic Messages client (`provider="anthropic"`, `llm.ANTHROPIC_UNCHECKED`, parsed `max_tokens` retry-once and
+  `sk-ant-...` secret scrubbing), stop-reason truncation and refusal checks across Gemini, OpenAI, Anthropic and
+  local models (`llm.PROVIDER_STOP_REASON_UNCHECKED`), centralized `STAGE_TEMPERATURES` (including `0.1` for
+  `comment_ocr`) with HTTP 400 `temperature` retry-once, structured Stage 1B `sample_beats` stored per video
+  (shown on Library and editor References, pruned on sample text edits, and fed into `<creator_beat_examples>` using
+  only confirmed non-sponsored `spoken_text` and enum labels—never model prose or `LIVE_CLIP`), and five hardened
+  MCP tools (`get_rednote_analytics`, `get_tone_analysis`, `list_video_plans`, `add_video_plan` storing capped
+  `IDEA` items, and read-only `get_autopilot_status`, bringing the total to 20).
+- **Autopilot background learning and trend adaptation (`#/autopilot`, `DATA_VERSION = 4`).** Optional background
+  scheduler (`studio/autopilot.py`, switched off by default and disabled under `LEARN_MY_VOICE_NO_AUTOPILOT=1`) with
+  two modes (`suggest` and bounded `auto`), a daily model-call cap, per-task switches, Run now, and per-run Undo
+  (`autopilot_runs`). Six tasks keep learning without manual upkeep once configured:
+  `voice.ingest_folder` scans a creator-chosen watched folder (read-only, 60-second settle check, `sponsored/` and
+  `商单/` tagged `is_sponsored=True`, plus `.csv`/`.tsv`/`.xlsx` keyword spreadsheets); `voice.relearn` proposes or
+  safely updates Voice DNA from newly confirmed non-sponsored material within deterministic bounds;
+  `lessons.accept_recurring` remembers recurring non-sponsored edit patterns; `trends.refresh` runs scheduled AI
+  trend lookup and polite `robots.txt`-checked, public-IP-pinned `https://` page extraction (`prompts/10`,
+  refusing `xiaohongshu.com` / `rednote.com` / `xhslink.com`) with rising/niche sighting marks (`trend_observations`);
+  `plans.suggest` attaches non-destructive keyword suggestion chips (Take / Dismiss) to upcoming plans on `#/plan`;
+  and `ideas.refresh` prepares candidate topic-idea sets on `#/ideas` without overwriting creator-saved ideas.
+- **Cross-folder update settings validation.** Portable `.zip` migration (`studio/updater.py`) validates every
+  carried `config.json` key individually (`CARRIED_SETTINGS`, including `autopilot` carried switched off), previews
+  incoming AI provider/model/key presence before migration without exposing key characters, cleans stale
+  `.unpacking-*` folders, and coordinates live-folder checks under `Backups`'s lock.
 - **Browser tab icon.** Served `studio/web/favicon.ico` (generated alongside the desktop icons by
   `desktop/make_icons.py`) so browsers open every page with zero 404 resource errors.
 
 **Changed**
 
-- Through MCP, `save_voice_profile` stores a proposal only, and `update_script` only revises an AI draft the
-  creator has not edited.
+- Through MCP, `save_voice_profile` stores a proposal only, `update_script` only revises an AI draft the
+  creator has not edited, `add_video_plan` creates `IDEA` entries (up to 50 waiting MCP ideas), and
+  `get_autopilot_status` is strictly read-only.
 - A save based on an older version of a script is refused instead of replacing the newer one.
 - A draft prompt now also holds the openings of the creator's best-performing videos and up to 8 confirmed
-  non-sponsored Stage 1B video beats (recorded in `basis`).
+  non-sponsored Stage 1B video beats (`spoken_text` and enum labels only, recorded in `basis`).
 - The message the app prints when it starts is sent at once also when its output goes to a file, and no
   longer ends the app where that output cannot show Chinese.
 - With a Gemini or OpenAI key, 找选题 now sends a web lookup to that service unless the tick for it is removed.

@@ -171,6 +171,9 @@ class AutoVoiceCase(unittest.TestCase):
             return {"choices": [{"message": {"content": text}}]}
 
         self.transport = stand_in_transport
+        fh_patch = mock.patch.dict(autovoice._FILE_HANDLERS, {}, clear=True)
+        fh_patch.start()
+        self.addCleanup(fh_patch.stop)
         self.registry = autopilot.Registry()
         autovoice.register_into(self.registry)
         self.pilot = autopilot.Autopilot(

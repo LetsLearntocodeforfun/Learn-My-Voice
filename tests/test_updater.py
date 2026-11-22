@@ -1498,12 +1498,27 @@ class SettingsFromOutsideTest(ServerCase):
         self.assertEqual(updater.migrate_from_previous_folder(into, bare)["ai"], NOTHING_NAMED)
 
     def test_one_more_name_with_its_cleaner_is_one_more_line(self):
-        self.assertEqual([name for name, _ in updater.CARRIED_SETTINGS], ["trend_weight", "wordlist", "page"])
-        more = updater.CARRIED_SETTINGS + (("autopilot", lambda value: {"on": True} if isinstance(value, dict) and value.get("on") is True else None),)
+        self.assertEqual([name for name, _ in updater.CARRIED_SETTINGS], ["trend_weight", "wordlist", "page", "autopilot"])
+        carried = updater._settings_to_carry({
+            "autopilot": {
+                "enabled": True, "level": "auto", "daily_model_calls": 9,
+                "tasks": {"trends.refresh": True, "not.a.task": True},
+                "sources": {"ai_lookup": True, "pages": ["https://trends.example/list", "https://xiaohongshu.com/explore"]},
+                "voice": {"watch_dir": str(self.tmp), "transcribe_route": "local", "extra": 1},
+                "rogue": "dropped",
+            }
+        }, {})[0]["autopilot"]
+        self.assertIs(carried["enabled"], False)                    # carried switched off until turned back on in the new folder
+        self.assertEqual((carried["level"], carried["daily_model_calls"], carried["tasks"]), ("auto", 9, {"trends.refresh": True}))
+        self.assertEqual(carried["sources"], {"ai_lookup": True, "keyword_files": True, "pages": ["https://trends.example/list"]})
+        self.assertEqual(carried["voice"], {"watch_dir": os.path.normpath(str(self.tmp)), "transcribe_route": "local"})
+        self.assertNotIn("rogue", carried)
+        self.assertNotIn("autopilot", updater._settings_to_carry({"autopilot": "yes"}, {})[0])
+        more = updater.CARRIED_SETTINGS + (("custom_flag", lambda value: {"on": True} if isinstance(value, dict) and value.get("on") is True else None),)
         with mock.patch.object(updater, "CARRIED_SETTINGS", more):
-            self.assertEqual(updater._settings_to_carry({"autopilot": {"on": True, "url": "https://collect.example"}}, {})[0]["autopilot"], {"on": True})
-            self.assertNotIn("autopilot", updater._settings_to_carry({"autopilot": "yes"}, {})[0])
-        self.assertNotIn("autopilot", updater._settings_to_carry({"autopilot": {"on": True}}, {})[0])
+            self.assertEqual(updater._settings_to_carry({"custom_flag": {"on": True, "url": "https://collect.example"}}, {})[0]["custom_flag"], {"on": True})
+            self.assertNotIn("custom_flag", updater._settings_to_carry({"custom_flag": "yes"}, {})[0])
+        self.assertNotIn("custom_flag", updater._settings_to_carry({"custom_flag": {"on": True}}, {})[0])
 
 
 # ---------------------------------------------------------------------------------------------- 5d. an earlier version's own files, and a full disk

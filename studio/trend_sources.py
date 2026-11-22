@@ -24,7 +24,7 @@ import urllib.robotparser
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Dict, Iterable, List, Mapping, Optional, Tuple, Union
 
-from . import autopilot, creator, keyword_import, llm, pipeline, trends
+from . import autopilot, autovoice, creator, keyword_import, llm, pipeline, trends
 from .store import MANUAL_PROVIDER, MAX_KEYWORD_CHARS, clean_file_name, clean_keyword, keyword_key
 
 if TYPE_CHECKING:
@@ -1171,3 +1171,9 @@ def _undo_trends_added(store: "Store", payload: Any) -> None:
 
 autopilot.register_undo(UNDO_KIND, _undo_trends_added)
 TASK = autopilot.register_task(TASK_NAME, run_refresh, every_sec=EVERY_SEC, calls_model=True)
+autovoice.register_file_handler(
+    "keyword_file",
+    matches_keyword_file,
+    take_in_keyword_file,
+    active=lambda store: get_source_settings(store)["keyword_files"],
+)

@@ -949,6 +949,38 @@ class KeywordSpreadsheetWatchedFolderTest(TrendSourcesCase):
         self.assertEqual(after["早八早餐"]["heat"], 22000)
         self.assertEqual(after["已有手动词"]["heat"], 5000)
 
+    def test_watched_folder_ingest_task_imports_settled_csv_and_undoes_cleanly(self) -> None:
+        from studio import autovoice
+        inbox = self.tmp / "watch_inbox"
+        inbox.mkdir()
+        autovoice.save_voice_settings(self.store, {"watch_dir": str(inbox), "transcribe_route": "off"}, now=self.now)
+        autopilot.save_settings(self.store, {"enabled": True, "tasks": {"voice.ingest_folder": True}})
+        csv_file = inbox / "weekly_hot.csv"
+        csv_file.write_text("关键词,热度\n秋冬护肤,12.5万\n暖气房保湿,85000\n", encoding="utf-8")
+
+        # When keyword_files is False, voice.ingest_folder ignores spreadsheets completely.
+        trend_sources.save_source_settings(self.store, {"keyword_files": False})
+        self.assertEqual(self.pilot.run_due(), [])
+        self.assertEqual(self.store.list_watched_files(), [])
+
+        # Enable keyword_files: first scan records waiting, 65s later settles & imports, undo restores both tables!
+        trend_sources.save_source_settings(self.store, {"keyword_files": True})
+        first = self.pilot.run_due()
+        self.assertEqual(len(first), 1)
+        self.assertEqual(self.store.list_watched_files()[0]["status"], "waiting")
+        self.assertEqual(self.store.list_trends(), [])
+
+        self.now += 610
+        second = self.pilot.run_due()
+        self.assertEqual((len(second), second[0]["summary"]["ingested"]), (1, 1))
+        self.assertEqual(self.store.list_watched_files()[0]["status"], "ingested")
+        self.assertEqual(sorted(t["keyword"] for t in self.store.list_trends()), sorted(["秋冬护肤", "暖气房保湿"]))
+
+        self.pilot.undo(second[0]["id"])
+        self.assertEqual(self.store.list_trends(), [])
+        self.assertEqual(self.store.list_watched_files()[0]["status"], "waiting")
+        self.assertEqual(autovoice.voice_payload(self.store, now=self.now)["counts"]["ingested"], 0)
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -34,14 +34,18 @@ rule before you work near it.
    place in `PAIRINGS`. Prefer the classes that are there.
 6. **Chinese and English, both complete.** Every word on a page is in `I18N.zh` and `I18N.en`. Every refusal
    carries `(code, message, message_zh)`. English about the creator uses `{@name}`, `{@them}`, `{@their}`.
-7. **Nothing is fetched from Xiaohongshu.** `docs/SECURITY_NOTES.md` promises it. Material comes from files
-   the creator chooses and text the creator pastes. The only addresses the app itself speaks to are the AI
-   service the creator chose, a model server on this computer, and, since round 1, GitHub's list of this
-   project's releases.
+7. **Nothing is fetched from Xiaohongshu.** `xiaohongshu.com`, `rednote.com` and `xhslink.com` are refused by
+   name (`docs/SECURITY_NOTES.md`). Outside the AI service the creator chose, a model server on this computer,
+   and GitHub's list of this project's releases, optional Autopilot (`studio/trend_sources.py`, off by default)
+   fetches only public `https://` pages the creator named and switched on, after checking global public IPs and
+   `robots.txt`.
 8. **A file, a pasted text and a model's reply are hostile input.** Sizes, rows and nesting are bounded
    before work is done on them. See `studio/keyword_import.py` and `studio/backup.py` for how.
-9. **Nothing takes effect behind the creator's back.** A learned voice is a proposal. An import shows what
-   it understood before it stores anything. Nothing an AI app can call accepts something for the creator.
+9. **Nothing takes effect behind the creator's back.** By default (and at Autopilot `suggest`), a learned voice
+   is a proposal, an import shows what it understood before storing anything, and plans and scripts are untouched.
+   Only when the creator explicitly switches Autopilot to `auto` may bounded voice/lesson updates or candidate
+   topic refreshes apply, each recorded in `autopilot_runs` with a one-click Undo. Nothing an MCP app can call
+   switches Autopilot on or accepts something for the creator.
 10. **Say only what was shown.** "Verified" means a test ran it. Code written from a vendor's documentation
     and never run against the service says so where it stands, and the README says so too.
 
